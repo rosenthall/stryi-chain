@@ -1,5 +1,7 @@
 [package]
 name = "stryi-chain"
+authors = ["Rosenthall <rosenthall@riseup.net>"]
+license = "BSD-3-Clause"
 version = "0.0.1"
 edition = "2024"
 
