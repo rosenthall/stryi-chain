@@ -1,0 +1,8 @@
+[package]
+name = "stryi_core"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+thiserror = "2"
+hex = "0.4.3"

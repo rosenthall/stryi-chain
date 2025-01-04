@@ -1,6 +1,12 @@
 [package]
-name = "StryiChain"
-version = "0.1.0"
+name = "stryi-chain"
+version = "0.0.1"
 edition = "2024"
+
+
+[workspace]
+members = [
+    "crates/stryi_core" # Contains core logic of the blockchain, also includes some important data structures
+]
 
 [dependencies]
