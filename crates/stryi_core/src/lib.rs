@@ -10,3 +10,5 @@
 /// Example of BlockHash with 24 leading zero bits : `Bx000000a3f4b2c1d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6`
 mod hash;
 mod error;
+
+mod address;
