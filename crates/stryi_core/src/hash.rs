@@ -21,11 +21,10 @@ pub trait HashKind: Default {
     /// # Returns
     ///
     /// * A fixed-size array of bytes representing the hash.
-    ///
     fn hash(input: &[u8]) -> [u8; Self::SIZE];
 }
 
-/// Generic Hash struct parameterized by a HashKind.
+/// Generic `Hash` struct parameterized by a `HashKind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hash<K: HashKind>
 where
@@ -41,25 +40,25 @@ impl<K: HashKind> Hash<K>
 where
     [u8; K::SIZE]:,
 {
-    /// Creates a new `Hash` instance from input data.
-    ///
-    /// # Arguments
-    ///
-    /// * `input` - A slice of bytes to be hashed.
-    ///
-    /// # Returns
-    ///
-    /// * A new `Hash` instance with the hashed data.
+    /// Creates a new `Hash` by hashing the provided input bytes.
     pub fn new(input: &[u8]) -> Self {
         let data = K::hash(input);
-        Hash {
+        Self {
             kind: K::default(),
             data,
         }
     }
 
+    /// Creates a `Hash` from **already-hashed** bytes (a final digest).
+    fn from_digest(digest: [u8; K::SIZE]) -> Self {
+        Self {
+            kind: K::default(),
+            data: digest,
+        }
+    }
+
     /// Parses a hash string into a `Hash`.
-    /// Can return an error if string has incorrect prefix or contains invalid hash.
+    /// Can return an error if the string has an incorrect prefix or invalid hex.
     pub fn from_hash_string(s: &str) -> Result<Self, StryiCoreError> {
         if !s.starts_with(K::PREFIX) {
             return Err(StryiCoreError::InvalidPrefix {
@@ -68,8 +67,11 @@ where
             });
         }
 
+        // Strip off the prefix and decode the hex
         let hex_part = &s[K::PREFIX.len()..];
         let bytes = hex::decode(hex_part).map_err(StryiCoreError::InvalidHex)?;
+
+        // This calls `TryFrom<&[u8]> for Hash<K>`, which uses `from_digest(...)`
         Self::try_from(bytes.as_slice())
     }
 }
@@ -89,18 +91,9 @@ where
         }
         let mut array = [0u8; K::SIZE];
         array.copy_from_slice(value);
-        Ok(Self::new(&array))
-    }
-}
 
-impl<K: HashKind> fmt::Display for Hash<K>
-where
-    [u8; K::SIZE]:,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let hex_data = hex::encode(self.data);
-        let s = format!("{}{}", K::PREFIX, hex_data);
-        write!(f, "{}", s)
+        // Use `from_digest` here to avoid re-hashing these final bytes
+        Ok(Self::from_digest(array))
     }
 }
 
@@ -115,10 +108,21 @@ where
     }
 }
 
+impl<K: HashKind> fmt::Display for Hash<K>
+where
+    [u8; K::SIZE]:,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Hex-encode and prepend the prefix
+        let hex_data = hex::encode(self.data);
+        let s = format!("{}{}", K::PREFIX, hex_data);
+        write!(f, "{}", s)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hex;
     use std::convert::TryFrom;
 
     /// A mock HashKind for testing purposes.
@@ -199,7 +203,7 @@ mod tests {
         match parsed_hash {
             Err(StryiCoreError::InvalidPrefix { expected, actual }) => {
                 assert_eq!(expected, TestHashKind::PREFIX.to_string());
-                assert_eq!(actual, "WRON".to_string()); 
+                assert_eq!(actual, "WRON".to_string());
             }
             _ => panic!("Expected InvalidPrefix error."),
         }
@@ -263,7 +267,8 @@ mod tests {
 
     #[test]
     fn test_try_from_vec_with_valid_length() {
-        let bytes = generate_bytes(16); // Exact length
+        let bytes = generate_bytes(16);
+
         let hash = Hash::<TestHashKind>::try_from(bytes.clone());
         assert!(hash.is_ok());
 
@@ -286,17 +291,4 @@ mod tests {
         }
     }
     
-
-    #[test]
-    fn test_hash_hash_function() {
-        let input = b"abcdef";
-        let expected = {
-            let mut hash = [0u8; 16];
-            let len = input.len().min(16);
-            hash[..len].copy_from_slice(&input[..len]);
-            hash
-        };
-        let actual = TestHashKind::hash(input);
-        assert_eq!(actual, expected);
-    }
 }

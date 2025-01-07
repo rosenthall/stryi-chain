@@ -41,7 +41,7 @@ impl AccountAddress {
 #[cfg(test)]
 mod tests {
     use p256::ecdsa::SigningKey;
-    use old_rand::thread_rng; // using old version of rand here because ecdsa crate does the same (i HATE it)
+    use old_rand::thread_rng; // using old version of rand here because ecdsa crate does the same (I HATE it)
     use crate::address::{AccountAddress, AddressHasher};
     use crate::hash::HashKind;
 
@@ -79,6 +79,13 @@ mod tests {
                 "Account Address {} data length mismatch",
                 i + 1
             );
+
+            // Test converting string back to address
+            let converted_account_address= AccountAddress::from_hash_string(address_string.as_str()).unwrap();
+
+            // Those must be the same
+            assert_eq!(account_address.data, converted_account_address.data);
+
 
             // Optionally, print the address
             println!("Account Address {}: {}", i + 1, address_string);
