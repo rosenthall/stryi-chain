@@ -1,6 +1,8 @@
 use std::fmt;
 use crate::error::StryiCoreError;
 use hex;
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use serde::de::Visitor;
 
 /// Trait defines how a specific object in the blockchain should be hashed.
 pub trait HashKind: Default {
@@ -120,6 +122,63 @@ where
     }
 }
 
+
+
+
+/// Custom Serialize implementations for `Hash<K>`.
+/// We are serializing hash value as a string
+impl<K: HashKind> Serialize for Hash<K>
+where
+    [u8; K::SIZE]:,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+
+/// Custom Deserialize implementations for `Hash<K>`.
+impl<'de, K: HashKind> Deserialize<'de> for Hash<K>
+where
+    [u8; K::SIZE]:,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct HashVisitor<K: HashKind>(std::marker::PhantomData<K>);
+
+        impl<'de, K: HashKind> Visitor<'de> for HashVisitor<K>
+        where
+            [u8; K::SIZE]:,
+        {
+            type Value = Hash<K>;
+
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str(&format!(
+                    "a string starting with '{}' followed by {} hexadecimal characters",
+                    K::PREFIX,
+                    K::SIZE * 2 // Each byte is represented as 2 hex characters
+                ))
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Hash::<K>::from_hash_string(v).map_err(de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_str(HashVisitor::<K>(std::marker::PhantomData))
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +209,8 @@ mod tests {
         }
     }
 
+    type TestHash = Hash<TestHashKind>; 
+    
     /// Helper function to generate a vector of bytes of a specific length.
     fn generate_bytes(len: usize) -> Vec<u8> {
         (0..len).map(|i| i as u8).collect()
@@ -158,7 +219,7 @@ mod tests {
     #[test]
     fn test_create_hash_with_valid_input() {
         let input = b"test input data";
-        let hash = Hash::<TestHashKind>::new(input);
+        let hash = TestHash::new(input);
         let expected_data = {
             let mut data = [0u8; 16];
             let len = input.len().min(16);
@@ -290,5 +351,40 @@ mod tests {
             _ => panic!("Expected InvalidLength error."),
         }
     }
+    #[test]
+    fn test_hash_serialization() {
+        let data = b"Serialize this data.";
+        let custom_hash = TestHash::new(data);
+
+        // Serialize to JSON
+        let serialized = serde_json::to_string(&custom_hash).expect("Serialization failed");
+        let expected = format!("\"{}\"", custom_hash);
+        assert_eq!(serialized, expected);
+
+        // Deserialize back
+        let deserialized: TestHash =
+            serde_json::from_str(&serialized).expect("Deserialization failed");
+        assert_eq!(custom_hash, deserialized);
+            
+    }
     
+    
+    #[test]
+    fn test_hash_deserialization_invalid_data() {
+        // Missing prefix
+        let json_str = "\"abcdef123456\"";
+        let result: Result<TestHash, _> = serde_json::from_str(json_str);
+        assert!(result.is_err());
+        // Invalid hex
+        let json_str = format!("\"{}ZZZZ\"", TestHashKind::PREFIX);
+        let result: Result<TestHash, _> = serde_json::from_str(&json_str);
+        assert!(result.is_err());
+
+        // Incorrect length
+        let hex_part = "a3f1"; // Too short
+        let json_str = format!("\"{}{}\"", TestHashKind::PREFIX, hex_part);
+        let result: Result<TestHash, _> = serde_json::from_str(&json_str);
+        assert!(result.is_err());
+    }
+
 }
