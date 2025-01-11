@@ -136,6 +136,14 @@ impl HashKind for BlockHashKind {
 /// stores the result in an instance of `Hash<BlockHashKind>`.
 pub type BlockHash = crate::hash::Hash<BlockHashKind>;
 
+impl BlockHash {
+    
+    /// Return null blockhash value
+    pub fn empty() -> BlockHash {
+        BlockHash::new(&[0u8; BlockHashKind::SIZE])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
