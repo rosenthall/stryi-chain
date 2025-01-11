@@ -13,3 +13,7 @@ mod error;
 mod block;
 
 mod address;
+
+/// Simple implementation of the (Merkle Tree)[https://en.wikipedia.org/wiki/Merkle_tree]
+/// Provides simple api for constructing trees, generating and checking proofs
+mod merkletree;
