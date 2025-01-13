@@ -1,0 +1,16 @@
+[package]
+name = "stryi_node"
+version = "0.0.1"
+edition = "2024"
+description = "An implementation of the validator node for the Stryi Chain!"
+authors = ["Rosenthall <rosenthall@riseup.net>"]
+license = "BSD-3-Clause"
+
+[[bin]]
+name = "stryi_node"
+path = "src/main.rs"
+
+[dependencies]
+tokio = {version = "1.43.0", features = ["rt", "macros", "rt-multi-thread"]}
+tracing = "0.1"
+tracing-subscriber = "0.3"

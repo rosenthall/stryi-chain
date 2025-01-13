@@ -2,6 +2,8 @@
 name = "stryi_core"
 version = "0.0.1"
 edition = "2024"
+authors = ["Rosenthall <rosenthall@riseup.net>"]
+license = "BSD-3-Clause"
 
 [dependencies]
 thiserror = "2"

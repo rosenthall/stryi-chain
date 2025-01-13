@@ -1,14 +1,8 @@
-[package]
-name = "stryi-chain"
-authors = ["Rosenthall <rosenthall@riseup.net>"]
-license = "BSD-3-Clause"
-version = "0.0.1"
-edition = "2024"
 
 
 [workspace]
 members = [
-    "crates/stryi_core" # Contains core logic of the blockchain, also includes some important data structures
+    "crates/stryi_core", # Contains core logic of the blockchain, also includes some important data structures
+    "crates/stryi_node"  # Contains the Stryi blokchain node implementation
 ]
-
-[dependencies]
+resolver = "3"
