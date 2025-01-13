@@ -27,13 +27,13 @@ pub trait HashKind: Default {
 }
 
 /// Generic `Hash` struct parameterized by a `HashKind`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Hash<K: HashKind>
 where
     [u8; K::SIZE]:,
 {
     /// The type of hash, defining the hashing algorithm and prefix.
-    pub kind: K,
+    pub(crate) kind: K,
     /// The hash data as a fixed-size byte array.
     pub data: [u8; K::SIZE],
 }
