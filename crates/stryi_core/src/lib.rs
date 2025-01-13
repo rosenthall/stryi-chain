@@ -14,6 +14,11 @@ mod block;
 
 mod address;
 
+// Contains tests for some matter functionality.
+// Some of the tests are present in the concrete modules, but this module contains larger ones with more complex cases like integration tests
+#[cfg(test)]
+mod tests;
+
 /// Simple implementation of the (Merkle Tree)[https://en.wikipedia.org/wiki/Merkle_tree]
 /// Provides simple api for constructing trees, generating and checking proofs
 mod merkletree;
