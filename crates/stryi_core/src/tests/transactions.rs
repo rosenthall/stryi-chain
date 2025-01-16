@@ -13,28 +13,33 @@ use crate::transactions::{
 };
 use crate::address::AccountAddress;
 
-/// A simple, local UTXO set for testing.
-/// Key is `(TransactionHash, vout)`, value is the `UTXO`.
+/// A simple, local UTXO set for testing purposes.
+/// The key is `(TransactionHash, vout)`, and the value is the `UTXO`.
 #[derive(Debug, Default)]
 struct LocalUtxoSet {
     map: HashMap<(TransactionHash, u32), UTXO>,
 }
 
 impl LocalUtxoSet {
-    /// Insert a new UTXO
     fn add_utxo(&mut self, utxo: UTXO) {
         let key = (utxo.txid, utxo.vout);
         self.map.insert(key, utxo);
     }
 
-    /// Remove a UTXO (when it's spent)
     fn remove_utxo(&mut self, txid: &TransactionHash, vout: u32) {
         self.map.remove(&(*txid, vout));
     }
 
-    /// Fetch a UTXO, if it exists
     fn get_utxo(&self, txid: &TransactionHash, vout: u32) -> Option<&UTXO> {
         self.map.get(&(*txid, vout))
+    }
+
+    fn sum_utxos_for_address(&self, address: &AccountAddress) -> u64 {
+        self.map
+            .values()
+            .filter(|u| &u.owner == address)
+            .map(|u| u.value)
+            .sum()
     }
 }
 

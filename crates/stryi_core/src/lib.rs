@@ -23,3 +23,4 @@ mod tests;
 /// Provides simple api for constructing trees, generating and checking proofs
 mod merkletree;
 mod transactions;
+mod storage;

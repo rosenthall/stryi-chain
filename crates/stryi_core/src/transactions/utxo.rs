@@ -5,7 +5,7 @@ use crate::transactions::hash::TransactionHash;
 /// OutPoint identifies which UTXO is being referenced:
 /// - `txid`: the transaction hash (32-byte typed hash)
 /// - `vout`: the index of the output within that transaction
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, Hash, PartialEq)]
 pub struct OutPoint {
     /// The transaction identifier as a typed hash
     pub txid: TransactionHash,
