@@ -1,5 +1,5 @@
 mod block_hash;
-
+mod mining;
 
 pub use block_hash::{BlockHash};
 use serde::{Deserialize, Serialize};
