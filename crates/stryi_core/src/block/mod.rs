@@ -109,11 +109,8 @@ impl Block {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        transactions::TransactionData,
-    };
-    use p256::ecdsa::{SigningKey, VerifyingKey};
-    use p256::elliptic_curve::rand_core::OsRng;
+    use crate::transactions::TransactionData;
+    use secp256k1::{Secp256k1, rand::thread_rng};
 
     #[test]
     fn test_create_block_and_compute_hash() {
@@ -124,11 +121,13 @@ mod tests {
             outputs: vec![],
         };
 
-        // Generate ephemeral signing key to sign transaction
-        let signing_key = SigningKey::random(&mut OsRng);
-        
-        // Sign transaction data
-        let signed_tx = tx_data.sign(&signing_key);
+        // Generate ephemeral secp256k1 keypair to sign transaction
+        let secp = Secp256k1::new();
+        let mut rng = thread_rng();
+        let (secret_key, public_key) = secp.generate_keypair(&mut rng);
+
+        // Sign the transaction data (assuming your updated .sign() takes &Secp256k1 + &SecretKey)
+        let signed_tx = tx_data.sign(&secp, &secret_key);
 
         // Create a block
         let prev_hash = BlockHash::empty(); // Some placeholder
@@ -137,22 +136,24 @@ mod tests {
         // Initial block hash
         let hash1 = block.block_hash();
 
-        // Add another transaction and update merkle root
+        // Add another transaction and update Merkle root
         let tx_data2 = TransactionData {
             version: 1,
             inputs: vec![],
             outputs: vec![],
         };
-        let signed_tx2 = tx_data2.sign(&signing_key);
+        let signed_tx2 = tx_data2.sign(&secp, &secret_key);
         block.data.transactions.push(signed_tx2);
         block.update_merkle_root();
 
         // Check if block hash changed after adding a transaction
         let hash2 = block.block_hash();
-        assert_ne!(hash1, hash2, "Block hash should change if the block's transactions changed");
-        
-        
-        // Just prints out the resulting block hash
+        assert_ne!(
+            hash1, hash2,
+            "Block hash should change if the block's transactions changed"
+        );
+
+        // Print out the resulting block hashes
         println!("Block hash1: {}", hash1);
         println!("Block hash2: {}", hash2);
     }

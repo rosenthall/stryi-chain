@@ -86,68 +86,82 @@ pub fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{
-        block::Block,
-        block::block_hash::BlockHash,
-        transactions::TransactionData,
-    };
-    use p256::ecdsa::SigningKey;
-    use p256::elliptic_curve::rand_core::OsRng;
     use rand::random;
+    use secp256k1::{Secp256k1, SecretKey};
     use crate::address::AccountAddress;
-    use crate::transactions::{OutPoint, TransactionHash, TransactionIn, TransactionOut};
+    use crate::block::{Block, BlockHash};
+    use crate::block::mining::{meets_difficulty, mine_block_in_parallel};
+    use crate::transactions::{OutPoint, TransactionData, TransactionHash, TransactionIn, TransactionOut};
 
     #[test]
-    fn test_parallel_mining_small_bits() {
+    fn test_parallel_mining_small_bits_with_secp256k1() {
         // We'll create a block with very low difficulty so we can find a solution quickly in a test.
-        
+
+        // 1) Generate random data for the input reference (dummy)
         let random_tx_hash = TransactionHash::new(random::<[u8; 32]>().as_slice());
         let random_account_address = AccountAddress::new(random::<[u8; 20]>().as_slice());
-        
 
+        // 2) Build a dummy TransactionData
+        let tx_data = TransactionData {
+            version: 1,
+            inputs: vec![TransactionIn {
+                previous_output: OutPoint {
+                    txid: random_tx_hash,
+                    vout: 7,
+                },
+                signature: vec![], // Will be filled in by sign()
+                sequence: 0,
+            }],
+            outputs: vec![TransactionOut {
+                value: 9324233284,
+                recipient: random_account_address,
+            }],
+        };
+
+        // 3) Use secp256k1 to sign the transaction
+        let secp = Secp256k1::new();
+        let mut rng = secp256k1::rand::thread_rng();
+        let secret_key = SecretKey::new(&mut rng);
+
+        // This call presumes you've updated TransactionData::sign(secp, &secret_key) to return Transaction
+        let signed_tx = tx_data.sign(&secp, &secret_key);
+
+        // 4) Create a Block with a very low difficulty (bits = 4)
         let mut block = {
-            let tx_data = TransactionData {
-                version: 1,
-                inputs: vec![TransactionIn{
-                    previous_output: OutPoint {
-                        txid: random_tx_hash,
-                        vout: 7 
-                    },
-                    signature: vec![],
-                    sequence: 0,
-                }],
-                outputs: vec![TransactionOut { value: 9324233284, recipient:  random_account_address}],
-            };
-            let signing_key = SigningKey::random(&mut OsRng);
-            let signed_tx = tx_data.sign(&signing_key);
-
-            // Just build a block with one transaction
             let mut b = Block::new(
                 vec![signed_tx],
-                BlockHash::empty(),
-                0,  // height
-                4,  // bits (only 4 leading zero bits, easy to mine in tests)
-                1_700_000_000,
-                1
+                BlockHash::empty(), // previous_block_hash
+                0,                  // height
+                4,                  // bits (only 4 leading zero bits)
+                1_700_000_000,     // timestamp
+                1                  // version
             );
+            // Make sure Merkle root is correct after adding the transaction
             b.update_merkle_root();
             b
         };
 
-        // Attempt parallel mining with random nonce
+        // 5) Attempt parallel mining
         let found = mine_block_in_parallel(&mut block, 500_000);
         println!("Found solution: {}", found);
+
         if found {
             println!("Final nonce = {}", block.header.nonce);
-            // We can verify difficulty
+
+            // 6) Verify difficulty on the final block
             let header_bytes = bincode::serde::encode_to_vec(
                 &block.header,
-                bincode::config::standard()
-            ).unwrap();
+                bincode::config::standard(),
+            )
+                .unwrap();
+
             let block_hash = BlockHash::new(&header_bytes);
-            assert!(meets_difficulty(&block_hash, block.header.bits));
-            println!("Hash : {}", block_hash)
+            assert!(
+                meets_difficulty(&block_hash, block.header.bits),
+                "The resulting block hash does not meet difficulty"
+            );
+
+            println!("Mined block hash: {}", block_hash);
         }
     }
 }

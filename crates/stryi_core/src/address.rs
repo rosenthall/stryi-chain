@@ -1,8 +1,8 @@
 use crate::hash::{Hash, HashKind};
+use blake3;
+use secp256k1::PublicKey;
 
-use p256::ecdsa::VerifyingKey;
-
-/// Specific hash kind for account addresses.
+/// Specific hash kind for account addresses (20 bytes).
 #[derive(Default, PartialEq, Debug, Clone, Copy)]
 pub struct AddressHasher;
 
@@ -11,52 +11,47 @@ impl HashKind for AddressHasher {
     const PREFIX: &'static str = "@";
 
     fn hash(public_key: &[u8]) -> [u8; Self::SIZE] {
-    
-    
-        // We will use blake3 for addresses
+        // We use Blake3 to hash the serialized public key, then take 20 bytes of output.
         let mut hasher = blake3::Hasher::new();
         hasher.update(public_key);
 
-        let mut data = [0u8; AddressHasher::SIZE];
+        let mut data = [0u8; Self::SIZE];
         hasher.finalize_xof().fill(&mut data);
-
 
         data
     }
 }
 
-/// Type alias for AccountAddress using the Hash<Address> abstraction.
+/// Type alias for AccountAddress using the Hash<AddressHasher> abstraction.
 pub type AccountAddress = Hash<AddressHasher>;
 
-// specific methods for addresses
 impl AccountAddress {
-    /// Creates an account address from a public key by hashing it.
-    pub fn from_public_key(public_key: VerifyingKey) -> Self {
-        Self::new(&AddressHasher::hash(&*public_key.to_sec1_bytes()))
+    /// Creates an account address from a secp256k1 public key by hashing it (Blake3, truncated to 20 bytes).
+    /// By default, we use the compressed public key serialization (33 bytes).
+    pub fn from_public_key(pubkey: &PublicKey) -> Self {
+        let pubkey_bytes = pubkey.serialize(); // 33 bytes in compressed form
+        Self::new(&AddressHasher::hash(&pubkey_bytes))
     }
-    
 }
 
 
 #[cfg(test)]
 mod tests {
-    use p256::ecdsa::SigningKey;
-    use old_rand::thread_rng; // using old version of rand here because ecdsa crate does the same (I HATE it)
+    use secp256k1::{Secp256k1, rand::thread_rng};
     use crate::address::{AccountAddress, AddressHasher};
     use crate::hash::HashKind;
 
     #[test]
     fn test_create_multiple_account_addresses() {
-        // Initialize a deterministic random number generator
+        let secp = Secp256k1::new();
         let mut rng = thread_rng();
 
         for i in 0..15 {
-            // Generate a random ECDSA signing key
-            let signing_key = SigningKey::random(&mut rng);
-            let verifying_key = signing_key.verifying_key();
+            // Generate a random ECDSA keypair (secp256k1)
+            let (secret_key, public_key) = secp.generate_keypair(&mut rng);
 
-            // Create AccountAddress from the verifying key
-            let account_address = AccountAddress::from_public_key(*verifying_key);
+            // Create AccountAddress from the secp256k1 public key
+            let account_address = AccountAddress::from_public_key(&public_key);
 
             // Convert AccountAddress to string and verify prefix and length
             let address_string = account_address.to_string();
@@ -67,7 +62,7 @@ mod tests {
             );
             assert_eq!(
                 address_string.len(),
-                AddressHasher::PREFIX.len() + 40, // 20 bytes in hex is 40 characters
+                AddressHasher::PREFIX.len() + 40, // 20 bytes in hex => 40 hex chars
                 "Account Address {} does not have the expected length",
                 i + 1
             );
@@ -81,14 +76,19 @@ mod tests {
             );
 
             // Test converting string back to address
-            let converted_account_address= AccountAddress::from_hash_string(address_string.as_str()).unwrap();
+            let converted_account_address = AccountAddress::from_hash_string(&address_string)
+                .expect("Failed to parse address string back");
 
-            // Those must be the same
-            assert_eq!(account_address.data, converted_account_address.data);
-
+            // Must be the same
+            assert_eq!(
+                account_address.data,
+                converted_account_address.data,
+                "Round-trip from string to address mismatch"
+            );
 
             // Optionally, print the address
             println!("Account Address {}: {}", i + 1, address_string);
         }
     }
+
 }
