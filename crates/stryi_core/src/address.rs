@@ -1,6 +1,6 @@
 use crate::hash::{Hash, HashKind};
 use blake3;
-use secp256k1::PublicKey;
+use k256::ecdsa::VerifyingKey;
 
 /// Specific hash kind for account addresses (20 bytes).
 #[derive(Default, PartialEq, Debug, Clone, Copy)]
@@ -27,9 +27,8 @@ pub type AccountAddress = Hash<AddressHasher>;
 
 impl AccountAddress {
     /// Creates an account address from a secp256k1 public key by hashing it (Blake3, truncated to 20 bytes).
-    /// By default, we use the compressed public key serialization (33 bytes).
-    pub fn from_public_key(pubkey: &PublicKey) -> Self {
-        let pubkey_bytes = pubkey.serialize(); // 33 bytes in compressed form
+    pub fn from_public_key(verifying_key: &VerifyingKey) -> Self {
+        let pubkey_bytes = verifying_key.to_sec1_bytes();
         Self::new(&AddressHasher::hash(&pubkey_bytes))
     }
 }
@@ -37,21 +36,20 @@ impl AccountAddress {
 
 #[cfg(test)]
 mod tests {
-    use secp256k1::{Secp256k1, rand::thread_rng};
+    use k256::ecdsa::SigningKey;
+    use k256::elliptic_curve::rand_core::OsRng;
     use crate::address::{AccountAddress, AddressHasher};
     use crate::hash::HashKind;
 
     #[test]
     fn test_create_multiple_account_addresses() {
-        let secp = Secp256k1::new();
-        let mut rng = thread_rng();
-
         for i in 0..15 {
-            // Generate a random ECDSA keypair (secp256k1)
-            let (secret_key, public_key) = secp.generate_keypair(&mut rng);
+            // Generate a random ECDSA keypair
+            let signing_key = SigningKey::random(&mut OsRng);
+            let verifying_key = signing_key.verifying_key();
 
             // Create AccountAddress from the secp256k1 public key
-            let account_address = AccountAddress::from_public_key(&public_key);
+            let account_address = AccountAddress::from_public_key(&verifying_key);
 
             // Convert AccountAddress to string and verify prefix and length
             let address_string = account_address.to_string();

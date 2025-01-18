@@ -108,9 +108,10 @@ impl Block {
 
 #[cfg(test)]
 mod tests {
+    use k256::ecdsa::SigningKey;
+    use k256::elliptic_curve::rand_core::OsRng;
     use super::*;
     use crate::transactions::TransactionData;
-    use secp256k1::{Secp256k1, rand::thread_rng};
 
     #[test]
     fn test_create_block_and_compute_hash() {
@@ -121,14 +122,13 @@ mod tests {
             outputs: vec![],
         };
 
-        // Generate ephemeral secp256k1 keypair to sign transaction
-        let secp = Secp256k1::new();
-        let mut rng = thread_rng();
-        let (secret_key, public_key) = secp.generate_keypair(&mut rng);
+        // Generate ephemeral signing key to sign transaction
+        let signing_key = SigningKey::random(&mut OsRng);
 
-        // Sign the transaction data (assuming your updated .sign() takes &Secp256k1 + &SecretKey)
-        let signed_tx = tx_data.sign(&secp, &secret_key);
+        // Sign transaction data
+        let signed_tx = tx_data.sign(&signing_key);
 
+        
         // Create a block
         let prev_hash = BlockHash::empty(); // Some placeholder
         let mut block = Block::new(vec![signed_tx], prev_hash, 42, 16, 1_700_000_000, 1);
@@ -142,7 +142,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
         };
-        let signed_tx2 = tx_data2.sign(&secp, &secret_key);
+        let signed_tx2 = tx_data2.sign(&signing_key);
         block.data.transactions.push(signed_tx2);
         block.update_merkle_root();
 

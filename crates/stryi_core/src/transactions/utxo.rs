@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use crate::address::AccountAddress;
 use crate::transactions::hash::TransactionHash;
+use crate::transactions::signature::StryiSignature;
 
 /// OutPoint identifies which UTXO is being referenced:
 /// - `txid`: the transaction hash (32-byte typed hash)
@@ -23,7 +24,7 @@ pub struct TransactionIn {
     pub previous_output: OutPoint,
     
     /// Sender's signature to authorize spending this particular UTXO
-    pub signature: Vec<u8>,
+    pub signature: StryiSignature,
     
     /// Sequence field (similar to Bitcoin, can be used for additional logic)
     pub sequence: u32,

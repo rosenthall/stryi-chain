@@ -86,15 +86,17 @@ pub fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::transactions::StryiSignature;
+    use k256::ecdsa::SigningKey;
+    use k256::elliptic_curve::rand_core::OsRng;
     use rand::random;
-    use secp256k1::{Secp256k1, SecretKey};
     use crate::address::AccountAddress;
     use crate::block::{Block, BlockHash};
     use crate::block::mining::{meets_difficulty, mine_block_in_parallel};
     use crate::transactions::{OutPoint, TransactionData, TransactionHash, TransactionIn, TransactionOut};
 
     #[test]
-    fn test_parallel_mining_small_bits_with_secp256k1() {
+    fn test_parallel_mining_small_bits() {
         // We'll create a block with very low difficulty so we can find a solution quickly in a test.
 
         // 1) Generate random data for the input reference (dummy)
@@ -109,7 +111,7 @@ mod tests {
                     txid: random_tx_hash,
                     vout: 7,
                 },
-                signature: vec![], // Will be filled in by sign()
+                signature: StryiSignature(Box::new([0u8; 65])), // Will be filled in by sign()
                 sequence: 0,
             }],
             outputs: vec![TransactionOut {
@@ -118,13 +120,8 @@ mod tests {
             }],
         };
 
-        // 3) Use secp256k1 to sign the transaction
-        let secp = Secp256k1::new();
-        let mut rng = secp256k1::rand::thread_rng();
-        let secret_key = SecretKey::new(&mut rng);
-
-        // This call presumes you've updated TransactionData::sign(secp, &secret_key) to return Transaction
-        let signed_tx = tx_data.sign(&secp, &secret_key);
+        let signing_key = SigningKey::random(&mut OsRng);
+        let signed_tx = tx_data.sign(&signing_key);
 
         // 4) Create a Block with a very low difficulty (bits = 4)
         let mut block = {
