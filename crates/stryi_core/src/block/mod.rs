@@ -2,8 +2,9 @@ mod block_hash;
 mod mining;
 
 pub use block_hash::{BlockHash};
+pub use mining::meets_difficulty;
+
 use serde::{Deserialize, Serialize};
-use crate::hash::HashKind;
 use crate::merkletree::{MerkleHash, MerkleTree};
 use crate::transactions::Transaction;
 
@@ -31,7 +32,7 @@ pub struct BlockHeader {
     pub height: u64,
 
     /// Difficulty parameter in bits
-    pub bits: u8,
+    pub difficulty_bits: u8,
 
     /// Unix timestamp
     pub timestamp: u64,
@@ -65,7 +66,7 @@ impl Block {
             merkle_root_hash: merkle_hash,
             previous_block_hash,
             height,
-            bits,
+            difficulty_bits: bits,
             timestamp,
             nonce: 0,
         };
@@ -103,6 +104,32 @@ impl Block {
 
         // Create the final block hash
         BlockHash::new(&header_bytes)
+    }
+
+    /// Validates the Proof-of-Work (PoW) for the block.
+    ///
+    /// This method computes the hash of the block using the block's header
+    /// and then checks if it meets the difficulty target specified in the header's `bits` field.
+    ///
+    /// # Returns
+    ///
+    /// * `true` if the block hash satisfies the required difficulty.
+    /// * `false` otherwise.
+    pub fn validate_proof_of_work(&self) -> bool {
+        let hash = self.block_hash();
+
+        meets_difficulty(&hash, self.header.difficulty_bits)
+    }
+
+    /// Validates the Merkle root of the block.
+    ///
+    /// This method recomputes the Merkle root from the block's transactions and compares it
+    /// with the `merkle_root_hash` stored in the block header.
+    ///
+    /// # Returns
+    pub fn validate_merkle_root(&self) -> bool {
+        let computed_root = Self::compute_merkle_root(&self.data.transactions);
+        computed_root == self.header.merkle_root_hash
     }
 }
 
