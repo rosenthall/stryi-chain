@@ -1,6 +1,7 @@
 use hex::FromHexError;
 use thiserror::Error;
-
+use crate::address::AccountAddress;
+use crate::transactions::TransactionHash;
 
 #[derive(Debug, Clone, Error)]
 pub enum StryiCoreError {
@@ -41,4 +42,32 @@ pub enum StryiCoreError {
         input_sum: u64,
         output_sum: u64,
     },
+    
+    
+    #[error("Invalid signature : {msg}")]
+    InvalidSignature { 
+        msg : String
+    },
+    
+    #[error("Block validation failed: {details}")]
+    ConsensusValidationFailed {
+        details: String,
+    },
+
+    #[error("Difficulty adjustment failed: {details}")]
+    ConsensusDifficultyAdjustmentFailed {
+        details: String,
+    },
+    
+    #[error("Chain selection failed: {details}")]
+    ConsensusChainSelectionFailed {
+        details: String,
+    },
+    
+    
+    #[error("Invalid difficulty value : {details}")]
+    InvalidDifficultyValue {
+        details: String
+    }
+
 }

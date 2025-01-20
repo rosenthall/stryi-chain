@@ -29,6 +29,11 @@ mod transactions;
 /// Definitions of traits that we use as abstract layer for storing data. Exports 'UtxoStorage' and BlockStorage so far
 mod storage;
 
+/// Abstraction for consensus model of StryiChain. 
+/// Provides a convenient way for all the nodes to follow the same, strict rules of consensus
+mod consensus;
+
+
 // Contains tests for some matter functionality.
 // Some of the tests are present in the concrete modules, but this module contains larger ones with more complex cases like integration tests
 #[cfg(test)]
