@@ -7,23 +7,19 @@ use serde::{Deserialize, Serialize};
 
 use bincode::{self, config::standard};
 use k256::{
-    ecdsa::SigningKey
+    ecdsa::{SigningKey, VerifyingKey, signature::hazmat::PrehashVerifier},
 };
-use k256::ecdsa::VerifyingKey;
-use k256::ecdsa::signature::hazmat::PrehashVerifier;
 use crate::address::AccountAddress;
 use crate::error::StryiCoreError;
 use crate::hash::HashKind;
-
-use crate::transactions::hash::TransactionHasher;
-
-// Exports
-pub use crate::transactions::hash::{TransactionHash};
-pub use crate::transactions::utxo::{TransactionIn, TransactionOut, OutPoint, UTXO};
 pub use crate::transactions::signature::StryiSignature;
+pub use crate::transactions::hash::{TransactionHasher, TransactionHash};
+pub use crate::transactions::utxo::{
+    TransactionIn, TransactionOut, OutPoint, UTXO,
+};
+pub use crate::transactions::utxo_processor::{apply_transaction, apply_block};
 
 /// `TransactionData` holds the *unsigned* transaction fields: version, inputs, outputs.
-/// It does NOT contain any cryptographic signature by itself.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TransactionData {
     /// Transaction version (arbitrary field for potential future upgrades)
@@ -37,14 +33,14 @@ pub struct TransactionData {
 }
 
 /// `Transaction` is the fully signed transaction.
-/// It wraps `TransactionData` plus a signature (which in this code is 65 bytes of
-/// recoverable ECDSA format).
+/// It wraps `TransactionData` plus a single ECDSA recoverable signature
+/// (65 bytes) for the entire transaction.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Transaction {
     /// The actual transaction data (version, inputs, outputs)
     pub data: TransactionData,
 
-    /// The signature over the hash of `TransactionData`.
+    /// The single signature over the hash of `TransactionData`.
     pub signature: StryiSignature,
 }
 
@@ -59,100 +55,72 @@ impl TransactionData {
         TransactionHash::new(&encoded)
     }
 
-
     /// Signs this `TransactionData` using secp256k1, producing a `Transaction`
-    /// containing the data plus a **recoverable** ECDSA signature.
+    /// with a **recoverable** ECDSA signature (65 bytes).
     ///
     /// Steps:
-    /// 1) Compute a 32-byte message from `self.hash()`.
+    /// 1) Compute the 32-byte message from `self.hash()`.
     /// 2) Sign that message with `sign_ecdsa_recoverable(...)`.
-    /// 3) Convert to a 65-byte array: [ recovery_id_byte | 64 bytes of (r, s) ].
-    ///
-    /// The resulting `Transaction` stores that 65-byte array in `signature`.
-    pub fn sign(self, signing_key : &SigningKey) -> Transaction {
-        // 1) Compute the 32-byte message hash from TransactionData
+    /// 3) Convert to a [1-byte recId | 64-byte (r,s)] array.
+    pub fn sign(self, signing_key: &SigningKey) -> Transaction {
         let msg_bytes: [u8; TransactionHasher::SIZE] = self.hash().data;
 
+        let (signature, recid) = signing_key
+            .sign_prehash_recoverable(&msg_bytes)
+            .expect("ECDSA signing failed for TransactionData");
 
-        let (signature, recid) = signing_key.sign_prehash_recoverable(&msg_bytes).expect("Idk how did you got this");
-
-
-        // First byte is quired to define RecoveryId value for the signature
-        // Actually it takes just two bits
-
-        // Convert that to a 65-byte representation:
-        // - 1 byte for recovery ID
-        // - 64 bytes for (r, s)
+        // Assemble the 65-byte representation
         let mut signature_bytes = [0u8; 65];
-        signature_bytes[0] = recid.to_byte();  // recovery ID
-        signature_bytes[1..].copy_from_slice(&*signature.to_bytes()); // r, s
+        signature_bytes[0] = recid.to_byte();
+        signature_bytes[1..].copy_from_slice(&signature.to_bytes());
 
         Transaction {
             data: self,
-            signature: StryiSignature(Box::new(signature_bytes)),  // store the 65 bytes
+            signature: StryiSignature(Box::new(signature_bytes)),
         }
     }
 }
 
 impl Transaction {
-    
-    /// Verifies the transaction's signature using the provided `VerifyingKey`.
+    /// Verifies the transaction's single signature using the provided `VerifyingKey`.
     /// Returns `Ok(())` if the signature is valid, otherwise returns an error.
     pub fn verify_signature(&self, verifying_key: &VerifyingKey) -> Result<(), StryiCoreError> {
         // Recompute the message hash from transaction data
         let msg_bytes = self.data.hash().data;
-        
-        // Try extract signature value from compat signature bytes
-        // (verifying does not actually require key restoration) 
+
         let (_recovery_id, signature) = self.signature.extract_signature_parts()?;
 
-        
         // Use the verifying key to check the signature against the message hash
-        verifying_key.verify_prehash(&msg_bytes, &signature)
-            .map_err(|e| StryiCoreError::InvalidSignature {
+        verifying_key.verify_prehash(&msg_bytes, &signature).map_err(|e| {
+            StryiCoreError::InvalidSignature {
                 msg: format!("Signature verification failed: {e}"),
-            })
+            }
+        })
     }
 
     /// Recovers the public key from the **recoverable** signature stored in `self.signature`.
     ///
-    /// This is possible because we're storing the 65-byte format:
-    ///   [recovery ID (1 byte) | r, s (64 bytes)].
-    /// If the signature is invalid or the format is wrong, returns `StriyCoreError::InvalidSignature`
-    pub fn recover_public_key(&self, msg: Vec<u8>) -> Result<VerifyingKey, StryiCoreError> {
-        // Try extract values from signature bytes
+    /// If the signature is invalid or the format is wrong, returns `InvalidSignature`.
+    pub fn recover_public_key(&self) -> Result<VerifyingKey, StryiCoreError> {
+        let msg_bytes = self.data.hash().data;
         let (recovery_id, signature) = self.signature.extract_signature_parts()?;
 
-        // Try recover key, return error if cannot
-        let recovered_key = VerifyingKey::recover_from_prehash(
-            &msg,
-            &signature,
-            recovery_id
-        ).map_err(|e| StryiCoreError::InvalidSignature {
-            msg : format!("Cannot recover key from signature: {e:?}")
-        })?;
-        
-        
-        Ok(recovered_key)
-        
+        VerifyingKey::recover_from_prehash(&msg_bytes, &signature, recovery_id)
+            .map_err(|e| StryiCoreError::InvalidSignature {
+                msg: format!("Cannot recover key from signature: {e:?}"),
+            })
     }
 
-    /// Verifies that this transaction's recoverable signature recovers to real public key of this account.
-    /// Since AccountAddress is hashed public key we will check if recovered public key hash is identical with real AccountAddress.
+    /// Verifies that the recoverable signature matches a particular `AccountAddress`
+    /// by hashing the recovered public key and comparing.
     pub fn verify_transaction_author(&self, account_address: AccountAddress) -> bool {
-
-        let recovered_key = self.recover_public_key(self.data.hash().data.to_vec());
-        
-        // If we cant recover key consider returning false.
-        if recovered_key.is_err() {
-            return false;
+        match self.recover_public_key() {
+            Ok(recovered_key) => {
+                let recovered_address = AccountAddress::new(&recovered_key.to_sec1_bytes());
+                recovered_address == account_address
+            },
+            Err(_) => false,
         }
-        
-        let recovered_account_address = AccountAddress::new(&recovered_key.unwrap().to_sec1_bytes());
-
-
-        recovered_account_address == account_address
-
     }
 }
 
@@ -162,23 +130,26 @@ mod tests {
     use super::*;
     use k256::ecdsa::SigningKey;
     use k256::elliptic_curve::rand_core::OsRng;
+    use crate::address::AccountAddress; 
 
-    /// Helper function to create a dummy TransactionData with sample inputs and outputs.
-    /// Adjust this function as necessary to suit your actual `TransactionIn` and `TransactionOut` types.
+    /// Helper function to create a dummy TransactionData with sample inputs/outputs.
     fn create_dummy_transaction_data() -> TransactionData {
-        // Using empty vectors for inputs and outputs for simplicity.
         TransactionData {
             version: 1,
-            inputs: vec![TransactionIn {
-                previous_output: OutPoint { 
-                    txid: TransactionHash::new(&[20u8;32]),
-                    vout: 15 },
-                signature: StryiSignature(Box::new([1u8; 65])),
-                sequence: 2,
-            }],
-            outputs: vec![TransactionOut {
-                value: 55555,
-                recipient: AccountAddress::new(&[20u8;32]) }
+            inputs: vec![
+                TransactionIn {
+                    previous_output: OutPoint {
+                        txid: TransactionHash::new(&[20u8; 32]),
+                        vout: 15,
+                    },
+                    sequence: 2,
+                }
+            ],
+            outputs: vec![
+                TransactionOut {
+                    value: 55_555,
+                    recipient: AccountAddress::new(&[20u8; 32]),
+                }
             ],
         }
     }
@@ -200,12 +171,13 @@ mod tests {
         let is_verified = transaction.verify_transaction_author(account_address);
         assert!(is_verified, "The transaction should be verified successfully.");
     }
-    
+
     #[test]
     fn test_verify_transaction_author_wrong_key() {
         // Generate two different key pairs
         let signing_key_sender = SigningKey::random(&mut OsRng);
         let verify_key_sender = signing_key_sender.verifying_key();
+
         let signing_key_other = SigningKey::random(&mut OsRng);
         let verify_key_other = signing_key_other.verifying_key();
 
@@ -216,14 +188,17 @@ mod tests {
         let tx_data = create_dummy_transaction_data();
         let transaction = tx_data.sign(&signing_key_sender);
 
-        
-        // Verify with real author address
-        assert!(transaction.verify_transaction_author(account_address_sender), "Verification should be ok");
+        // Verify with real author address (sender)
+        assert!(
+            transaction.verify_transaction_author(account_address_sender),
+            "Verification with the correct address should be ok"
+        );
 
-
-        // Try verifying the transaction against a different account address (other)
-        assert!(!transaction.verify_transaction_author(account_address_other),
-                "Verification should fail when using a wrong account address.");
+        // Try verifying against a different address
+        assert!(
+            !transaction.verify_transaction_author(account_address_other),
+            "Verification should fail with a wrong account address"
+        );
     }
 
     #[test]
@@ -237,8 +212,9 @@ mod tests {
         let transaction = tx_data.sign(&signing_key);
 
         // Attempt to recover the public key from the signature
-        let recovered_key_result = transaction.recover_public_key(transaction.data.hash().data.to_vec());
-        assert!(recovered_key_result.is_ok(), "Public key recovery should succeed.");
+        // (no argument needed now)
+        let recovered_key_result = transaction.recover_public_key();
+        assert!(recovered_key_result.is_ok(), "Public key recovery should succeed");
 
         let recovered_key = recovered_key_result.unwrap();
 
@@ -249,14 +225,12 @@ mod tests {
             "Recovered public key should match the original verifying key."
         );
     }
-    
+
     #[test]
     fn test_verify_signature() {
-        // Generate a random signing key and its corresponding verifying key
+        // Generate a random signing key and corresponding verifying key
         let signing_key = SigningKey::random(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
-
-
 
         let another_signing_key = SigningKey::random(&mut OsRng);
         let another_verifying_key = another_signing_key.verifying_key();
@@ -265,12 +239,16 @@ mod tests {
         let tx_data = create_dummy_transaction_data();
         let transaction = tx_data.sign(&signing_key);
 
-        // Verify the signature using the verifying key
-        assert!(transaction.verify_signature(&verifying_key).is_ok(), "Signature should verify successfully.");
-        
-        // Check that .verify will throw en error if incorrect verifying key
-        assert!(transaction.verify_signature(&another_verifying_key).is_err(), "Signature should not be verified successfully.");
+        // Verify the signature using the matching verifying key
+        assert!(
+            transaction.verify_signature(&verifying_key).is_ok(),
+            "Signature should verify with the correct key"
+        );
 
+        // Should fail with a different key
+        assert!(
+            transaction.verify_signature(&another_verifying_key).is_err(),
+            "Signature should fail to verify with an incorrect key"
+        );
     }
-
 }

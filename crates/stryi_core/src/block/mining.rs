@@ -42,7 +42,7 @@ pub fn meets_difficulty(block_hash: &BlockHash, bits: u8) -> bool {
 /// - Returns `true` if a solution is found (and updates the block's nonce),
 ///   otherwise returns `false`.
 pub fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bool {
-    let bits = block.header.bits;
+    let bits = block.header.difficulty_bits;
 
     // We use `find_any` over a parallel iterator so that if ANY thread finds a valid nonce,
     // the search stops.
@@ -86,7 +86,6 @@ pub fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::transactions::StryiSignature;
     use k256::ecdsa::SigningKey;
     use k256::elliptic_curve::rand_core::OsRng;
     use rand::random;
@@ -111,7 +110,6 @@ mod tests {
                     txid: random_tx_hash,
                     vout: 7,
                 },
-                signature: StryiSignature(Box::new([0u8; 65])), // Will be filled in by sign()
                 sequence: 0,
             }],
             outputs: vec![TransactionOut {
@@ -130,8 +128,8 @@ mod tests {
                 BlockHash::empty(), // previous_block_hash
                 0,                  // height
                 4,                  // bits (only 4 leading zero bits)
-                1_700_000_000,     // timestamp
-                1                  // version
+                1_700_000_000,      // timestamp
+                1                   // version
             );
             // Make sure Merkle root is correct after adding the transaction
             b.update_merkle_root();
@@ -154,7 +152,7 @@ mod tests {
 
             let block_hash = BlockHash::new(&header_bytes);
             assert!(
-                meets_difficulty(&block_hash, block.header.bits),
+                meets_difficulty(&block_hash, block.header.difficulty_bits),
                 "The resulting block hash does not meet difficulty"
             );
 
