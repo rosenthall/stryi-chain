@@ -14,17 +14,17 @@ mod hash;
 mod error;
 
 /// Implementation Block primitive of the blockchain, includes high-level APIs and parallel CPU mining module.
-mod block;
+pub mod block;
 
 /// Definition of AccountAddress type and some batteries for constructing it from public key.
-mod address;
+pub mod address;
 
 /// Simple implementation of the (Merkle Tree)[https://en.wikipedia.org/wiki/Merkle_tree]
 /// Provides simple api for constructing trees, generating and checking proofs
 mod merkletree;
 
 /// Definition of Transaction, TransactionHash, API for signing and validating, module for checking and performing UTXOs logic.
-mod transactions;
+pub mod transactions;
 
 /// Definitions of traits that we use as abstract layer for storing data. Exports 'UtxoStorage' and BlockStorage so far
 mod storage;
