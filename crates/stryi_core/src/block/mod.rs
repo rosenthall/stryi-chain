@@ -1,10 +1,12 @@
 mod block_hash;
 mod mining;
 
+use std::collections::HashMap;
 pub use block_hash::{BlockHash};
 pub use mining::meets_difficulty;
 
 use serde::{Deserialize, Serialize};
+use crate::address::AccountAddress;
 use crate::merkletree::{MerkleHash, MerkleTree};
 use crate::transactions::{StryiSignature, Transaction, TransactionData, TransactionKind, TransactionOut};
 
@@ -37,8 +39,11 @@ pub struct BlockHeader {
     /// Unix timestamp
     pub timestamp: u64,
 
-    /// Nonce (in Bitcoin it's 32 bits)
+    /// Nonce (in Bitcoin it's 32 bits so it's enough much for StryiChain)
     pub nonce: u32,
+    
+    /// Boolean value proves that block is the genesis in the chain 
+    pub is_genesis : bool,
 }
 
 
@@ -76,6 +81,67 @@ impl Block {
 
         Self { header, data }
     }
+
+
+    /// Creates a new genesis block with a given balances in HashMap in format
+    /// @AccountAddress => 10000
+    ///
+    /// Function converts TxOuts from this hashmap `balances`
+    /// 
+    /// This function calculates the Merkle root from the provided transactions.
+    pub fn new_genesis(version: u16, difficulty_bits : u8, wanted_balances: HashMap<AccountAddress, u64>) -> Self {
+        
+        // convert balances to TxOuts
+        let mut tx_outs: Vec<TransactionOut> = vec!();
+
+        for (account_address, balance) in wanted_balances {
+            tx_outs.push(TransactionOut {
+                recipient: account_address,
+                value: balance,
+            })
+        }
+        
+        // Constructs single transaction with all required UTXOs
+        let tx_data = TransactionData {
+            version,
+            kind: TransactionKind::Genesis,
+            inputs: vec![], // No inputs required
+            outputs: tx_outs,
+        };
+        let transaction = Transaction {
+            data: tx_data,
+            signature: StryiSignature(Box::new([0u8; 65])) // Use an empty bytes as a signature
+        };
+        
+        
+        // Compute the Merkle root from the transactions
+        let merkle_hash = Self::compute_merkle_root(&vec![transaction.clone()]);
+        
+        let empty_block_hash = BlockHash::empty();
+        let header = BlockHeader { 
+            
+            merkle_root_hash: merkle_hash,
+
+            // Use provided values for chain version and difficulty bits
+            version,
+            difficulty_bits,
+
+            // Use empty values for previous_block_hash, nonce, height and timestamp
+            previous_block_hash : empty_block_hash,
+            nonce: 0,
+            height : 0,
+            timestamp: 0,
+            
+            is_genesis: true,
+        };
+
+        let data = BlockData {
+            transactions: vec![transaction],
+        };
+        
+        Self { header, data }
+    }
+
 
     /// Recomputes the Merkle root based on current block data and updates the block header.
     /// Usually used if transactions were modified or appended after block creation.
