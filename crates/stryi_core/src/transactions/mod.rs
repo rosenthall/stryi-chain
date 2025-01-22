@@ -14,17 +14,40 @@ use crate::error::StryiCoreError;
 use crate::hash::HashKind;
 pub use crate::transactions::signature::StryiSignature;
 pub use crate::transactions::hash::{TransactionHasher, TransactionHash};
+use crate::transactions::TransactionKind::{Coinbase, Genesis};
 pub use crate::transactions::utxo::{
     TransactionIn, TransactionOut, OutPoint, UTXO,
 };
 pub use crate::transactions::utxo_processor::{apply_transaction, apply_block};
 
+
+/// `TransactionKind` enum represents the exact kind of transaction.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[repr(u8)]
+pub enum TransactionKind {
+    /// Coinbase is a type of transaction that is used to reward the miner of the last block.
+    /// Coinbase transactions are always the very first in each block except for `Genesis`.
+    /// This kind also forbids any TxIns in the transaction and must contain exactly one TxOut.
+    Coinbase,
+
+    /// Genesis transaction is a unique transaction that happens only in the Genesis Block.
+    /// It is used to define initial account balances.
+    Genesis,
+
+    /// Payment transaction represents a standard token transfer between parties.
+    Payment,
+}
+
+
 /// `TransactionData` holds the *unsigned* transaction fields: version, inputs, outputs.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TransactionData {
     /// Transaction version (arbitrary field for potential future upgrades)
-    pub version: u32,
-
+    pub version: u16,
+    
+    /// Transaction kind represents HOW the transaction should be processed.
+    pub kind : TransactionKind,
+    
     /// Transaction inputs (what UTXOs we're spending)
     pub inputs: Vec<TransactionIn>,
 
@@ -82,13 +105,22 @@ impl TransactionData {
 }
 
 impl Transaction {
-    /// Verifies the transaction's single signature using the provided `VerifyingKey`.
+    /// Verifies the transaction's signature using the provided `VerifyingKey`.
+    /// Returns `Ok(())` if the transaction has [`Genesis`] or [`Coinbase`] kind, because these two do not require such checking
     /// Returns `Ok(())` if the signature is valid, otherwise returns an error.
     pub fn verify_signature(&self, verifying_key: &VerifyingKey) -> Result<(), StryiCoreError> {
+        
+        // If transaction kind is not payment - early return Ok(())
+        if self.data.kind == Genesis || self.data.kind == Coinbase {
+            return Ok(());
+        }
+
+
         // Recompute the message hash from transaction data
         let msg_bytes = self.data.hash().data;
 
         let (_recovery_id, signature) = self.signature.extract_signature_parts()?;
+
 
         // Use the verifying key to check the signature against the message hash
         verifying_key.verify_prehash(&msg_bytes, &signature).map_err(|e| {
@@ -97,7 +129,7 @@ impl Transaction {
             }
         })
     }
-
+    
     /// Recovers the public key from the **recoverable** signature stored in `self.signature`.
     ///
     /// If the signature is invalid or the format is wrong, returns `InvalidSignature`.
@@ -143,6 +175,7 @@ mod tests {
     fn create_dummy_transaction_data() -> TransactionData {
         TransactionData {
             version: 1,
+            kind: TransactionKind::Payment,
             inputs: vec![
                 TransactionIn {
                     previous_output: OutPoint {

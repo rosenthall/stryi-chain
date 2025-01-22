@@ -92,7 +92,7 @@ mod tests {
     use crate::address::AccountAddress;
     use crate::block::{Block, BlockHash};
     use crate::block::mining::{meets_difficulty, mine_block_in_parallel};
-    use crate::transactions::{OutPoint, TransactionData, TransactionHash, TransactionIn, TransactionOut};
+    use crate::transactions::{OutPoint, TransactionData, TransactionHash, TransactionIn, TransactionKind, TransactionOut};
 
     #[test]
     fn test_parallel_mining_small_bits() {
@@ -105,6 +105,7 @@ mod tests {
         // 2) Build a dummy TransactionData
         let tx_data = TransactionData {
             version: 1,
+            kind: TransactionKind::Payment,
             inputs: vec![TransactionIn {
                 previous_output: OutPoint {
                     txid: random_tx_hash,

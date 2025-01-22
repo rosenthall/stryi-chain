@@ -2,6 +2,8 @@
 //!
 //! Integration tests for transaction logic using K256 ECDSA.
 //! This file tests various transaction scenarios, including valid flows and negative cases.
+//! Thing does not actually use our common implementation of traits, methods, etc.
+//! but simplified ones to check non-related logic and a PoC
 
 use std::collections::HashMap;
 use k256::{
@@ -13,6 +15,7 @@ use crate::transactions::{
     Transaction, TransactionData, TransactionIn, TransactionOut, OutPoint, UTXO, TransactionHash,
 };
 use crate::address::AccountAddress;
+use crate::transactions::TransactionKind::Payment;
 
 /// Simple, local UTXO set for testing purposes.
 /// Maps `(TransactionHash, vout)` to `UTXO`.
@@ -147,6 +150,7 @@ fn test_valid_transactions_flow() {
     // Create a transaction: Alice sends 600 coins to Bob, 400 coins back to herself.
     let tx_data_alice_to_bob = TransactionData {
         version: 1,
+        kind : Payment,
         inputs: vec![TransactionIn {
             previous_output: OutPoint {
                 txid: genesis_hash.clone(),
@@ -182,6 +186,7 @@ fn test_valid_transactions_flow() {
     let bob_utxo_txid = tx_alice_to_bob.data.hash();
     let tx_data_bob_to_alice = TransactionData {
         version: 1,
+        kind : Payment,
         inputs: vec![TransactionIn {
             previous_output: OutPoint {
                 txid: bob_utxo_txid.clone(),
@@ -234,6 +239,7 @@ fn test_negative_scenarios() {
     let fake_txid = TransactionHash::try_from([9u8; 32].as_slice()).unwrap();
     let bad_tx_data = TransactionData {
         version: 1,
+        kind : Payment,
         inputs: vec![TransactionIn {
             previous_output: OutPoint {
                 txid: fake_txid.clone(),
@@ -268,6 +274,7 @@ fn test_negative_scenarios() {
 
     let overspend_data = TransactionData {
         version: 1,
+        kind : Payment,
         inputs: vec![TransactionIn {
             previous_output: OutPoint {
                 txid: good_txid.clone(),
@@ -293,6 +300,7 @@ fn test_negative_scenarios() {
     // 3) Tampering after signing: modify output after the transaction is signed.
     let valid_data = TransactionData {
         version: 1,
+        kind : Payment,
         inputs: vec![TransactionIn {
             previous_output: OutPoint {
                 txid: good_txid.clone(),

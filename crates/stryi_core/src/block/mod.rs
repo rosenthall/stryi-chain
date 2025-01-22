@@ -6,7 +6,7 @@ pub use mining::meets_difficulty;
 
 use serde::{Deserialize, Serialize};
 use crate::merkletree::{MerkleHash, MerkleTree};
-use crate::transactions::Transaction;
+use crate::transactions::{StryiSignature, Transaction, TransactionData, TransactionKind, TransactionOut};
 
 /// BlockData holds a list of transactions and any extra data if needed.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -69,6 +69,7 @@ impl Block {
             difficulty_bits: bits,
             timestamp,
             nonce: 0,
+            is_genesis: false,
         };
 
         let data = BlockData { transactions };
@@ -138,12 +139,13 @@ mod tests {
     use k256::ecdsa::SigningKey;
     use k256::elliptic_curve::rand_core::OsRng;
     use super::*;
-    use crate::transactions::TransactionData;
+    use crate::transactions::{TransactionData, TransactionKind};
 
     #[test]
     fn test_create_block_and_compute_hash() {
         // Example: create a dummy transaction
         let tx_data = TransactionData {
+            kind: TransactionKind::Payment,
             version: 1,
             inputs: vec![],
             outputs: vec![],
@@ -166,6 +168,7 @@ mod tests {
         // Add another transaction and update Merkle root
         let tx_data2 = TransactionData {
             version: 1,
+            kind: TransactionKind::Payment,
             inputs: vec![],
             outputs: vec![],
         };
