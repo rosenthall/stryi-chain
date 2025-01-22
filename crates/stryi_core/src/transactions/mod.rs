@@ -111,16 +111,23 @@ impl Transaction {
             })
     }
 
-    /// Verifies that the recoverable signature matches a particular `AccountAddress`
-    /// by hashing the recovered public key and comparing.
+
+    /// Verifies that this transaction's recoverable signature recovers to real public key of this account.
+    /// Since AccountAddress is hashed public key we will check if recovered public key hash is identical with real AccountAddress.
     pub fn verify_transaction_author(&self, account_address: AccountAddress) -> bool {
-        match self.recover_public_key() {
-            Ok(recovered_key) => {
-                let recovered_address = AccountAddress::new(&recovered_key.to_sec1_bytes());
-                recovered_address == account_address
-            },
-            Err(_) => false,
+
+        let recovered_key = self.recover_public_key();
+
+        // If we cant recover key consider returning false.
+        if recovered_key.is_err() {
+            return false;
         }
+
+        let recovered_account_address = AccountAddress::new(&recovered_key.unwrap().to_sec1_bytes());
+
+
+        recovered_account_address == account_address
+
     }
 }
 

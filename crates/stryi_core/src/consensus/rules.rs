@@ -35,12 +35,12 @@ impl ConsensusRules {
     }
 
     /// Returns the current difficulty level as an 8-bit unsigned integer.
-    fn current_difficulty(&self) -> u8 {
+    pub fn current_difficulty(&self) -> u8 {
         self.current_difficulty
     }
     
     /// Returns the number of blocks between difficulty adjustments.
-    fn difficulty_adjustment_interval_blocks(&self) -> usize {
+    pub fn difficulty_adjustment_interval_blocks(&self) -> usize {
         self.difficulty_adjustment_interval_blocks
     }
 

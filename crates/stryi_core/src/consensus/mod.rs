@@ -5,14 +5,18 @@
 mod rules;
 mod engine;
 
+use std::error::Error;
+use std::fmt::Debug;
 use crate::block::Block;
 
 pub use rules::ConsensusRules;
+use crate::storage::UtxoStorage;
 
 /// The `ConsensusEngine` trait defines the interface for consensus mechanisms.
 /// It provides methods for validating blocks, adjusting difficulty, and selecting the best chain among forks.
 pub trait ConsensusEngine {
-    type Error;
+    type Error: Debug + Send + Error + Clone;
+    type UtxoDatabase: UtxoStorage + Send + Sync;
 
     /// Validates a given block according to consensus rules.
     ///
@@ -22,7 +26,7 @@ pub trait ConsensusEngine {
     /// # Returns
     /// - `Ok(())` if the block is valid according to consensus rules.
     /// - `Err(Self::Error)` if the block fails validation.
-    async fn validate_block(&self, block: &Block) -> Result<(), Self::Error>;
+    async fn validate_block(&self, block: &Block, utxo_storage: &mut Self::UtxoDatabase) -> Result<(), Self::Error>;
 
     /// Adjusts the difficulty based on the current chain state.
     ///
