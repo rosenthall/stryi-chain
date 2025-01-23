@@ -11,6 +11,7 @@ use crate::block::Block;
 use crate::storage::UtxoStorage;
 
 pub use rules::ConsensusRules;
+pub use engine::StryiConsensusEngine;
 
 /// The `ConsensusEngine` trait defines the interface for consensus mechanisms.
 /// It provides methods for validating blocks, adjusting difficulty, and selecting the best chain among forks.
