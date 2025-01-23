@@ -11,7 +11,6 @@ use crate::block::Block;
 use crate::storage::UtxoStorage;
 
 pub use rules::ConsensusRules;
-pub use engine::StryiConsensusEngine;
 
 /// The `ConsensusEngine` trait defines the interface for consensus mechanisms.
 /// It provides methods for validating blocks, adjusting difficulty, and selecting the best chain among forks.
@@ -23,12 +22,27 @@ pub trait ConsensusEngine {
     ///
     /// # Parameters
     /// - `block`: Reference to the block to be validated.
+    /// - `utxo_storage`: Some UtxoDatabase implementation that allows check current chain's state.
     ///
     /// # Returns
     /// - `Ok(())` if the block is valid according to consensus rules.
     /// - `Err(Self::Error)` if the block fails validation.
     async fn validate_block(&self, block: &Block, utxo_storage: &mut Self::UtxoDatabase) -> Result<(), Self::Error>;
 
+
+
+    /// Validates and applies a block to the blockchain atomically.
+    ///
+    /// This method first validates the block. If validation succeeds, it applies the block to the UTXO set.
+    /// The entire operation is atomic; if application fails, no changes are made to the UTXO set.
+    /// 
+    /// # Parameters
+    /// - `block` Reference to the block to be validated.
+    /// - `utxo_storage`: Some UtxoDatabase implementation that allows check current chain's state.
+    async fn validate_and_apply_block(&self, block: &Block, utxo_storage: &mut Self::UtxoDatabase) -> Result<(), Self::Error>;
+    
+    
+    
     /// Adjusts the difficulty based on the current chain state.
     ///
     /// # Parameters
