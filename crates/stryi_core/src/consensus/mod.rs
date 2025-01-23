@@ -8,9 +8,10 @@ mod engine;
 use std::error::Error;
 use std::fmt::Debug;
 use crate::block::Block;
+use crate::storage::UtxoStorage;
 
 pub use rules::ConsensusRules;
-use crate::storage::UtxoStorage;
+pub use engine::StryiConsensusEngine;
 
 /// The `ConsensusEngine` trait defines the interface for consensus mechanisms.
 /// It provides methods for validating blocks, adjusting difficulty, and selecting the best chain among forks.
