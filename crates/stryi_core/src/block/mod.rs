@@ -1,9 +1,11 @@
 mod block_hash;
 mod mining;
+mod validator;
 
 use std::collections::HashMap;
 pub use block_hash::{BlockHash};
 pub use mining::meets_difficulty;
+pub use validator::BlockValidator;
 
 use serde::{Deserialize, Serialize};
 use crate::address::AccountAddress;
@@ -57,6 +59,7 @@ pub struct Block {
     /// The block data (transactions)
     pub data: BlockData,
 }
+
 impl Block {
     /// Creates a new block with a given list of transactions, previous block hash, height, etc.
     /// This function calculates the Merkle root from the provided transactions.

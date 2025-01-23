@@ -1,20 +1,32 @@
 use crate::{
-    block::{meets_difficulty, Block},
+    block::Block,
     consensus::{ConsensusEngine, ConsensusRules},
     error::StryiCoreError,
     storage::in_memory_utxo::InMemoryUtxoStorage,
-    storage::UtxoStorage,
     address::AccountAddress,
     transactions::TransactionKind,
 };
+use crate::block::BlockValidator;
+use crate::transactions::UtxoProcessor;
 
 pub struct StryiConsensusEngine {
-    pub rules: ConsensusRules,
+
+    /// Consensus rules object defines current of consensus algorithm
+    pub(crate) rules: ConsensusRules,
+
+    pub(crate) block_validator: BlockValidator,
+    pub(crate) utxo_processor: UtxoProcessor,
 }
 
 impl StryiConsensusEngine {
+
+    /// Creates a new ConsensusEngine with the specified objects
     pub fn new(rules: ConsensusRules) -> Self {
-        Self { rules }
+        Self {
+            rules : rules.clone(),
+            block_validator: BlockValidator::new(rules.current_difficulty),
+            utxo_processor: UtxoProcessor::new(),
+        }
     }
 
     /// Computes total chain work by summing 2^(bits).
@@ -33,151 +45,7 @@ impl ConsensusEngine for StryiConsensusEngine {
     type Error = StryiCoreError;
     type UtxoDatabase = InMemoryUtxoStorage;
 
-    /// Single-path validation that checks PoW, merkle root, plus handles all TransactionKinds
-    async fn validate_block(
-        &self,
-        block: &Block,
-        utxo_db: &mut Self::UtxoDatabase,
-    ) -> Result<(), Self::Error> {
-        // 1) Check difficulty bits vs current difficulty
-        if block.header.difficulty_bits != self.rules.current_difficulty {
-            return Err(StryiCoreError::ConsensusValidationFailed {
-                details: format!(
-                    "Block difficulty {} != current difficulty {}",
-                    block.header.difficulty_bits,
-                    self.rules.current_difficulty
-                ),
-            });
-        }
-
-        // 2) PoW leading zeros
-        let block_hash = block.block_hash();
-        if !meets_difficulty(&block_hash, block.header.difficulty_bits) {
-            return Err(StryiCoreError::ConsensusValidationFailed {
-                details: "Block does not meet required difficulty".to_string(),
-            });
-        }
-
-        
-        // 3) Check if very first transaction in the block is coinbase if not genesis block.
-        if !block.header.is_genesis && !is_first_transaction_coinbase(&block) { 
-            return Err(StryiCoreError::ConsensusValidationFailed {
-                details: "First transaction in the block must be coinbase".to_string() 
-            })
-        }
-        
-        // 4) Merkle root validation
-        if !block.validate_merkle_root()  {
-            return Err(StryiCoreError::ConsensusValidationFailed {
-                details: "Merkle root mismatch".to_string(),
-            });
-        }
-        
-
-        // 5) Single pass for each transaction
-        for (tx_index, tx) in block.data.transactions.iter().enumerate() {
-            // (A) Basic checks for transaction kind
-            match tx.data.kind {
-                TransactionKind::Genesis => {
-                    // only valid if block.header.height == 0
-                    if block.header.height != 0 {
-                        return Err(StryiCoreError::ConsensusValidationFailed {
-                            details: "Genesis TX found in non-genesis block".to_string(),
-                        });
-                    }
-                    
-                    
-                    // should have no inputs
-                    if !tx.data.inputs.is_empty() {
-                        return Err(StryiCoreError::ConsensusValidationFailed {
-                            details: "Genesis TX must not have any real inputs".to_string(),
-                        });
-                    }
-                }
-                TransactionKind::Coinbase => {
-                    // must be first TX if height>0
-                    if block.header.height > 0 && tx_index != 0 {
-                        return Err(StryiCoreError::ConsensusValidationFailed {
-                            details: format!(
-                                "Coinbase TX must be index=0 in normal block, but found index={}",
-                                tx_index
-                            ),
-                        });
-                    }
-                    
-                    // must be no inputs
-                    if !tx.data.inputs.is_empty() {
-                        return Err(StryiCoreError::ConsensusValidationFailed {
-                            details: "Coinbase TX shouldn't have real inputs".to_string(),
-                        });
-                    }
-                    
-                    //  Requires exactly 1 output to reward last block's miner
-                    if tx.data.outputs.len() != 1 {
-                        return Err(StryiCoreError::ConsensusValidationFailed {
-                            details: "Coinbase must have exactly 1 output".to_string(),
-                        });
-                    }
-                }
-                // No additional checks for regular Payment tx are required
-                _ => {}
-            }
-
-            // (B) If it's Payment, do signature checks. If it's Genesis or Coinbase, skip.
-            let skip_signature = matches!(tx.data.kind, TransactionKind::Genesis | TransactionKind::Coinbase);
-            if !skip_signature {
-                // 1) recover public key
-                let author_key = tx.recover_public_key().map_err(|_| {
-                    StryiCoreError::ConsensusValidationFailed {
-                        details: "Cannot restore public key from TX signature".into(),
-                    }
-                })?;
-
-                // 2) verify signature
-                tx.verify_signature(&author_key).map_err(|err| {
-                    StryiCoreError::ConsensusValidationFailed {
-                        details: format!("Transaction signature invalid: {err}"),
-                    }
-                })?;
-
-                // 3) checking input: UTXO ownership, sum of inputs >= sum of outputs
-                let tx_author_address = AccountAddress::from_public_key(&author_key);
-
-                let mut input_sum: u64 = 0;
-                for input in &tx.data.inputs {
-                    let utxo = utxo_db
-                        .get_utxo(&input.previous_output)
-                        .await
-                        .map_err(|_| StryiCoreError::TxMissingUtxo {
-                            txid: input.previous_output.txid,
-                            vout: input.previous_output.vout,
-                        })?;
-
-                    if utxo.owner != tx_author_address {
-                        return Err(StryiCoreError::TxWrongOwner {
-                            expected: utxo.owner,
-                            actual: tx_author_address,
-                        });
-                    }
-                    input_sum = input_sum.checked_add(utxo.value).ok_or_else(|| {
-                        StryiCoreError::Other {
-                            msg: "Overflow summing TX inputs".into(),
-                        }
-                    })?;
-                }
-
-                let output_sum: u64 = tx.data.outputs.iter().map(|o| o.value).sum();
-                if input_sum < output_sum {
-                    return Err(StryiCoreError::TxInsufficientInputValue {
-                        input_sum,
-                        output_sum,
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-
+    
     /// Adjusts difficulty by incrementing once every N blocks (example).
     async fn adjust_difficulty(
         &mut self,
@@ -214,17 +82,42 @@ impl ConsensusEngine for StryiConsensusEngine {
                 details: "No chains provided".to_string(),
             })
     }
-}
 
 
-/// Helper function to check if first transaction of block is coinbase
-fn is_first_transaction_coinbase(block: &Block) -> bool {
-    block
-        .data
-        .transactions
-        .first()
-        .is_some_and(|tx| tx.data.kind == TransactionKind::Coinbase)
+    /// Validates and applies a block to the blockchain atomically.
+    ///
+    /// This method first validates the block. If validation succeeds,
+    /// it applies the block to the UTXO set. The entire operation is atomic;
+    /// if application fails, no changes are made to the UTXO set.
+    async fn validate_and_apply_block(
+        &self,
+        block: &Block,
+        utxo_storage: &mut Self::UtxoDatabase,
+    ) -> Result<(), Self::Error> {
+        // Step 1: Validate the block using BlockValidator
+        self.validate_block(block, utxo_storage).await?;
+
+        // Step 2: Apply the block using UtxoProcessor
+        self.utxo_processor
+            .apply_block(block, utxo_storage)
+            .await
+            .map_err(|e| StryiCoreError::ConsensusBlockApplyingFailed {
+                details: format!("Failed to apply block: {}", e),
+            })
+    }
+    
+    
+    /// Validates a given block according to consensus rules and sanity of transactions
+    async fn validate_block(
+        &self,
+        block: &Block,
+        utxo_storage: &mut Self::UtxoDatabase,
+    ) -> Result<(), Self::Error> {
+        self.block_validator.validate_block(block, utxo_storage).await
+    }
+
 }
+
 
 
 #[cfg(test)]

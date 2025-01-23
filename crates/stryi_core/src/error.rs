@@ -54,6 +54,12 @@ pub enum StryiCoreError {
         details: String,
     },
 
+    #[error("Failed to apply valid block to current state: {details}")]
+    ConsensusBlockApplyingFailed {
+        details: String,
+    },
+
+
     #[error("Difficulty adjustment failed: {details}")]
     ConsensusDifficultyAdjustmentFailed {
         details: String,

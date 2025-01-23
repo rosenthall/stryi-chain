@@ -1,56 +1,110 @@
-use crate::error::StryiCoreError;
 use crate::storage::UtxoStorage;
-use crate::transactions::{Transaction, UTXO, OutPoint};
+use crate::transactions::{Transaction, TransactionKind, OutPoint, UTXO};
 
-/// Applies a single transaction to the UTXO set:
-/// - Removes inputs from the UTXO set (they are spent),
-/// - Creates new UTXOs for the outputs.
-pub async fn apply_transaction<S: UtxoStorage>(
-    tx: &Transaction,
-    utxo_storage: &mut S,
-) -> Result<(), StryiCoreError> {
-    let txid = tx.data.hash();
+/// UtxoProcessor is responsible for applying and reverting blocks to the UTXO set.
+pub struct UtxoProcessor;
 
-    // 1) Spend each input UTXO
-    for input in &tx.data.inputs {
-        utxo_storage
-            .remove_utxo(&input.previous_output)
-            .await
-            .map_err(|_| {
-                StryiCoreError::TxMissingUtxo {
-                    txid: input.previous_output.txid,
-                    vout: input.previous_output.vout,
+impl UtxoProcessor {
+    /// Creates a new UtxoProcessor instance.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Applies a validated block to the UTXO storage.
+    ///
+    /// This involves processing each transaction in the block:
+    /// - Removing consumed UTXOs.
+    /// - Adding new UTXOs created by the transaction.
+    ///
+    /// # Parameters
+    ///
+    /// - `block`: Reference to the block to be applied.
+    /// - `utxo_storage`: Mutable reference to the UTXO storage.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` if the block is successfully applied.
+    /// - `Err(StryiCoreError)` if an error occurs during processing.
+    pub async fn apply_block<S: UtxoStorage>(
+        &self,
+        block: &crate::block::Block,
+        utxo_storage: &mut S,
+    ) -> Result<(), S::StorageError> {
+        for tx in &block.data.transactions {
+            match tx.data.kind {
+                TransactionKind::Genesis => {
+                    // Genesis transactions are handled during block creation.
+                    // No UTXOs to consume; simply add outputs.
+                    self.add_transaction_outputs(tx, utxo_storage).await?;
                 }
-            })?;
-    }
-
-    // 2) Create new UTXOs from the outputs
-    for (index, output) in tx.data.outputs.iter().enumerate() {
-        let outpoint = OutPoint { txid, vout: index as u32 };
-        let new_utxo = UTXO {
-            txid,
-            vout: index as u32,
-            value: output.value,
-            owner: output.recipient,
-        };
-
-        utxo_storage.put_utxo(&outpoint, new_utxo).await.map_err(|err| {
-            StryiCoreError::Other {
-                msg: format!("Failed to put UTXO: {err:?}"),
+                TransactionKind::Coinbase => {
+                    // Coinbase transactions do not consume UTXOs; only add outputs.
+                    self.add_transaction_outputs(tx, utxo_storage).await?;
+                }
+                TransactionKind::Payment => {
+                    // Payment transactions consume UTXOs and add new ones.
+                    self.process_payment_transaction(tx, utxo_storage).await?;
+                }
             }
-        })?;
+        }
+        Ok(())
     }
 
-    Ok(())
-}
-
-/// Applies all transactions in a block to the UTXO set, in order.
-pub async fn apply_block<S: UtxoStorage>(
-    block: &crate::block::Block,
-    utxo_storage: &mut S,
-) -> Result<(), StryiCoreError> {
-    for tx in &block.data.transactions {
-        apply_transaction(tx, utxo_storage).await?;
+    /// Adds the outputs of a transaction to the UTXO storage.
+    async fn add_transaction_outputs<S: UtxoStorage>(
+        &self,
+        tx: &Transaction,
+        utxo_storage: &mut S,
+    ) -> Result<(), S::StorageError> {
+        
+        // Mapping outs to in Vec<(OutPoint, UTXO)> object
+        let utxos: Vec<(OutPoint, UTXO)> = tx.data
+            .outputs
+            .iter()
+            .enumerate()
+            .map(|(vout, output)| {
+                
+                let out_point = OutPoint {
+                    txid: tx.data.hash(),
+                    vout: vout as u32, // safe cast
+                };
+                
+                let utxo = UTXO {
+                    txid: out_point.txid.clone(),
+                    vout: out_point.vout,
+                    value: output.value,
+                    owner: output.recipient.clone(),
+                };
+                
+                (out_point, utxo) 
+            }).collect();
+        
+        
+        // Call batch_put_utxos
+        utxo_storage.batch_put_utxos(utxos).await
     }
-    Ok(())
+
+    /// Processes a Payment transaction by consuming inputs and adding outputs.
+    async fn process_payment_transaction<S: UtxoStorage>(
+        &self,
+        tx: &Transaction,
+        utxo_storage: &mut S,
+    ) -> Result<(), S::StorageError> {
+        // Remove consumed UTXOs via batch
+        
+        
+        // Convert TransactionIn's into Vec<OutPoint>
+        let txins_out_points = tx.data.inputs
+            .iter()
+            .map(|txin| txin.previous_output.clone())
+            .collect();
+        
+        
+        // call batch_remove_utxos
+        utxo_storage.batch_remove_utxos(txins_out_points).await?;
+        
+        
+        // Add new UTXOs from transaction outputs
+        self.add_transaction_outputs(tx, utxo_storage).await
+    }
 }

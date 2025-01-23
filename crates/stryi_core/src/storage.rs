@@ -6,7 +6,7 @@ use crate::transactions::{OutPoint, UTXO};
 
 /// Trait representing storage backend for UTXOs.
 pub trait UtxoStorage: Send + Sync {
-     type StorageError: Debug + Error + Clone + Send;
+    type StorageError: Debug + Error + Clone + Send;
     
     /// Gets all the UTXOs for the provided AccountAddress.
     /// Helpful for calculating account balance.

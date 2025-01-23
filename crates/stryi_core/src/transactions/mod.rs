@@ -18,8 +18,7 @@ use crate::transactions::TransactionKind::{Coinbase, Genesis};
 pub use crate::transactions::utxo::{
     TransactionIn, TransactionOut, OutPoint, UTXO,
 };
-pub use crate::transactions::utxo_processor::{apply_transaction, apply_block};
-
+pub use crate::transactions::utxo_processor::UtxoProcessor;
 
 /// `TransactionKind` enum represents the exact kind of transaction.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]

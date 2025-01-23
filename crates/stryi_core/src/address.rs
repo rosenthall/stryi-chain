@@ -3,7 +3,7 @@ use blake3;
 use k256::ecdsa::VerifyingKey;
 
 /// Specific hash kind for account addresses (20 bytes).
-#[derive(Default, PartialEq, Debug, Clone, Copy)]
+#[derive(Default, PartialEq, Debug, Clone, Copy, Eq, Hash)]
 pub struct AddressHasher;
 
 impl HashKind for AddressHasher {
@@ -84,7 +84,6 @@ mod tests {
                 "Round-trip from string to address mismatch"
             );
 
-            // Optionally, print the address
             println!("Account Address {}: {}", i + 1, address_string);
         }
     }
