@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::Debug;
 use crate::address::AccountAddress;
@@ -6,7 +7,7 @@ use crate::transactions::{OutPoint, UTXO};
 
 /// Trait representing storage backend for UTXOs.
 pub trait UtxoStorage: Send + Sync {
-    type StorageError: Debug + Error + Clone + Send;
+    type StorageError: Debug + Error + Send;
     
     /// Gets all the UTXOs for the provided AccountAddress.
     /// Helpful for calculating account balance.
@@ -18,6 +19,18 @@ pub trait UtxoStorage: Send + Sync {
     async fn get_utxo(&self, outpoint: &OutPoint)
                       -> Result<UTXO, Self::StorageError>;
 
+
+    /// Retrieves multiple UTXOs based on a set of outpoints.
+    /// Returns a HashMap where each key is an OutPoint and the value is the corresponding UTXO.
+    /// If any outpoint is not found, returns an error.
+    async fn get_utxos(
+        &self,
+        outpoints: &HashSet<OutPoint>
+    ) -> Result<HashMap<OutPoint, UTXO>, Self::StorageError>;
+    
+    
+    
+    
     /// Inserts or updates a UTXO in storage.
     async fn put_utxo(&mut self, outpoint: &OutPoint, utxo: UTXO)
                       -> Result<(), Self::StorageError>;
@@ -44,7 +57,7 @@ pub trait UtxoStorage: Send + Sync {
 
 /// Trait representing storage backend for Blocks.
 pub trait BlockStorage: Send + Sync {
-    type StorageError: Debug + Error + Clone + Send;
+    type StorageError: Debug + Error + Send;
 
     /// Retrieves a block by its hash.
     async fn get_block_by_hash(&self, hash: BlockHash) -> Result<Block, Self::StorageError>;
@@ -76,7 +89,7 @@ pub trait BlockStorage: Send + Sync {
 /// Created to simplify some steps in development. 
 /// The implementation should not be used in the real node, but during development and for testing other functionality
 pub (crate) mod in_memory_utxo {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::fmt::{Display, Formatter, Result as FmtResult};
     use std::error::Error;
 
@@ -155,6 +168,25 @@ pub (crate) mod in_memory_utxo {
             }
         }
 
+        async fn get_utxos(
+            &self,
+            outpoints: &HashSet<OutPoint>
+        ) -> Result<HashMap<OutPoint, UTXO>, Self::StorageError> {
+            let read_guard = self.inner.read().await;
+            let mut result = HashMap::new();
+            for op in outpoints {
+                match read_guard.get(op) {
+                    Some(utxo) => {
+                        result.insert(op.clone(), utxo.clone());
+                    }
+                    None => {
+                        return Err(InMemoryStorageError::NotFound(op.clone()));
+                    }
+                }
+            }
+            Ok(result)
+        }
+
         async fn put_utxo(
             &mut self,
             outpoint: &OutPoint,
@@ -209,6 +241,66 @@ pub (crate) mod in_memory_utxo {
         use crate::transactions::{OutPoint, UTXO, TransactionHash};
         use crate::address::AccountAddress;
 
+
+        #[tokio::test]
+        async fn test_get_utxos() {
+            let mut storage = InMemoryUtxoStorage::new();
+
+            let outpoint1 = OutPoint {
+                txid: TransactionHash::new(&[2u8; 32]),
+                vout: 1,
+            };
+            let utxo1 = UTXO {
+                txid: outpoint1.txid,
+                vout: outpoint1.vout,
+                value: 50,
+                owner: AccountAddress::new(&[10u8; 20]),
+            };
+
+            let outpoint2 = OutPoint {
+                txid: TransactionHash::new(&[3u8; 32]),
+                vout: 2,
+            };
+            let utxo2 = UTXO {
+                txid: outpoint2.txid,
+                vout: outpoint2.vout,
+                value: 75,
+                owner: AccountAddress::new(&[11u8; 20]),
+            };
+
+            // Insert UTXOs
+            storage.put_utxo(&outpoint1, utxo1.clone()).await.unwrap();
+            storage.put_utxo(&outpoint2, utxo2.clone()).await.unwrap();
+            
+
+            // Prepare the set of outpoints to retrieve
+            let mut outpoints = HashSet::new();
+            outpoints.insert(outpoint1.clone());
+            outpoints.insert(outpoint2.clone());
+
+            // Retrieve UTXOs
+            let retrieved = storage.get_utxos(&outpoints).await.unwrap();
+            assert_eq!(retrieved.len(), 2);
+            assert_eq!(retrieved.get(&outpoint1).unwrap().value, 50);
+            assert_eq!(retrieved.get(&outpoint2).unwrap().value, 75);
+
+            // Test with a non-existent outpoint
+            let outpoint3 = OutPoint {
+                txid: TransactionHash::new(&[4u8; 32]),
+                vout: 3,
+            };
+            let mut outpoints_with_invalid = outpoints.clone();
+            outpoints_with_invalid.insert(outpoint3.clone());
+
+            let result = storage.get_utxos(&outpoints_with_invalid).await;
+            assert!(result.is_err());
+            if let Err(InMemoryStorageError::NotFound(missing_op)) = result {
+                assert_eq!(missing_op, outpoint3);
+            } else {
+                panic!("Expected NotFound error");
+            }
+        }
+    
         #[tokio::test]
         async fn test_in_memory_utxo_storage_thread_safety() {
             let mut storage = InMemoryUtxoStorage::default();

@@ -3,8 +3,6 @@ use crate::{
     consensus::{ConsensusEngine, ConsensusRules},
     error::StryiCoreError,
     storage::in_memory_utxo::InMemoryUtxoStorage,
-    address::AccountAddress,
-    transactions::TransactionKind,
 };
 use crate::block::BlockValidator;
 use crate::transactions::UtxoProcessor;

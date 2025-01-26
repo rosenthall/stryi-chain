@@ -74,8 +74,6 @@ pub enum StryiCoreError {
     #[error("Invalid difficulty value : {details}")]
     InvalidDifficultyValue {
         details: String
-    }
-
     },
 
     

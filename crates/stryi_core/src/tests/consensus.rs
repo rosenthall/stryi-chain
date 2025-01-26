@@ -1,119 +1,19 @@
 use crate::{
     address::AccountAddress,
-    block::{Block, BlockData, BlockHeader, BlockHash},
+    block::{Block, BlockHash},
     consensus::{ConsensusEngine, ConsensusRules, StryiConsensusEngine},
     error::StryiCoreError,
     storage::in_memory_utxo::InMemoryUtxoStorage,
     transactions::{
-        OutPoint, Transaction, TransactionData, TransactionHash, TransactionIn, TransactionKind,
-        TransactionOut, UTXO,
+        OutPoint, Transaction, TransactionHash,
     },
 };
 use k256::ecdsa::SigningKey;
 use k256::elliptic_curve::rand_core::OsRng;
-use crate::storage::UtxoStorage;
-
-/// Helper: Create and sign a Coinbase transaction.
-/// Coinbase transactions have no inputs and exactly one output.
-fn create_coinbase_tx(
-    signing_key: &SigningKey,
-    reward: u64,
-    miner_address: AccountAddress,
-) -> Transaction {
-    let tx_data = TransactionData {
-        version: 1,
-        kind: TransactionKind::Coinbase,
-        inputs: vec![], // Coinbase has no inputs
-        outputs: vec![TransactionOut {
-            value: reward,
-            recipient: miner_address,
-        }],
-    };
-    tx_data.sign(signing_key)
-}
-
-/// Helper: Build a block with the given transactions, set difficulty, set previous_block_hash, and update merkle root.
-fn make_block(
-    txs: Vec<Transaction>,
-    difficulty_bits: u8,
-    height: u64,
-    is_genesis: bool,
-    previous_block_hash: BlockHash,
-) -> Block {
-    let mut block = Block {
-        header: BlockHeader {
-            version: 1,
-            merkle_root_hash: [0u8; 32],
-            previous_block_hash,
-            height,
-            difficulty_bits,
-            timestamp: 123456, // Fixed for testing; adjust if needed
-            nonce: 0,          // Fixed for testing; adjust if needed
-            is_genesis,
-        },
-        data: BlockData { transactions: txs },
-    };
-    block.update_merkle_root();
-    block
-}
-
-/// Creates a "genesis" outpoint in `utxo_db` for `owner` with the given `value`.
-async fn put_genesis_utxo(
-    utxo_db: &mut InMemoryUtxoStorage,
-    owner: AccountAddress,
-    value: u64,
-) -> OutPoint {
-    let genesis_txid = TransactionHash::new(&[0u8; 32]);
-    let genesis_op = OutPoint {
-        txid: genesis_txid,
-        vout: 0,
-    };
-    let utxo = UTXO {
-        txid: genesis_txid,
-        vout: 0,
-        value,
-        owner,
-    };
-    utxo_db.put_utxo(&genesis_op, utxo).await.unwrap();
-    genesis_op
-}
-
-/// Creates and signs a Payment transaction with one input and arbitrary outputs.
-fn sign_single_input_tx(
-    input: OutPoint,
-    signing_key: &SigningKey,
-    outputs: Vec<(u64, AccountAddress)>,
-) -> Transaction {
-    let tx_data = TransactionData {
-        version: 1,
-        kind: TransactionKind::Payment,
-        inputs: vec![TransactionIn {
-            previous_output: input,
-            sequence: 0xFFFFFFFF,
-        }],
-        outputs: outputs
-            .into_iter()
-            .map(|(val, addr)| TransactionOut {
-                value: val,
-                recipient: addr,
-            })
-            .collect(),
-    };
-    tx_data.sign(signing_key)
-}
-
-/// Applies a block using the ConsensusEngine's validate_and_apply_block method.
-/// This ensures atomic validation and application.
-async fn apply_block<S: ConsensusEngine>(
-    engine: &S,
-    block: &Block,
-    utxo_storage: &mut S::UtxoDatabase,
-) -> Result<(), S::Error> {
-    engine.validate_and_apply_block(block, utxo_storage).await
-}
 
 #[cfg(test)]
 mod tests {
+    use crate::tests::{apply_block, create_coinbase_tx, make_block, put_genesis_utxo, sign_single_input_tx};
     use super::*;
 
     /// Test various negative scenarios to ensure that invalid blocks are correctly rejected.
@@ -189,7 +89,7 @@ mod tests {
         match err {
             StryiCoreError::TxWrongOwner { expected, actual } => {
                 println!(
-                    "Wrong owner test OK: expected={:?}, actual={:?}",
+                    "Wrong owner test OK: expected={}, actual={}",
                     expected, actual
                 );
             }
@@ -216,7 +116,7 @@ mod tests {
         match err {
             StryiCoreError::TxMissingUtxo { txid, vout } => {
                 println!(
-                    "Missing UTXO test OK: txid={:?}, vout={}",
+                    "Missing UTXO test OK: txid={}, vout={}",
                     txid, vout
                 );
             }
@@ -253,9 +153,96 @@ mod tests {
             _ => panic!("Expected ConsensusValidationFailed, got {:?}", err),
         }
 
-        println!("All negative scenario tests PASSED");
-    }
+        // ----- SCENARIO E: Invalid Transaction Order Due to Dependency Violation -----
+        // Transaction B depends on Transaction A but is placed before it in the block.
 
+        // 1. Create a new UTXO for Alice.
+        let gen5 = put_genesis_utxo(&mut utxo_db, addr_alice, 1000).await;
+
+        // 2. Create Transaction A: spends gen5 and creates a new UTXO for Bob.
+        let tx_a = sign_single_input_tx(
+            gen5.clone(),
+            &sk_alice,
+            vec![(600, addr_bob), (400, addr_alice)],
+        );
+
+        // 3. Create Transaction B: spends the UTXO created by Transaction A (vout=0)
+        let tx_b = sign_single_input_tx(
+            OutPoint {
+                txid: tx_a.data.hash(),
+                vout: 0,
+            },
+            &sk_bob,
+            vec![(300, addr_alice), (300, addr_bob)],
+        );
+
+        // 4. Create a block with Transaction B before Transaction A
+        let block_invalid_dependency_order = make_block(
+            vec![coinbase_tx.clone(), tx_b.clone(), tx_a],
+            0,
+            5,
+            false,
+            BlockHash::empty(), // Assuming no previous block
+        );
+
+        // 5. Apply the block and expect an error due to invalid transaction order
+        let err = apply_block(&engine, &block_invalid_dependency_order, &mut utxo_db)
+            .await
+            .unwrap_err();
+        match err {
+            StryiCoreError::TransactionDependencyError { msg, .. } => {
+                println!(
+                    "Invalid transaction order test OK (TransactionDependencyError): {msg}"
+                );
+            }
+            _ => panic!("Expected ConsensusValidationFailed due to invalid transaction order, got {:?}", err),
+        }
+
+        // ----- SCENARIO F: Double Spend Within the Same Block -----
+        // Two transactions attempt to spend the same UTXO within the same block.
+
+        // 1. Create a new UTXO for Alice.
+        let gen6 = put_genesis_utxo(&mut utxo_db, addr_alice, 1000).await;
+
+        // 2. Create Transaction C: spends gen6 and creates a new UTXO for Bob.
+        let tx_c = sign_single_input_tx(
+            gen6.clone(),
+            &sk_alice,
+            vec![(600, addr_bob), (400, addr_alice)],
+        );
+
+        // 3. Create Transaction D: also spends gen6 and creates a new UTXO for Bob.
+        let tx_d = sign_single_input_tx(
+            gen6.clone(),
+            &sk_alice,
+            vec![(600, addr_bob), (400, addr_alice)],
+        );
+
+        // 4. Create a block with both Transaction C and D spending the same UTXO
+        let block_double_spend = make_block(
+            vec![coinbase_tx.clone(), tx_c.clone(), tx_d],
+            0,
+            6,
+            false,
+            BlockHash::empty(), // Assuming no previous block
+        );
+
+        // 5. Apply the block and expect an error due to double spend
+        let err = apply_block(&engine, &block_double_spend, &mut utxo_db)
+            .await
+            .unwrap_err();
+        match err {
+            StryiCoreError::TransactionDependencyError { msg} => {
+                println!(
+                    "Double spend test OK (TransactionDependencyError): {msg}"
+                );
+            }
+            _ => panic!("Expected TransactionDependencyError due to double spend, got {:?}", err),
+        }
+
+        println!("All negative scenario tests PASSED");
+    }    
+    
     /// Test chain selection logic by creating multiple chains and ensuring the engine selects the best one.
     #[tokio::test]
     async fn test_complex_multi_chain_scenario() {
@@ -490,7 +477,7 @@ mod tests {
                     match e {
                         StryiCoreError::TxMissingUtxo { txid, vout } => {
                             println!(
-                                "chain_err_2 correctly failed at block #4: txid={:?}, vout={}",
+                                "chain_err_2 correctly failed at block #4: txid={}, vout={}",
                                 txid, vout
                             );
                         }
