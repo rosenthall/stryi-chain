@@ -109,7 +109,7 @@ impl HashKind for BlockHashKind {
         let params = Params::new(
             2048, // m_cost in KiB (2 MiB)
             2,    // t_cost (iterations)
-            2,     // p_cost (parallelism)
+            1,     // p_cost (parallelism)
             Some(Self::SIZE)  // output length in bytes
         ).expect("Invalid Argon2 Params");
 
@@ -120,8 +120,7 @@ impl HashKind for BlockHashKind {
         // Prepare buffer for final 32-byte output
         let mut final_output = [0u8; Self::SIZE];
         
-        // Hash into final_output
-        // - If this fails, we panic in this example
+        // Hash into final_output, if this fails, we panic because it is not supposed to happen  
         argon2.hash_password_into(&blake3_hashx, &ARGON2_SALT, &mut final_output)
             .expect("Argon2 hashing failed unexpectedly");
 

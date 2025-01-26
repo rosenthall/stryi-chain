@@ -19,7 +19,7 @@ pub mod block;
 /// Definition of AccountAddress type and some batteries for constructing it from public key.
 pub mod address;
 
-/// Simple implementation of the (Merkle Tree)[https://en.wikipedia.org/wiki/Merkle_tree]
+/// Simple implementation of the [Merkle Tree](https://en.wikipedia.org/wiki/Merkle_tree)
 /// Provides simple api for constructing trees, generating and checking proofs
 mod merkletree;
 
@@ -27,7 +27,7 @@ mod merkletree;
 pub mod transactions;
 
 /// Definitions of traits that we use as abstract layer for storing data. Exports 'UtxoStorage' and BlockStorage so far
-mod storage;
+pub mod storage;
 
 /// Abstraction for consensus model of StryiChain. 
 /// Provides a convenient way for all the nodes to follow the same, strict rules of consensus

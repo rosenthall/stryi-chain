@@ -41,7 +41,6 @@ impl StryiSignature {
 
         Ok((recovery_id, signature))
     }
-
 }
 
 
