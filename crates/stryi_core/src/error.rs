@@ -76,4 +76,13 @@ pub enum StryiCoreError {
         details: String
     }
 
+    },
+
+    
+    #[error("Error while processing transactions' dependency tree : {msg}")]
+    TransactionDependencyError { msg: String },
+
+    
+    #[error("Detected transaction tries to perform double spend : {txid}:{vout}")]
+    TxDoubleSpend { txid: TransactionHash, vout: u32 },
 }

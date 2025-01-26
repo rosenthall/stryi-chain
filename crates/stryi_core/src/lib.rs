@@ -33,6 +33,12 @@ mod storage;
 /// Provides a convenient way for all the nodes to follow the same, strict rules of consensus
 mod consensus;
 
+/// Transaction's dependencies handling primitives
+/// dependencies among transactions within a block. It utilizes a Directed
+/// Acyclic Graph [DAG](https://en.wikipedia.org/wiki/Directed_acyclic_graph) to represent and resolve dependencies, ensuring that
+/// transactions are processed in an order that respects their interdependencies.
+mod dependencies;
+
 
 // Contains tests for some matter functionality.
 // Some of the tests are present in the concrete modules, but this module contains larger ones with more complex cases like integration tests
