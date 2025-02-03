@@ -1,0 +1,21 @@
+[package]
+name = "stryi_network"
+version = "0.0.1"
+edition = "2024"
+description = "An implementation of the network protocol"
+authors = ["Rosenthall <rosenthall@riseup.net>"]
+license = "BSD-3-Clause"
+
+
+[lib]
+name = "stryi_network"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+tokio-util = "0.7.13" # just for CancelationToken
+tracing = "0.1.41"
+libp2p = { version = "0.55.0", features = ["rendezvous", "ping", "gossipsub", "identify", "tcp", "noise", "yamux", "tokio", "macros"] }
+futures = "0.3.31"
