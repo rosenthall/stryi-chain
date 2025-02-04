@@ -39,6 +39,7 @@
 
 mod error;
 mod blocks;
+mod utxo;
 
 use std::path::PathBuf;
 use fjall::{Config as FjallConfig, PartitionCreateOptions, Slice, TxKeyspace, TxPartition};
