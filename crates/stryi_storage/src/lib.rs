@@ -1,41 +1,44 @@
 //! The database uses a **key-value storage model** to ensure efficiency and scalability.
-//! After quite a bit of research, I've decided that we are using a KV database with 3 separate tables.
-//! I think this is one of the best solutions for *StryiChain* so far.
 //!
+//! We maintain **four** separate partitions in this design:
 //!
-//! ## Tables
-//! ### 1. Blocks
-//! ```plaintext
-//! Key   : [`stryi_core::block::BlockHash`]
-//! Value : Serialized (via bincode) [`stryi_core::block::Block`]
+//! 1. **Blocks**
+//!    - Key   : `stryi_core::block::BlockHash` (32 bytes of the block hash)
+//!    - Value : A `bincode`-serialized `stryi_core::block::Block`
+//!    
+//!    This partition stores the full blocks in the blockchain. Each block references the previous one via
+//!    its header, and we also track the block's height separately in another partition.
 //!
-//!     What:
-//!     Contains all blocks in the blockchain. Each block references the previous one.
-//!     Why:
-//!     Maintains the blockchain structure and enables sequential block retrieval.
+//! 2. **Height**
+//!    - Key   : 8 bytes of `height` (big-endian u64)
+//!    - Value : 32 bytes of block hash (the same as in the blocks partition key)
 //!
-//! 2. Height
+//!    This partition maps each block's height to its `BlockHash`, enabling quick lookups by height. It
+//!    also helps us retrieve the chain in sequence or find the latest block via `last_key_value()`.
 //!
-//! Key   : unsigned int (height)
-//! Value : [`stryi_core::block::BlockHash`]
+//! 3. **UTXO**
+//!    - Key   : 36 bytes `[txid (32 bytes) | vout (4 bytes, big-endian)]`
+//!    - Value : A `bincode`-serialized `UTXO` (unspent output)
 //!
-//!     What:
-//!     Maps each block’s height to its BlockHash.
-//!     Why:
-//!     Enables quick block lookups by height for navigation and validation.
+//!    This partition stores unspent transaction outputs (UTXOs). The key is the combination of a
+//!    transaction hash (32 bytes) and an output index `vout` (4 bytes). Each entry's value is the UTXO
+//!    data (including its owner address, value, etc.).
 //!
-//! 3. UTXO (Unspent Transaction Output)
+//! 4. **Addresses**
+//!    - Key   : 20 bytes of `AccountAddress` (assuming `AddressHasher::SIZE = 20`)
+//!    - Value : A `bincode`-serialized collection (e.g., `HashSet<OutPoint>`) referencing all outpoints
+//!              belonging to that address
 //!
-//! Key   : tx_hash:index
-//! Value : bincoded UtxoOutput
+//!    This partition is our **address index**, mapping each address to the set of outpoints owned by
+//!    that address. When inserting or removing UTXOs, we keep this index in sync. Then, for lookups such
+//!    as `get_utxos_for_address`, we can quickly retrieve the relevant outpoints without scanning all
+//!    UTXOs.
 //!
-//!     What:
-//!     Stores unspent transaction outputs (UTXOs), with the key as a combination of transaction hash and index.
-//!     Why:
-//!     Tracks spendable funds and ensures transaction validation.
+//! By maintaining these four partitions, we get efficient lookups for blocks, block heights, UTXOs by
+//! outpoint, and addresses to outpoint sets.
 
 #![allow(incomplete_features)]
-#![feature(generic_const_exprs)] // I don`t even use this thing directly in my project, but adding it here is a way to avoid https://github.com/rust-lang/rust/issues/133199
+#![feature(generic_const_exprs)] // This feature was added to avoid a known bug: https://github.com/rust-lang/rust/issues/133199
 
 mod error;
 mod blocks;
@@ -46,55 +49,64 @@ use fjall::{Config as FjallConfig, PartitionCreateOptions, Slice, TxKeyspace, Tx
 use tracing::info;
 
 pub use crate::error::StryiStorageError;
+pub use blocks::*;
+pub use utxo::*;
+
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::transactions::{OutPoint, UTXO};
 
-/// The database uses a key-value storage model with 3 separate partitions:
-///   1. Blocks      (BlockHash -> bincode(Block))
-///   2. Height      (height u64 -> BlockHash)
-///   3. UTXO        (String "tx_hash:index" -> bincode(UTXO))
+/// `StryiStorage` manages four partitions within a single Fjall keyspace:
+/// - `blocks_partition`: For storing blocks keyed by hash
+/// - `heights_partition`: For storing mappings from height → hash
+/// - `utxo_partition`: For storing actual UTXOs keyed by (txid+vout)
+/// - `addresses_partition`: For mapping addresses → set of outpoints
+///
+/// Each partition is opened once at initialization, and we keep a reference in this struct.
 pub struct StryiStorage {
-    /// Partition storing blocks keyed by stringified BlockHash
-    blocks_partition: TxPartition,
+    /// Partition storing blocks keyed by block hash
+    pub blocks_partition: TxPartition,
 
-    /// Partition mapping a height (u64) to a BlockHash
-    heights_partition: TxPartition,
+    /// Partition storing block height → block hash
+    pub heights_partition: TxPartition,
 
-    /// Partition storing unspent transaction outputs
-    utxo_partition: TxPartition,
-    
-    /// Keyspace value for entire database 
-    keyspace:  TxKeyspace
+    /// Partition storing UTXOs
+    pub utxo_partition: TxPartition,
 
+    /// Partition storing address → set of OutPoints referencing that address
+    pub addresses_partition: TxPartition,
+
+    /// Keyspace for the entire database
+    pub keyspace: TxKeyspace,
 }
 
 impl StryiStorage {
-    /// Creates (or opens) the database at the given `path`, and sets up three partitions:
-    ///   "blocks", "height", "utxo"
+    /// Creates (or opens) the database at the given `path`, setting up four partitions:
+    /// "blocks", "heights", "utxo", and "addresses".
+    ///
+    /// We open it in transactional mode so we can do atomic writes across multiple partitions.
     pub fn initialize_in_path(path: PathBuf) -> Result<Self, StryiStorageError> {
         info!("Trying to access Stryi storage at path {}", &path.display());
 
         // Create or open the KeySpace
-        let cfg = FjallConfig::new(path)
-            .temporary(false);
-
-        // Use transactional mode
+        let cfg = FjallConfig::new(path).temporary(false);
         let keyspace = cfg.open_transactional()?;
 
         info!("Successfully initialized key space!");
         info!("Current database disk usage is : {} bytes", keyspace.disk_space());
 
-        // Open or create the three partitions with default options
+        // Open or create the four partitions with default options
         let blocks_partition = keyspace.open_partition("blocks", PartitionCreateOptions::default())?;
         let heights_partition = keyspace.open_partition("heights", PartitionCreateOptions::default())?;
         let utxo_partition = keyspace.open_partition("utxo", PartitionCreateOptions::default())?;
+        let addresses_partition = keyspace.open_partition("addresses", PartitionCreateOptions::default())?;
 
-        // Now we can build our storage struct
+        // Construct and return our StryiStorage
         Ok(StryiStorage {
             blocks_partition,
             heights_partition,
             utxo_partition,
-            keyspace
+            addresses_partition,
+            keyspace,
         })
     }
 }
