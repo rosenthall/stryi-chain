@@ -19,9 +19,11 @@ pub enum StryiStorageError {
     DeserializationError(#[from] bincode::error::DecodeError),
 
     
-    #[error("Error while trying construct typed hash object from string : {0}")]
+    #[error("Error while trying construct typed hash object from bytes, message : {0}")]
     IncorrectHashValue(String),
     
+    #[error("Nonexistent height value was provided : {0}")]
+    InvalidHeight(usize),
     
     #[error("Error while converting bytes in string {0}")]
     FromUtf8Error(#[from] FromUtf8Error),
