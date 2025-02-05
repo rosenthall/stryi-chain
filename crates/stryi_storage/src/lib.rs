@@ -44,6 +44,10 @@ mod error;
 mod blocks;
 mod utxo;
 
+
+#[cfg(test)]
+mod tests;
+
 use std::path::PathBuf;
 use fjall::{Config as FjallConfig, PartitionCreateOptions, Slice, TxKeyspace, TxPartition};
 use tracing::info;
