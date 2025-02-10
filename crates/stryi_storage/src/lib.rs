@@ -33,10 +33,22 @@
 //!    that address. When inserting or removing UTXOs, we keep this index in sync. Then, for lookups such
 //!    as `get_utxos_for_address`, we can quickly retrieve the relevant outpoints without scanning all
 //!    UTXOs.
+//! 5. **Stats** 
+//!     - Key  : 32 zero bytes
+//!     - Value : A `bincode`-serialized `StorageStateInformation`.
 //!
-//! By maintaining these four partitions, we get efficient lookups for blocks, block heights, UTXOs by
-//! outpoint, and addresses to outpoint sets.
-
+//!     The only goal of this partition is to hold current information about storage state. We will 
+//!     update stats after each new block. This allows us to perform some consensus-related logic of comparing different chains.
+//! 6. **Undo**
+//!     - Key : `stryi_core::block::BlockHash` (32 bytes of the block hash)
+//!     - Value : A `bincode`-serialized `stryi_core::BlockUndo` object
+//!     
+//!     This partition is our per-block backup data. The thing allows us easily restore pre-block state, by just keeping 
+//!     `BlockUndo` in base. Restoration is just simple as deleting all the new outputs and restoring all the existing ones. 
+//!     High-level struct for implementing this functionality is `ChainReorganizer`
+//!
+//! By maintaining these six partitions, we get efficient lookups for blocks, block heights, UTXOs by
+//! outpoint, addresses to outpoint sets and will be able to correctly and safely reorganize chain for consensus purposes.
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)] // This feature was added to avoid a known bug: https://github.com/rust-lang/rust/issues/133199
 
@@ -47,6 +59,7 @@ mod utxo;
 
 #[cfg(test)]
 mod tests;
+mod stats;
 
 use std::path::PathBuf;
 use fjall::{Config as FjallConfig, PartitionCreateOptions, Slice, TxKeyspace, TxPartition};
@@ -58,27 +71,36 @@ pub use utxo::*;
 
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::transactions::{OutPoint, UTXO};
+use crate::stats::StorageStateInformation;
 
-/// `StryiStorage` manages four partitions within a single Fjall keyspace:
+/// `StryiStorage` manages six partitions within a single Fjall keyspace:
 /// - `blocks_partition`: For storing blocks keyed by hash
 /// - `heights_partition`: For storing mappings from height → hash
 /// - `utxo_partition`: For storing actual UTXOs keyed by (txid+vout)
 /// - `addresses_partition`: For mapping addresses → set of outpoints
+/// - `stats_partition`: For storing the only value with current statistics for entire chain
+/// - `undo_partition` : For storing per-block restoration data to be able to restore any previous state
 ///
 /// Each partition is opened once at initialization, and we keep a reference in this struct.
 pub struct StryiStorage {
     /// Partition storing blocks keyed by block hash
-    pub blocks_partition: TxPartition,
+    pub(crate) blocks_partition: TxPartition,
 
     /// Partition storing block height → block hash
-    pub heights_partition: TxPartition,
+    pub(crate) heights_partition: TxPartition,
 
     /// Partition storing UTXOs
-    pub utxo_partition: TxPartition,
+    pub(crate) utxo_partition: TxPartition,
 
     /// Partition storing address → set of OutPoints referencing that address
-    pub addresses_partition: TxPartition,
+    pub(crate) addresses_partition: TxPartition,
+    
+    /// Partition stores only one value - current chain state, must be updated after each new block or a reorganization
+    pub(crate) stats_partition: TxPartition,
 
+    /// Partitions storing block hash → `stryi_core::undo::UndoData` 
+    pub(crate) undo_partition: TxPartition,
+    
     /// Keyspace for the entire database
     pub keyspace: TxKeyspace,
 }
@@ -98,19 +120,51 @@ impl StryiStorage {
         info!("Successfully initialized key space!");
         info!("Current database disk usage is : {} bytes", keyspace.disk_space());
 
-        // Open or create the four partitions with default options
+        // Open or create the six partitions with default options
         let blocks_partition = keyspace.open_partition("blocks", PartitionCreateOptions::default())?;
         let heights_partition = keyspace.open_partition("heights", PartitionCreateOptions::default())?;
         let utxo_partition = keyspace.open_partition("utxo", PartitionCreateOptions::default())?;
         let addresses_partition = keyspace.open_partition("addresses", PartitionCreateOptions::default())?;
+        let stats_partition = keyspace.open_partition("stats", PartitionCreateOptions::default())?;
+        let undo_partition = keyspace.open_partition("undo", PartitionCreateOptions::default())?;
 
         // Construct and return our StryiStorage
         Ok(StryiStorage {
+
+        // Create storage instance
+        let mut storage = Self {
             blocks_partition,
             heights_partition,
             utxo_partition,
             addresses_partition,
+            stats_partition,
+            undo_partition,
             keyspace,
-        })
+        };
+
+        // Initialize storage state if needed
+        storage.initialize_storage_state()?;
+
+        Ok(storage)
     }
+
+    /// Creates initial storage state if it doesn't exist
+    fn initialize_storage_state(&mut self) -> Result<(), StryiStorageError> {
+        // Check if state already exists
+        if self.get_current_storage_state().is_ok() {
+            return Ok(());
+        }
+
+        // Create initial state
+        let initial_state = StorageStateInformation {
+            latest_block: (0, BlockHash::empty()), // Empty is basically genesis block
+            last_update_time: 0,
+            blocks_count: 0,
+            chain_difficulty: 0,
+        };
+
+        // Store initial state
+        self.update_storage_state(initial_state)
+    }
+
 }

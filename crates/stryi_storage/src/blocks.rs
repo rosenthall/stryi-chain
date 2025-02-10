@@ -3,8 +3,9 @@ use stryi_core::block::{Block, BlockHash};
 use stryi_core::storage::BlockStorage;
 use crate::error::StryiStorageError;
 use crate::StryiStorage;
-use fjall::Slice;
+use fjall::{Slice, UserKey, UserValue};
 use std::convert::TryFrom;
+use crate::stats::StorageStateInformation;
 
 impl StryiStorage {
     /// Converts a block height to a database key
@@ -81,6 +82,18 @@ impl BlockStorage for StryiStorage {
         let block_hash = block.block_hash();
         let height_key = Self::height_to_key(block.header.height as usize)?;
 
+
+        // Get current state
+        let current_state = self.get_current_storage_state()?;
+
+        // Create new state
+        let new_state = StorageStateInformation {
+            latest_block: (block.header.height as usize, block_hash),
+            last_update_time: block.header.timestamp as usize,
+            blocks_count: current_state.blocks_count + 1,
+            chain_difficulty: current_state.chain_difficulty + (1 << block.header.difficulty_bits),
+        };
+
         // Create a write transaction
         let mut tx = self.keyspace.write_tx();
 
@@ -98,6 +111,13 @@ impl BlockStorage for StryiStorage {
             Slice::from(&block_hash.data[..]),
         );
 
+        
+        // Update storage state
+        let state_key = UserKey::from([0u8; 32]);
+        let state_value: UserValue = new_state.try_into()?;
+        tx.insert(&self.stats_partition, state_key, state_value);
+
+
         // Commit the transaction
         tx.commit().map_err(StryiStorageError::FjallError)?;
         Ok(())
@@ -112,12 +132,14 @@ impl BlockStorage for StryiStorage {
     }
 
     /// Retrieves the entire chain of blocks.
-    /// Note: This performs sequential reads and should be used carefully with large chains
     async fn get_chain(&self) -> Result<Vec<Block>, Self::StorageError> {
-        let mut blocks = Vec::new();
+        let state = self.get_current_storage_state()?;
+        let total_blocks = state.blocks_count;
+
+        let mut blocks = Vec::with_capacity(total_blocks);
         let mut current_height = 0usize;
 
-        loop {
+        while current_height < total_blocks {
             match self.get_block_by_height(current_height).await {
                 Ok(block) => {
                     blocks.push(block);
@@ -182,7 +204,7 @@ mod tests {
     }
 
     /// Helper function to create StryiStorage with temp directory
-    fn create_test_storage() -> (StryiStorage, TempDir) {
+    pub fn create_test_storage() -> (StryiStorage, TempDir) {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let keyspace = Config::new(temp_dir.path())
             .temporary(true)
@@ -201,12 +223,41 @@ mod tests {
             .open_partition("utxo", PartitionCreateOptions::default())
             .expect("Failed to create utxo partition");
 
-        let storage = StryiStorage {
+        let addresses_partition = keyspace
+            .open_partition("addresses", PartitionCreateOptions::default())
+            .expect("Failed to create addresses partition");
+
+        let stats_partition = keyspace
+            .open_partition("stats", PartitionCreateOptions::default())
+            .expect("Failed to create stats partition");
+        
+        let undo_partition = keyspace
+            .open_partition("undo", PartitionCreateOptions::default())
+            .expect("Failed to create undo partition");
+
+        // Create an empty initial state
+        let initial_state = StorageStateInformation {
+            latest_block: (0, BlockHash::empty()),
+            last_update_time: 0,
+            blocks_count: 0,
+            chain_difficulty: 0,
+        };
+
+
+        let mut storage = StryiStorage {
             keyspace,
             blocks_partition,
             heights_partition,
             utxo_partition,
+            addresses_partition,
+            stats_partition,
+            undo_partition
         };
+        
+        
+        // Store initial state
+        storage.update_storage_state(initial_state).unwrap();
+
 
         (storage, temp_dir)
     }

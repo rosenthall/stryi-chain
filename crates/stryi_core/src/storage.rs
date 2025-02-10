@@ -85,6 +85,27 @@ pub trait BlockStorage: Send + Sync {
 
 
 
+/// StorageStats defines high-level api to retrieve some statistics from current blockchain state.
+pub trait StorageStats : Sync + Sync {
+    type StorageError: Debug + Error + Send;
+
+    /// Returns the latest block's height and its hash.
+    async fn get_latest_block(&self) -> Result<(usize, BlockHash), Self::StorageError>;
+
+
+    /// Retrieves last storage update timestamp in unix.
+    async fn get_last_update_time(&self) -> Result<usize, Self::StorageError>;
+
+
+    /// Retrieves entire amount of blocks in this chain.
+    async fn get_blocks_count(&self) -> Result<usize, Self::StorageError>;
+
+    
+    /// Gets current chain entire difficulty from zero up to current.
+    async fn get_chain_difficulty(&self) -> Result<usize, Self::StorageError>;
+}
+
+
 /// Simple implementation of UtxoStorage trait. Uses HashMap + RwLock inside
 /// Created to simplify some steps in development. 
 /// The implementation should not be used in the real node, but during development and for testing other functionality

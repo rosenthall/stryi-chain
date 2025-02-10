@@ -11,6 +11,7 @@ stryi_core = { path = "../stryi_core" }
 thiserror = "2"
 tracing = "0.1.41"
 bincode = { version = "2.0.0-rc.3", features = ["serde"] }
+serde = { version = "1.0.217", features = ["derive"] }
 
 
 [dev-dependencies] # Need these to perform tests

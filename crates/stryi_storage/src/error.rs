@@ -28,6 +28,9 @@ pub enum StryiStorageError {
     #[error("Error while converting bytes in string {0}")]
     FromUtf8Error(#[from] FromUtf8Error),
     
+    #[error("Cannot get storage stats from `stats_partition` : {0}")]
+    NoStorageStatsFound(String),
+    
     #[error("Cannot find value with such key in data base: {0}")]
     NotFound(String),
 }
