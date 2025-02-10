@@ -39,6 +39,10 @@ mod consensus;
 /// transactions are processed in an order that respects their interdependencies.
 mod dependencies;
 
+/// Definitions of BlockUndo and related logic for the snapshots system.
+mod undo;
+pub use undo::BlockUndo;
+
 
 // Contains tests for some matter functionality.
 // Some of the tests are present in the concrete modules, but this module contains larger ones with more complex cases like integration tests
