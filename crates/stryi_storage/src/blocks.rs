@@ -78,10 +78,16 @@ impl BlockStorage for StryiStorage {
 
     /// Inserts a new block or updates an existing one in the storage.
     async fn put_block(&mut self, block: &Block) -> Result<(), Self::StorageError> {
+
+        // Create BlockUndo data first - if this fails, we won't proceed with block storage
+        let undo_data = self.construct_block_undo(block).await?;
+        let undo_bytes = bincode::serde::encode_to_vec(&undo_data, bincode::config::standard())?;
+
+
         let serialized_block = Self::serialize_block(block)?;
         let block_hash = block.block_hash();
         let height_key = Self::height_to_key(block.header.height as usize)?;
-
+        
 
         // Get current state
         let current_state = self.get_current_storage_state()?;
@@ -94,25 +100,32 @@ impl BlockStorage for StryiStorage {
             chain_difficulty: current_state.chain_difficulty + (1 << block.header.difficulty_bits),
         };
 
-        // Create a write transaction
+        // Create a write transaction. We will update blocks, heights, undo and state partitions by just one transaction
         let mut tx = self.keyspace.write_tx();
 
-        // Store block data
+        // Store block data in blocks partition
         tx.insert(
             &self.blocks_partition,
             Slice::from(&block_hash.data[..]),
             Slice::from(serialized_block),
         );
 
-        // Store height mapping
+        // Store height mapping in heights partition
         tx.insert(
             &self.heights_partition,
             Slice::from(&height_key[..]),
             Slice::from(&block_hash.data[..]),
         );
 
-        
-        // Update storage state
+
+        // Store undo data in undo partition
+        tx.insert(
+            &self.undo_partition,
+            Slice::from(&block_hash.data[..]),
+            Slice::from(undo_bytes), 
+        );
+
+        // Update storage state value in stats_partition
         let state_key = UserKey::from([0u8; 32]);
         let state_value: UserValue = new_state.try_into()?;
         tx.insert(&self.stats_partition, state_key, state_value);
@@ -178,7 +191,7 @@ impl BlockStorage for StryiStorage {
 
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tempfile::TempDir;
     use fjall::{Config, PartitionCreateOptions};
@@ -204,7 +217,7 @@ mod tests {
     }
 
     /// Helper function to create StryiStorage with temp directory
-    pub fn create_test_storage() -> (StryiStorage, TempDir) {
+    pub fn create_test_storage(setup_state_storage : bool) -> (StryiStorage, TempDir) {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let keyspace = Config::new(temp_dir.path())
             .temporary(true)
@@ -235,14 +248,6 @@ mod tests {
             .open_partition("undo", PartitionCreateOptions::default())
             .expect("Failed to create undo partition");
 
-        // Create an empty initial state
-        let initial_state = StorageStateInformation {
-            latest_block: (0, BlockHash::empty()),
-            last_update_time: 0,
-            blocks_count: 0,
-            chain_difficulty: 0,
-        };
-
 
         let mut storage = StryiStorage {
             keyspace,
@@ -253,10 +258,22 @@ mod tests {
             stats_partition,
             undo_partition
         };
+
+
         
-        
-        // Store initial state
-        storage.update_storage_state(initial_state).unwrap();
+        // Some tests require correct storage state, while some of them creating own, so I kept this optional
+        if setup_state_storage {
+            // Create an empty initial state
+            let initial_state = StorageStateInformation {
+                latest_block: (0, BlockHash::empty()),
+                last_update_time: 0,
+                blocks_count: 0,
+                chain_difficulty: 0,
+            };
+            
+            // Store initial state
+            storage.update_storage_state(initial_state).unwrap();
+        }
 
 
         (storage, temp_dir)
@@ -264,7 +281,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stryi_block_storage_basics() -> Result<(), StryiStorageError> {
-        let (mut storage, _temp_dir) = create_test_storage();
+        let (mut storage, _temp_dir) = create_test_storage(true);
 
         // Test 1: Store and retrieve genesis block
         let genesis = create_test_block(0);
@@ -304,12 +321,21 @@ mod tests {
         let empty_range = storage.get_range(4, 2).await?;
         assert!(empty_range.is_empty());
 
+
+        // Check that storage state exists
+        assert!(
+            storage.get_current_storage_state().is_ok(),
+        );
+
+
         Ok(())
     }
 
     #[tokio::test]
     async fn test_stryi_storage_gaps() -> Result<(), StryiStorageError> {
-        let (mut storage, _temp_dir) = create_test_storage();
+        // setup_state_storage argument is true since .get_chain() method utilizes storage_state api to get blocks_count
+        let (mut storage, _temp_dir) = create_test_storage(true); 
+
 
         // Insert blocks 0,1,2,3,5 (gap at 4)
         for i in 0..=3 {

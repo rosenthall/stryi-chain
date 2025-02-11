@@ -19,16 +19,17 @@ impl Block {
     /// function to retrieve the UTXO from the pre-block state. For each output, it computes
     /// an OutPoint using the transaction hash and the output index.
     ///
-    /// The lookup function must return the full UTXO data corresponding to the given OutPoint.
-    pub fn create_undo<F>(&self, mut utxo_lookup: F) -> Result<BlockUndo, StryiCoreError>
+    /// The lookup function must be async and return the full UTXO data corresponding to the given OutPoint.
+    pub async fn create_undo<F, Fut>(&self, utxo_lookup: F) -> Result<BlockUndo, StryiCoreError>
     where
-        F: FnMut(&OutPoint) -> Option<UTXO>,
+        F: Fn(&OutPoint) -> Fut,
+        Fut: Future<Output = Option<UTXO>>,
     {
         let mut spent_utxos = HashSet::new();
         let mut created_outpoints = HashSet::new();
 
         for tx in &self.data.transactions {
-            process_inputs(tx, &mut utxo_lookup, &mut spent_utxos)?;
+            process_inputs(tx, &utxo_lookup, &mut spent_utxos).await?;
             process_outputs(tx, &mut created_outpoints);
         }
 
@@ -40,21 +41,24 @@ impl Block {
 }
 
 /// Processes the inputs of a transaction, inserting (OutPoint, UTXO) pairs into `spent`.
-fn process_inputs<F>(
+/// Uses async lookup function to retrieve UTXO data.
+async fn process_inputs<F, Fut>(
     tx: &Transaction,
-    utxo_lookup: &mut F,
+    utxo_lookup: &F,
     spent: &mut HashSet<(OutPoint, UTXO)>,
 ) -> Result<(), StryiCoreError>
 where
-    F: FnMut(&OutPoint) -> Option<UTXO>,
+    F: Fn(&OutPoint) -> Fut,
+    Fut: Future<Output = Option<UTXO>>,
 {
     for input in &tx.data.inputs {
-        let utxo = utxo_lookup(&input.previous_output).ok_or_else(|| {
-            StryiCoreError::TxMissingUtxo {
+        let utxo = utxo_lookup(&input.previous_output)
+            .await
+            .ok_or_else(|| StryiCoreError::TxMissingUtxo {
                 txid: input.previous_output.txid.clone(),
                 vout: input.previous_output.vout,
-            }
-        })?;
+            })?;
+
         spent.insert((input.previous_output.clone(), utxo));
     }
     Ok(())
@@ -72,17 +76,16 @@ fn process_outputs(tx: &Transaction, created: &mut HashSet<OutPoint>) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use crate::address::AccountAddress;
-    use crate::block::{Block, BlockData, BlockHeader, BlockHash};
-    use crate::error::StryiCoreError;
-    use crate::transactions::{Transaction, TransactionData, TransactionIn, TransactionOut, OutPoint, UTXO, TransactionHash, TransactionKind};
+    use crate::block::{BlockData, BlockHash, BlockHeader};
+    use crate::transactions::{TransactionData, TransactionHash, TransactionIn, TransactionKind, TransactionOut};
+    use super::*;
 
-    #[test]
-    fn test_create_undo_success() {
-        // Create a dummy transaction outputs and utxos
+    #[tokio::test]
+    async fn test_create_undo_success() {
+        // Create test data
         let dummy_txid = TransactionHash::new(&[1u8; 32]);
         let dummy_outpoint = OutPoint {
             txid: dummy_txid.clone(),
@@ -95,75 +98,35 @@ mod tests {
             owner: AccountAddress::new(&[2u8; 20]),
         };
 
-        // Create a transaction that spends the dummy_outpoint and creates two outputs.
-        let tx_in = TransactionIn {
-            previous_output: dummy_outpoint.clone(),
-            sequence: 0,
-        };
+        // Create transaction data
+        let block = create_test_block(&dummy_outpoint);
 
-        let tx_out1 = TransactionOut {
-            value: 600,
-            recipient: AccountAddress::new(&[3u8; 20]),
-        };
-        let tx_out2 = TransactionOut {
-            value: 400,
-            recipient: AccountAddress::new(&[2u8; 20]),
-        };
-
-        let tx_data = TransactionData {
-            version: 0,
-            kind: TransactionKind::Payment, 
-            inputs: vec![tx_in],
-            outputs: vec![tx_out1, tx_out2],
-
-        };
-
-        // Create the transaction. Use Default::default() for the signature value.
-        let transaction = Transaction {
-            data: tx_data,
-            signature: Default::default(),
-        };
-
-        let block_data = BlockData {
-            transactions: vec![transaction],
-        };
-
-        let block_header = BlockHeader {
-            version: 1,
-            merkle_root_hash: [0u8; 32],
-            previous_block_hash: BlockHash::empty(),
-            height: 0,
-            difficulty_bits: 1,
-            timestamp: 0,
-            nonce: 0,
-            is_genesis: false,
-        };
-
-        let block = Block {
-            header: block_header,
-            data: block_data,
-        };
-
-        // Define a lookup closure that returns the dummy_utxo for the dummy_outpoint.
+        // Define async lookup closure - now using clone inside async block
         let lookup = |op: &OutPoint| {
-            if op == &dummy_outpoint {
-                Some(dummy_utxo.clone())
-            } else {
-                None
+            let op = op.clone();  // Clone the input parameter
+            let dummy_outpoint = dummy_outpoint.clone();
+            let dummy_utxo = dummy_utxo.clone();
+            async move {
+                if op == dummy_outpoint {
+                    Some(dummy_utxo)
+                } else {
+                    None
+                }
             }
         };
+        
+        // Call create_undo with await
+        let undo = block.create_undo(lookup)
+            .await
+            .expect("Undo creation should succeed");
 
-        // Call create_undo.
-        let undo = block.create_undo(lookup).expect("Undo creation should succeed");
-
-        // Verify that spent_utxos contains the expected pair.
+        // Verify spent UTXOs
         assert!(
             undo.spent_utxos.contains(&(dummy_outpoint.clone(), dummy_utxo.clone())),
             "Spent UTXO should be recorded"
         );
 
-        // The created_outpoints are computed from each transaction’s hash.
-        // Here we call TransactionData::hash() on the transaction data to determine the txid.
+        // Verify created outpoints
         let txid = block.data.transactions[0].data.hash();
         let expected_outpoint0 = OutPoint {
             txid: txid.clone(),
@@ -183,67 +146,25 @@ mod tests {
             "Second created outpoint should be present"
         );
 
-        // Check that the sets have the expected sizes.
         assert_eq!(undo.spent_utxos.len(), 1, "There should be exactly one spent UTXO recorded");
         assert_eq!(undo.created_outpoints.len(), 2, "There should be exactly two created outpoints");
     }
 
-    #[test]
-    fn test_create_undo_missing_utxo() {
-        // Create a dummy transaction input referencing an outpoint that is missing.
+    #[tokio::test]
+    async fn test_create_undo_missing_utxo() {
         let dummy_txid = TransactionHash::new(&[5u8; 32]);
         let missing_outpoint = OutPoint {
             txid: dummy_txid.clone(),
             vout: 0,
         };
 
-        let tx_in = TransactionIn {
-            previous_output: missing_outpoint.clone(),
-            sequence: 0,
-        };
+        let block = create_test_block(&missing_outpoint);
 
-        let tx_out = TransactionOut {
-            value: 1000,
-            recipient: AccountAddress::new(&[6u8; 20]),
-        };
+        // Define async lookup that always returns None - no closure capture issues here
+        let lookup = |_op: &OutPoint| async { None };
 
-        let tx_data = TransactionData {
-            version: 0,
-            kind: TransactionKind::Payment,
-            inputs: vec![tx_in],
-            outputs: vec![tx_out],
-        };
-
-        let transaction = Transaction {
-            data: tx_data,
-            signature: Default::default(),
-        };
-
-        let block_data = BlockData {
-            transactions: vec![transaction],
-        };
-
-        let block_header = BlockHeader {
-            version: 1,
-            merkle_root_hash: [0u8; 32],
-            previous_block_hash: BlockHash::empty(),
-            height: 0,
-            difficulty_bits: 1,
-            timestamp: 0,
-            nonce: 0,
-            is_genesis: false,
-        };
-
-        let block = Block {
-            header: block_header,
-            data: block_data,
-        };
-
-        // Define a lookup function that always returns None.
-        let lookup = |_op: &OutPoint| -> Option<UTXO> { None };
-
-        // Call create_undo and expect an error.
-        let result = block.create_undo(lookup);
+        // Call create_undo and expect an error
+        let result = block.create_undo(lookup).await;
         assert!(result.is_err(), "Expected error for missing UTXO");
 
         if let Err(e) = result {
@@ -254,6 +175,51 @@ mod tests {
                 }
                 _ => panic!("Expected TxMissingUtxo error, got {:?}", e),
             }
+        }
+    }
+
+    // Helper function to create test block
+    fn create_test_block(input_outpoint: &OutPoint) -> Block {
+        let tx_in = TransactionIn {
+            previous_output: input_outpoint.clone(),
+            sequence: 0,
+        };
+
+        let tx_out1 = TransactionOut {
+            value: 600,
+            recipient: AccountAddress::new(&[3u8; 20]),
+        };
+        let tx_out2 = TransactionOut {
+            value: 400,
+            recipient: AccountAddress::new(&[2u8; 20]),
+        };
+
+        let tx_data = TransactionData {
+            version: 0,
+            kind: TransactionKind::Payment,
+            inputs: vec![tx_in],
+            outputs: vec![tx_out1, tx_out2],
+        };
+
+        let transaction = Transaction {
+            data: tx_data,
+            signature: Default::default(),
+        };
+
+        Block {
+            header: BlockHeader {
+                version: 1,
+                merkle_root_hash: [0u8; 32],
+                previous_block_hash: BlockHash::empty(),
+                height: 0,
+                difficulty_bits: 1,
+                timestamp: 0,
+                nonce: 0,
+                is_genesis: false,
+            },
+            data: BlockData {
+                transactions: vec![transaction],
+            },
         }
     }
 }

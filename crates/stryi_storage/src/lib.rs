@@ -59,7 +59,9 @@ mod utxo;
 
 #[cfg(test)]
 mod tests;
+mod reorganization;
 mod stats;
+mod undo;
 
 use std::path::PathBuf;
 use fjall::{Config as FjallConfig, PartitionCreateOptions, Slice, TxKeyspace, TxPartition};
@@ -128,8 +130,6 @@ impl StryiStorage {
         let stats_partition = keyspace.open_partition("stats", PartitionCreateOptions::default())?;
         let undo_partition = keyspace.open_partition("undo", PartitionCreateOptions::default())?;
 
-        // Construct and return our StryiStorage
-        Ok(StryiStorage {
 
         // Create storage instance
         let mut storage = Self {

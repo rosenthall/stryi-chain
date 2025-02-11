@@ -33,5 +33,8 @@ pub enum StryiStorageError {
     
     #[error("Cannot find value with such key in data base: {0}")]
     NotFound(String),
+    
+    #[error("Cannot construct undo object for the block: {msg}")]
+    UndoCreationError { msg: String },
 }
 
