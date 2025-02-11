@@ -109,55 +109,12 @@ impl StorageStats for StryiStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
-    use fjall::{Config, PartitionCreateOptions};
-    
     #[test]
     fn test_storage_state_operations() -> Result<(), StryiStorageError> {
-        // Create temporary directory for testing
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
 
-        // Initialize storage with required partitions
-        let keyspace = Config::new(temp_dir.path())
-            .temporary(true)
-            .open_transactional()
-            .expect("Failed to open keyspace");
-
-        let stats_partition = keyspace
-            .open_partition("stats", PartitionCreateOptions::default())
-            .expect("Failed to create stats partition");
-
-        // Other required partitions for StryiStorage
-        let blocks_partition = keyspace
-            .open_partition("blocks", PartitionCreateOptions::default())
-            .expect("Failed to create blocks partition");
-
-        let heights_partition = keyspace
-            .open_partition("heights", PartitionCreateOptions::default())
-            .expect("Failed to create heights partition");
-
-        let utxo_partition = keyspace
-            .open_partition("utxo", PartitionCreateOptions::default())
-            .expect("Failed to create utxo partition");
-
-        let undo_partition = keyspace
-            .open_partition("undo", PartitionCreateOptions::default())
-            .expect("Failed to create undo partition");
+        // setup storage
+        let (mut storage, _dir) = crate::blocks::tests::create_test_storage(false);  // setup_state_storage is false
         
-        let addresses_partition = keyspace
-            .open_partition("addresses", PartitionCreateOptions::default())
-            .expect("Failed to create addresses partition");
-
-        let mut storage = StryiStorage {
-            keyspace,
-            blocks_partition,
-            heights_partition,
-            utxo_partition,
-            addresses_partition,
-            stats_partition,
-            undo_partition
-        };
-
         // Initially, storage state should not exist
         assert!(matches!(
             storage.get_current_storage_state(),

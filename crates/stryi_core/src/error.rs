@@ -13,11 +13,6 @@ pub enum StryiCoreError {
     #[error("Error while decoding hex value : {0:?}")]
     InvalidHex(#[from] FromHexError),
 
-    #[error("Got unknown error : {msg:?}")]
-    Other {
-        msg : String
-    },
-
     #[error("Unexpected buffer length trying decode hash. Actual : {actual:?}, expected : {expected:?}")]
     InvalidLength { expected: usize, actual: usize },
 
@@ -83,4 +78,20 @@ pub enum StryiCoreError {
     
     #[error("Detected transaction tries to perform double spend : {txid}:{vout}")]
     TxDoubleSpend { txid: TransactionHash, vout: u32 },
+
+    #[error("Got unknown error : {msg:?}")]
+    Other {
+        msg : String
+    },
+
+}
+
+impl StryiCoreError {
+    
+    /// Constructs simple `StryiCoreError::Other` instance with provided message
+    pub fn other(msg: impl ToString) -> Self {
+        StryiCoreError::Other {
+            msg : msg.to_string()
+        } 
+    }
 }

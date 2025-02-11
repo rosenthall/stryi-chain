@@ -72,7 +72,7 @@ pub trait BlockStorage: Send + Sync {
     async fn put_block(&mut self, block: &Block) -> Result<(), Self::StorageError>;
 
     /// Checks whether a block with the given hash exists.
-    async fn block_exists(&self, hash: &str) -> Result<bool, Self::StorageError>;
+    async fn block_exists(&self, hash: BlockHash) -> Result<bool, Self::StorageError>;
     
     /// Retrieves the entire chain of blocks.
     async fn get_chain(&self) -> Result<Vec<Block>, Self::StorageError>;

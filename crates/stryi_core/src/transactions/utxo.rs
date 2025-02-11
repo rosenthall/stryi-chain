@@ -36,7 +36,7 @@ pub struct TransactionOut {
 }
 
 /// UTXO (Unspent Transaction Output) is a spendable output.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Eq, PartialEq, Hash, Deserialize, Clone)]
 pub struct UTXO {
     /// The transaction hash that created this output
     pub txid: TransactionHash,

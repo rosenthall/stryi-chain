@@ -4,7 +4,7 @@ use crate::dependencies::DependencyGraph;
 use crate::error::StryiCoreError;
 use crate::storage::UtxoStorage;
 use crate::transactions::{
-    OutPoint, Transaction, TransactionKind, TransactionData, UTXO,
+    OutPoint, Transaction, TransactionKind, UTXO,
 };
 use dashmap::{DashMap, DashSet};
 use std::sync::Arc;
