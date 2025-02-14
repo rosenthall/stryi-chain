@@ -43,6 +43,9 @@ mod dependencies;
 mod undo;
 pub use undo::BlockUndo;
 
+/// Implementation of the transactions [mempool](https://www.geeksforgeeks.org/what-is-a-memory-pool/).
+pub mod mempool;
+
 
 // Contains tests for some matter functionality.
 // Some of the tests are present in the concrete modules, but this module contains larger ones with more complex cases like integration tests
