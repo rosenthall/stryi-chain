@@ -1,7 +1,7 @@
 mod transactions;
 mod consensus;
 mod dependencies;
-
+mod mempool;
 
 use crate::{
     address::AccountAddress,
@@ -56,8 +56,8 @@ pub(crate) fn make_block(
             previous_block_hash,
             height,
             difficulty_bits,
-            timestamp: 123456, // Fixed for testing; adjust if needed
-            nonce: 0,          // Fixed for testing; adjust if needed
+            timestamp: 123456,
+            nonce: 0,
             is_genesis,
         },
         data: BlockData { transactions: txs },
