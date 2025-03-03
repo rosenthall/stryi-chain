@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::mempool::FeePolicy;
+use crate::mempool::{FeePolicy, RbfPolicy};
 use crate::transactions::Transaction;
 
 /// Serializable mempool state for network synchronization
@@ -18,6 +18,8 @@ pub struct MemPoolConfig {
     pub max_size: usize,
     /// Fee calculation policy
     pub fee_policy: FeePolicy,
+    /// Replace-by-Fee policy
+    pub rbf_policy: RbfPolicy,
     /// Time in seconds after which transaction is considered expired
     pub expiry_time: u64,
 }
@@ -27,6 +29,7 @@ impl Default for MemPoolConfig {
         Self {
             max_size: 5000,
             fee_policy: FeePolicy::default(),
+            rbf_policy: RbfPolicy::default(),
             expiry_time: 60 * 60, // 1 hour
         }
     }
@@ -34,16 +37,15 @@ impl Default for MemPoolConfig {
 
 impl MemPoolConfig {
     /// Creates new mempool configuration with custom parameters
-    pub fn new(max_size: usize, fee_policy: FeePolicy, expiry_time: u64) -> Self {
+    pub fn new(max_size: usize, fee_policy: FeePolicy, rbf_policy: RbfPolicy, expiry_time: u64) -> Self {
         Self {
             max_size,
             fee_policy,
+            rbf_policy,
             expiry_time,
         }
     }
 }
-
-
 
 /// `Transaction` wrapper with mempool-specific metadata
 #[derive(Debug)]
@@ -54,4 +56,6 @@ pub struct MemPoolTx {
     pub(crate) timestamp: u64,
     /// Calculated fee based on inputs/outputs
     pub(crate) fee: u64,
+    /// Cached serialized size in bytes
+    pub(crate) serialized_size: usize,
 }

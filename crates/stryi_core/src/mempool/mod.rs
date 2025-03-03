@@ -1,341 +1,256 @@
-//! Mempool module that stores unconfirmed transactions, manages dependencies, 
-//! and provides features such as Replace-by-Fee (RBF), topological ordering, 
+//! Mempool module that stores unconfirmed transactions, manages dependencies,
+//! and provides features such as Replace-by-Fee (RBF), topological ordering,
 //! and ancestor scoring for transaction selection.
 
 mod fee_policy;
 pub use fee_policy::*;
 
+mod rbf_conflicts;
+pub use rbf_conflicts::*;
+
+mod validator;
 mod error;
 mod types;
-pub use error::*;
+pub use types::{MemPoolConfig, MemPoolSyncData};
 
-use std::collections::{HashMap, HashSet, VecDeque};
+mod storage;
+mod dependencies;
+
+use std::collections::{HashSet, HashMap};
+use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use petgraph::graph::{DiGraph, NodeIndex};
-use petgraph::prelude::{Direction, EdgeRef};
-use tokio::sync::RwLock;
-
-use crate::transactions::{Transaction, TransactionHash, OutPoint, UTXO};
-use crate::mempool::types::{MemPoolConfig, MemPoolSyncData, MemPoolTx};
+use petgraph::graph::NodeIndex;
+use crate::block::BlockData;
+use crate::mempool::dependencies::DependencyTracker;
+use crate::mempool::error::MemPoolError;
+use crate::mempool::storage::TransactionStorage;
+use crate::mempool::validator::{MempoolTxValidator, MempoolValidationError};
+use crate::transactions::{OutPoint, Transaction, TransactionHash, UTXO};
 
 /// A type alias for the asynchronous UTXO lookup function.
-/// It must return Some(UTXO) if the given outpoint is valid and unspent on-chain,
-/// or None otherwise.
+/// Given an OutPoint, returns a Future resolving to Option<UTXO>.
 pub type UtxoLookup = Box<dyn Fn(&OutPoint) -> Pin<Box<dyn Future<Output = Option<UTXO>> + Send>> + Send + Sync>;
 
-/// Primary mempool structure that holds a shared state of unconfirmed transactions,
-/// along with a user-provided UTXO lookup function.
+/// Main mempool structure.
 pub struct MemPool {
-    /// Shared state, protected by RwLock.
-    state: Arc<RwLock<MemPoolState>>,
-    /// Function to asynchronously query the on-chain UTXOs.
-    utxo_lookup: UtxoLookup,
-}
-
-/// Internal state of the mempool, including all transactions, indexes, and dependency graph.
-struct MemPoolState {
-    /// Maps transaction hash -> mempool entry (which includes fee, timestamp, etc.).
-    transactions: HashMap<TransactionHash, MemPoolTx>,
-    /// Maps each OutPoint -> transaction hash of the mempool transaction that spends it.
-    outpoint_index: HashMap<OutPoint, TransactionHash>,
-    /// Maps transaction hash -> NodeIndex in the dependency graph.
-    hash_to_index: HashMap<TransactionHash, NodeIndex>,
-    /// A directed acyclic graph (DAG) tracking dependencies (parent -> child).
-    dependency_graph: DiGraph<TransactionHash, ()>,
-    /// Fee calculator (configurable via FeePolicy).
+    /// Storage for unconfirmed transactions.
+    storage: TransactionStorage,
+    /// Dependency tracker that maintains a DAG of transaction dependencies.
+    dependency_tracker: DependencyTracker,
+    /// Internal conflict resolver using Replace-by-Fee.
+    rbf_resolver: RbfConflictResolver,
+    /// Validator for incoming transactions.
+    validator: MempoolTxValidator,
+    /// Fee calculator (based on FeePolicy).
     fee_calculator: FeeCalculator,
-    /// Maximum number of transactions allowed in the mempool.
-    max_size: usize,
-    /// Time in seconds after which transactions are considered expired.
-    expiry_time: u64,
+    /// General configuration (max_size, fee_policy, rbf_policy, expiry_time, etc.).
+    config: MemPoolConfig,
 }
 
 impl MemPool {
-    /// Returns the current Unix timestamp in seconds.
-    fn current_timestamp() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Clock is set before Unix epoch")
-            .as_secs()
-    }
-
-    /// Creates a new mempool instance with the specified configuration and UTXO lookup function.
-    /// `config` controls parameters such as max_size, fee policy, expiry_time.
-    /// `utxo_lookup` is used to verify whether inputs exist on-chain.
+    /// Creates a new mempool instance.
+    ///
+    /// Initializes internal modules:
+    ///  - TransactionStorage for storing transactions.
+    ///  - DependencyTracker for maintaining the dependency graph.
+    ///  - FeeCalculator (from config).
+    ///  - RbfConflictResolver (from config).
+    ///  - MempoolTxValidator with the provided async UTXO lookup.
     pub fn new(config: MemPoolConfig, utxo_lookup: UtxoLookup) -> Self {
         Self {
-            state: Arc::new(RwLock::new(MemPoolState {
-                transactions: HashMap::with_capacity(config.max_size),
-                outpoint_index: HashMap::with_capacity(config.max_size),
-                hash_to_index: HashMap::with_capacity(config.max_size),
-                dependency_graph: DiGraph::new(),
-                fee_calculator: FeeCalculator::new(config.fee_policy),
-                max_size: config.max_size,
-                expiry_time: config.expiry_time,
-            })),
-            utxo_lookup,
+            storage: TransactionStorage::default(),
+            dependency_tracker: DependencyTracker::default(),
+            fee_calculator: FeeCalculator::new(config.fee_policy.clone()),
+            rbf_resolver: RbfConflictResolver::new(config.rbf_policy.clone()),
+            validator: MempoolTxValidator::new(utxo_lookup),
+            config,
         }
     }
 
-    /// Serializes the mempool into a MemPoolSyncData structure for synchronization or persistence.
-    /// Returns the encoded bytes or a Storage error on failure.
+    /// Adds a new transaction to the mempool.
+    ///
+    /// 1. Checks if the transaction is already in the pool or if the pool is full.
+    /// 2. Validates the transaction using MempoolTxValidator.
+    /// 3. Calculates the required fee.
+    /// 4. Finds conflicts via `rbf_resolver.find_conflicts(...)`.
+    /// 5. Attempts to resolve them with `rbf_resolver.resolve_conflicts(...)`,
+    ///    which may remove conflicting transactions and their descendants if the new fee is sufficient.
+    /// 6. Inserts the new transaction into storage.
+    /// 7. Updates the dependency tracker with parent–child relationships.
+    pub async fn add_transaction(&mut self, tx: Transaction) -> Result<(), MemPoolError> {
+        let tx_hash = tx.data.hash();
+
+        // 1. Check for duplicate or pool capacity
+        if self.storage.exists(&tx_hash) {
+            return Err(MemPoolError::DuplicateTransaction { hash: tx_hash });
+        }
+
+        if self.storage.len() >= self.config.max_size {
+            return Err(MemPoolError::PoolFull { size: self.config.max_size });
+        }
+
+        // 2. Validate the transaction (signatures, UTXO ownership, etc.)
+        let validation_result = self.validator.validate(&tx, &self.storage).await;
+        let utxos = match validation_result {
+            Ok(utxos) => utxos,
+            Err(MempoolValidationError::PotentialRbf(utxos)) => {
+                // This is a special case - it passed all validation except for potentially replacing existing tx
+                // We'll proceed with conflict resolution
+                utxos
+            }
+            Err(err) => return Err(MemPoolError::ValidationError(err)),
+        };
+
+        // 3. Calculate both explicit and implicit fees
+        let explicit_fee = self.fee_calculator.calculate_fee(&tx);
+
+        // Calculate implicit fee (input sum - output sum)
+        let input_sum = utxos.iter().map(|utxo| utxo.value).sum::<u64>();
+        let output_sum = tx.data.outputs.iter().map(|out| out.value).sum::<u64>();
+        let implicit_fee = input_sum.saturating_sub(output_sum);
+
+        // Use the greater of the two fees
+        let actual_fee = std::cmp::max(explicit_fee, implicit_fee);
+
+        // For now, we can hardcode a load_factor of 1.0
+        let load_factor = 1.0;
+
+        // 4. Find conflicts
+        let conflicts = self.rbf_resolver.find_conflicts(&tx, &self.storage);
+
+        // 5. If there are conflicts, resolve them via RBF
+        if !conflicts.is_empty() {
+            // Process RBF conflicts using the actual fee
+            if let Err(rbf_err) = self.rbf_resolver.resolve_conflicts(
+                &conflicts,
+                &mut self.storage,
+                &mut self.dependency_tracker,
+                actual_fee, // Use actual_fee here
+                load_factor,
+            ) {
+                return match rbf_err {
+                    // If the new fee is too low
+                    RbfConflictError::InsufficientFee { required, actual } => {
+                        Err(MemPoolError::InsufficientFee { required, actual })
+                    }
+                    // Fallback for any other error
+                    RbfConflictError::Other(msg) => {
+                        Err(MemPoolError::Storage(Box::new(
+                            std::io::Error::new(std::io::ErrorKind::Other, msg),
+                        )))
+                    }
+                }
+            }
+        }
+
+        // 6. Insert the new transaction with the actual fee
+        self.storage.insert(tx_hash.clone(), tx.clone(), actual_fee);
+
+        // 7. Update dependency tracker with parent-child relationships
+        let parent_hashes: Vec<TransactionHash> = tx
+            .data
+            .inputs
+            .iter()
+            .filter_map(|input| self.storage.get_creating_tx(&input.previous_output).cloned())
+            .collect();
+
+        self.dependency_tracker.add_transaction(tx_hash, &parent_hashes);
+
+        Ok(())
+    }
+
+    
+    /// Removes a transaction (and its dependent transactions) from the mempool.
+    ///
+    /// Uses the DependencyTracker to obtain descendant transactions.
+    pub async fn remove_transaction(&mut self, tx_hash: TransactionHash) -> Result<(), MemPoolError> {
+        // Get descendants before removing the transaction
+        let descendants = self.dependency_tracker.get_descendants(&tx_hash);
+
+        // Remove each descendant
+        for child_hash in &descendants {
+            // Storage.remove now handles all index cleaning properly
+            self.storage.remove(child_hash);
+            self.dependency_tracker.remove_transaction(child_hash);
+        }
+
+        // Remove the transaction itself
+        self.storage.remove(&tx_hash);
+        self.dependency_tracker.remove_transaction(&tx_hash);
+
+        Ok(())
+    }
+
+    /// Serializes the mempool state for network synchronization or persistence.
+    ///
+    /// Builds a MemPoolSyncData struct containing all transactions and the current timestamp,
+    /// then serializes it using bincode.
     pub async fn handle_get_state(&self) -> Result<Vec<u8>, MemPoolError> {
-        let state = self.state.read().await;
+        let all_tx = self.storage.get_all();
         let sync_data = MemPoolSyncData {
-            transactions: state
-                .transactions
-                .values()
-                .map(|e| e.transaction.clone())
-                .collect(),
-            timestamp: Self::current_timestamp(),
+            transactions: all_tx.iter().map(|entry| entry.transaction.clone()).collect(),
+            timestamp: current_timestamp(),
         };
         bincode::serde::encode_to_vec(&sync_data, bincode::config::standard())
             .map_err(|e| MemPoolError::Storage(Box::new(e)))
     }
 
-    /// Checks basic conditions: whether there's capacity for a new transaction,
-    /// and whether this transaction is already in the mempool.
-    async fn validate_basic(&self, state: &MemPoolState, tx_hash: &TransactionHash) -> Result<(), MemPoolError> {
-        if state.transactions.len() >= state.max_size {
-            return Err(MemPoolError::PoolFull { size: state.max_size });
-        }
-        if state.transactions.contains_key(tx_hash) {
-            return Err(MemPoolError::DuplicateTransaction { hash: tx_hash.clone() });
-        }
-        Ok(())
-    }
+    /// Restores the mempool state from a serialized snapshot.
+    ///
+    /// Clears current storage and dependency tracker, then re-inserts transactions from the snapshot.
+    pub async fn restore_state(&mut self, data: Vec<u8>) -> Result<(), MemPoolError> {
+        let sync_data: MemPoolSyncData = bincode::serde::decode_from_slice(&data, bincode::config::standard())
+            .map_err(|e| MemPoolError::Storage(Box::new(e)))?
+            .0;
 
-    /// Validates the transaction's inputs. Checks for missing UTXOs (in chain),
-    /// and handles Replace-by-Fee if any outpoint is already spent by a lower-fee mempool transaction.
-    /// If required_fee is not strictly higher than the conflict's fee, returns InsufficientFee error.
-    async fn validate_inputs(
-        &self,
-        state: &mut MemPoolState,
-        tx: &Transaction,
-        required_fee: u64,
-    ) -> Result<(), MemPoolError> {
-        let mut missing = Vec::new();
-        let mut conflicts = HashSet::new();
+        self.storage.clear();
+        self.dependency_tracker.clear();
 
-        for input in &tx.data.inputs {
-            match state.outpoint_index.get(&input.previous_output) {
-                Some(hash_in_mempool) => {
-                    let conflict_entry = state
-                        .transactions
-                        .get(hash_in_mempool)
-                        .expect("Inconsistent mempool indexing");
-                    if required_fee <= conflict_entry.fee {
-                        return Err(MemPoolError::InsufficientFee {
-                            required: conflict_entry.fee + 1,
-                            actual: required_fee,
-                        });
-                    }
-                    conflicts.insert(hash_in_mempool.clone());
-                }
-                None => {
-                    if (self.utxo_lookup)(&input.previous_output).await.is_none() {
-                        missing.push(input.previous_output.clone());
-                    }
-                }
-            }
-        }
-
-        if !missing.is_empty() {
-            return Err(MemPoolError::MissingUtxos(missing));
-        }
-
-        for old_hash in conflicts {
-            self.remove_with_descendants(state, &old_hash);
-        }
-
-        Ok(())
-    }
-
-    /// Inserts a new transaction into all relevant data structures:
-    /// - Adds it as a node in the DAG
-    /// - Marks all of its inputs and outputs in outpoint_index
-    /// - Inserts the MemPoolTx into transactions map
-    fn insert_transaction(state: &mut MemPoolState, tx: Transaction, tx_hash: TransactionHash, fee: u64) {
-        let node_idx = state.dependency_graph.add_node(tx_hash.clone());
-        state.hash_to_index.insert(tx_hash.clone(), node_idx);
-
-        for input in &tx.data.inputs {
-            state.outpoint_index.insert(input.previous_output.clone(), tx_hash.clone());
-            if let Some(producer_hash) = state.outpoint_index.get(&input.previous_output) {
-                if let Some(&producer_idx) = state.hash_to_index.get(producer_hash) {
-                    state.dependency_graph.add_edge(producer_idx, node_idx, ());
-                }
-            }
-        }
-        for (vout_idx, _) in tx.data.outputs.iter().enumerate() {
-            let outp = OutPoint {
-                txid: tx_hash.clone(),
-                vout: vout_idx as u32,
-            };
-            state.outpoint_index.insert(outp, tx_hash.clone());
-        }
-
-        let entry = MemPoolTx {
-            transaction: tx,
-            timestamp: Self::current_timestamp(),
-            fee,
-        };
-        state.transactions.insert(tx_hash, entry);
-    }
-
-    /// Adds a transaction to the mempool. Checks capacity, duplicates, does input validation,
-    /// handles RBF, and inserts the transaction if all checks pass.
-    pub async fn add_transaction(&self, tx: Transaction) -> Result<(), MemPoolError> {
-        let tx_hash = tx.data.hash();
-        let needed_fee = {
-            let read_state = self.state.read().await;
-            read_state.fee_calculator.calculate_fee(&tx)
-        };
-
-        let mut state = self.state.write().await;
-        self.validate_basic(&state, &tx_hash).await?;
-        self.validate_inputs(&mut state, &tx, needed_fee).await?;
-        Self::insert_transaction(&mut state, tx, tx_hash, needed_fee);
-        Ok(())
-    }
-
-    /// Removes a transaction from the mempool along with all of its descendants in the DAG.
-    /// A descendant is any transaction that depends on this transaction's outputs, directly or indirectly.
-    fn remove_with_descendants(&self, state: &mut MemPoolState, root_hash: &TransactionHash) {
-        let Some(root_idx) = state.hash_to_index.remove(root_hash) else {
-            return;
-        };
-
-        let mut to_remove = HashSet::new();
-        to_remove.insert(root_idx);
-        let mut queue = VecDeque::new();
-        queue.push_back(root_idx);
-
-        while let Some(curr) = queue.pop_front() {
-            let edges = state
-                .dependency_graph
-                .edges_directed(curr, Direction::Outgoing)
-                .map(|e| e.target())
-                .collect::<Vec<_>>();
-            for child_idx in edges {
-                if !to_remove.contains(&child_idx) {
-                    to_remove.insert(child_idx);
-                    queue.push_back(child_idx);
-                }
-            }
-        }
-
-        let mut removal_list: Vec<NodeIndex> = to_remove.into_iter().collect();
-        removal_list.sort_by_key(|ni| ni.index());
-        removal_list.reverse();
-
-        for idx in &removal_list {
-            if let Some(tx_hash_ref) = state.dependency_graph.node_weight(*idx) {
-                let clone_hash = tx_hash_ref.clone();
-                if let Some(old_tx) = state.transactions.remove(&clone_hash) {
-                    for input in &old_tx.transaction.data.inputs {
-                        state.outpoint_index.remove(&input.previous_output);
-                    }
-                    for (vout_idx, _) in old_tx.transaction.data.outputs.iter().enumerate() {
-                        let outp = OutPoint {
-                            txid: clone_hash.clone(),
-                            vout: vout_idx as u32,
-                        };
-                        state.outpoint_index.remove(&outp);
-                    }
-                }
-                state.hash_to_index.remove(&clone_hash);
-            }
-        }
-
-        for idx in removal_list {
-            state.dependency_graph.remove_node(idx);
-        }
-    }
-
-    /// Removes a transaction by its hash, using remove_with_descendants to ensure no invalid
-    /// child transactions remain in the mempool.
-    pub async fn remove_transaction(&self, tx_hash: TransactionHash) -> Result<(), MemPoolError> {
-        let mut state = self.state.write().await;
-        self.remove_with_descendants(&mut state, &tx_hash);
-        Ok(())
-    }
-
-    /// Returns a set of transactions in a feasible order (parents before children),
-    /// based on a topological approach plus ancestor scoring. This tries to group
-    /// dependent transactions and pick the chain with the best effective fee rate.
-    pub async fn get_best_transactions(&self, limit: usize) -> Result<Vec<Transaction>, MemPoolError> {
-        let state = self.state.read().await;
-        let ordered = topological_order(&state.dependency_graph, &state.hash_to_index);
-        let scored = build_ancestor_scores(&ordered, &state);
-        let mut all_nodes: Vec<_> = scored.into_iter().collect();
-        all_nodes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        let mut result = Vec::new();
-        let mut used_nodes = HashSet::new();
-
-        for (node_idx, _) in all_nodes {
-            if used_nodes.contains(&node_idx) {
-                continue;
-            }
-            if let Some(tx_hash) = state.dependency_graph.node_weight(node_idx) {
-                if let Some(memtx) = state.transactions.get(tx_hash) {
-                    let ancestors = gather_ancestors(node_idx, &state.dependency_graph);
-                    let mut can_select = true;
-                    for anc_idx in &ancestors {
-                        if used_nodes.contains(anc_idx) {
-                            can_select = false;
-                            break;
-                        }
-                    }
-                    if can_select {
-                        for anc_idx in &ancestors {
-                            used_nodes.insert(*anc_idx);
-                            if let Some(dep_hash) = state.dependency_graph.node_weight(*anc_idx) {
-                                if let Some(dep_tx) = state.transactions.get(dep_hash) {
-                                    result.push(dep_tx.transaction.clone());
-                                    if result.len() >= limit {
-                                        return Ok(result);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if result.len() >= limit {
-                break;
-            }
-        }
-        Ok(result)
-    }
-
-    /// After a new block is confirmed, remove the included transactions from the mempool
-    /// along with any descendants that depended on them.
-    pub async fn update_on_block(&self, block: crate::block::BlockData) -> Result<(), MemPoolError> {
-        let mut state = self.state.write().await;
-        for tx in &block.transactions {
+        for tx in sync_data.transactions {
             let tx_hash = tx.data.hash();
-            self.remove_with_descendants(&mut state, &tx_hash);
+            let fee = self.fee_calculator.calculate_fee(&tx);
+
+            self.storage.insert(tx_hash.clone(), tx.clone(), fee);
+
+            let parent_hashes: Vec<TransactionHash> = tx
+                .data
+                .inputs
+                .iter()
+                .filter_map(|input| self.storage.get_creating_tx(&input.previous_output).cloned())
+                .collect();
+
+            self.dependency_tracker.add_transaction(tx_hash, &parent_hashes);
+        }
+
+        Ok(())
+    }
+
+    /// Updates the mempool after a block is confirmed.
+    ///
+    /// For every transaction in the block, removes it (and its descendants) from the mempool.
+    pub async fn update_on_block(&mut self, block: BlockData) -> Result<(), MemPoolError> {
+        for tx in block.transactions {
+            let tx_hash = tx.data.hash();
+            self.remove_transaction(tx_hash).await?;
         }
         Ok(())
     }
 
-    /// Removes any transactions whose timestamps exceed the configured expiry_time,
-    /// cleaning out stale entries.
-    pub async fn cleanup_expired(&self) -> Result<(), MemPoolError> {
-        let now = Self::current_timestamp();
-        let mut state = self.state.write().await;
-
-        let expired: Vec<_> = state
-            .transactions
-            .iter()
-            .filter_map(|(h, memtx)| {
-                if now.saturating_sub(memtx.timestamp) > state.expiry_time {
-                    Some(h.clone())
+    /// Removes expired transactions from the mempool.
+    ///
+    /// Checks each stored transaction's timestamp and removes it (and its descendants)
+    /// if its age exceeds the configured expiry time.
+    pub async fn cleanup_expired(&mut self) -> Result<(), MemPoolError> {
+        let now = current_timestamp();
+        let expired: Vec<TransactionHash> = self
+            .storage
+            .get_all()
+            .into_iter()
+            .filter_map(|entry| {
+                if now.saturating_sub(entry.timestamp) > self.config.expiry_time {
+                    Some(entry.transaction.data.hash())
                 } else {
                     None
                 }
@@ -343,158 +258,132 @@ impl MemPool {
             .collect();
 
         for tx_hash in expired {
-            self.remove_with_descendants(&mut state, &tx_hash);
+            self.remove_transaction(tx_hash).await?;
         }
+
         Ok(())
     }
 
-    /// Restores the mempool from a serialized snapshot. Clears the existing data
-    /// and populates it with the given transactions, recalculating fees and indexes.
-    pub async fn restore_state(&self, data: Vec<u8>) -> Result<(), MemPoolError> {
-        let sync_data: MemPoolSyncData =
-            bincode::serde::decode_from_slice(&data, bincode::config::standard())
-                .map_err(|e| MemPoolError::Storage(Box::new(e)))?
-                .0;
+    /// Retrieves up to `limit` best transactions for block inclusion.
+    ///
+    /// Uses a sophisticated selection algorithm that balances between:
+    /// - package fee rate (transaction and its ancestors)
+    /// - individual fee rate
+    /// - dependency constraints
+    /// Returns transactions in valid inclusion order (parents before children).
+    pub async fn get_best_transactions(&self, limit: usize) -> Result<Vec<Transaction>, MemPoolError> {
+        // Get topological ordering of transactions
+        let order = self.dependency_tracker.topological_order();
 
-        let mut state = self.state.write().await;
-
-        state.transactions.clear();
-        state.outpoint_index.clear();
-        state.dependency_graph = DiGraph::new();
-        state.hash_to_index.clear();
-
-        for tx in sync_data.transactions {
-            let tx_hash = tx.data.hash();
-            let fee = state.fee_calculator.calculate_fee(&tx);
-            let entry = MemPoolTx {
-                transaction: tx.clone(),
-                timestamp: Self::current_timestamp(),
-                fee,
-            };
-            state.transactions.insert(tx_hash.clone(), entry);
-            let node_idx = state.dependency_graph.add_node(tx_hash.clone());
-            state.hash_to_index.insert(tx_hash.clone(), node_idx);
-
-            for inp in &tx.data.inputs {
-                state.outpoint_index.insert(inp.previous_output.clone(), tx_hash.clone());
-            }
-            for (vout_idx, _) in tx.data.outputs.iter().enumerate() {
-                let outp = OutPoint {
-                    txid: tx_hash.clone(),
-                    vout: vout_idx as u32,
-                };
-                state.outpoint_index.insert(outp, tx_hash.clone());
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Performs a topological sort of all nodes in the DAG, returning
-/// a list of NodeIndexes in topological order (parents before children).
-fn topological_order(
-    graph: &DiGraph<TransactionHash, ()>,
-    hash_index: &HashMap<TransactionHash, NodeIndex>
-) -> Vec<NodeIndex> {
-    let mut visited = HashSet::new();
-    let mut stack = Vec::new();
-    let mut order = Vec::new();
-
-    for idx in hash_index.values() {
-        if !visited.contains(idx) {
-            dfs_topo(*idx, graph, &mut visited, &mut stack);
-        }
-    }
-    while let Some(node) = stack.pop() {
-        order.push(node);
-    }
-    order
-}
-
-/// Recursive DFS helper for topological sorting. Traverses all descendants
-/// and pushes the node onto the stack when finished.
-fn dfs_topo(
-    current: NodeIndex,
-    graph: &DiGraph<TransactionHash, ()>,
-    visited: &mut HashSet<NodeIndex>,
-    stack: &mut Vec<NodeIndex>
-) {
-    visited.insert(current);
-    let edges = graph
-        .edges_directed(current, Direction::Outgoing)
-        .map(|e| e.target())
-        .collect::<Vec<_>>();
-    for nxt in edges {
-        if !visited.contains(&nxt) {
-            dfs_topo(nxt, graph, visited, stack);
-        }
-    }
-    stack.push(current);
-}
-
-/// Gathers all ancestors (including the node itself) by following incoming edges upward.
-/// The result is a list of NodeIndexes representing this node and its transitive parents.
-fn gather_ancestors(
-    start: NodeIndex,
-    graph: &DiGraph<TransactionHash, ()>
-) -> Vec<NodeIndex> {
-    let mut result = Vec::new();
-    let mut stack = vec![start];
-    let mut visited = HashSet::new();
-
-    while let Some(n) = stack.pop() {
-        if !visited.insert(n) {
-            continue;
-        }
-        result.push(n);
-        let incoming = graph
-            .edges_directed(n, Direction::Incoming)
-            .map(|e| e.source())
-            .collect::<Vec<_>>();
-        for src in incoming {
-            if !visited.contains(&src) {
-                stack.push(src);
-            }
-        }
-    }
-    result.reverse();
-    result
-}
-
-/// Computes a rough "ancestor-based" fee rate for each node:
-/// 1) Collect all ancestors (including the node).
-/// 2) Sum total fees, sum total serialized sizes.
-/// 3) Rate = total_fee / total_size.
-/// Returns a vector of (NodeIndex, rate).
-fn build_ancestor_scores(
-    order: &[NodeIndex],
-    state: &MemPoolState
-) -> Vec<(NodeIndex, f64)> {
-    let mut scores = Vec::new();
-
-    for &idx in order {
-        let ancestors = gather_ancestors(idx, &state.dependency_graph);
-        let mut total_fee = 0u64;
-        let mut total_size = 0usize;
-
-        for anc in ancestors {
-            if let Some(tx_hash) = state.dependency_graph.node_weight(anc) {
-                if let Some(mem_tx) = state.transactions.get(tx_hash) {
-                    total_fee = total_fee.saturating_add(mem_tx.fee);
-                    let bytes = bincode::serde::encode_to_vec(&mem_tx.transaction, bincode::config::standard())
-                        .map(|v| v.len())
-                        .unwrap_or(0);
-                    total_size = total_size.saturating_add(bytes);
+        // Calculate individual fee rates for each transaction
+        let mut individual_scores: HashMap<NodeIndex, f64> = HashMap::new();
+        for &node_idx in &order {
+            if let Some(tx_hash) = self.dependency_tracker.get_tx_by_node(node_idx) {
+                if let Some(mem_tx) = self.storage.get(&tx_hash) {
+                    let fee_rate = if mem_tx.serialized_size > 0 {
+                        mem_tx.fee as f64 / mem_tx.serialized_size as f64
+                    } else {
+                        0.0
+                    };
+                    individual_scores.insert(node_idx, fee_rate);
                 }
             }
         }
 
-        let rate = if total_size == 0 {
-            0.0
-        } else {
-            total_fee as f64 / total_size as f64
-        };
-        scores.push((idx, rate));
+        // Calculate ancestor package scores
+        let ancestor_scores = build_ancestor_scores(&order, &self.storage, &self.dependency_tracker);
+
+        // Create combined score using weighted approach
+        let mut combined_scores: Vec<(NodeIndex, f64)> = Vec::new();
+        for (node_idx, package_score) in ancestor_scores {
+            let individual_score = individual_scores.get(&node_idx).copied().unwrap_or(0.0);
+
+            // Weighted combination (can be tuned based on blockchain economics)
+            // Higher weight on package score ensures dependencies are preserved
+            let combined_score = (package_score * 0.7) + (individual_score * 0.3);
+
+            combined_scores.push((node_idx, combined_score));
+        }
+
+        // Sort by combined score
+        combined_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Select transactions with knapsack-like approach
+        let mut result = Vec::new();
+        let mut used_nodes = HashSet::new();
+        let mut remaining_space = limit;
+
+        for (node_idx, _) in combined_scores {
+            // Skip if already included or no space left
+            if used_nodes.contains(&node_idx) || remaining_space == 0 {
+                continue;
+            }
+
+            if let Some(tx_hash) = self.dependency_tracker.get_tx_by_node(node_idx) {
+                if let Some(_) = self.storage.get(&tx_hash) {
+                    // Get all required ancestors in topological order
+                    let ancestors = self.dependency_tracker.gather_ancestors(node_idx);
+
+                    // Count new transactions (not already selected)
+                    let new_txs: Vec<NodeIndex> = ancestors.into_iter()
+                        .filter(|&anc| !used_nodes.contains(&anc))
+                        .collect();
+
+                    // Check if all ancestors fit in remaining space
+                    if new_txs.len() <= remaining_space {
+                        for anc in new_txs {
+                            if used_nodes.insert(anc) {
+                                if let Some(anc_tx_hash) = self.dependency_tracker.get_tx_by_node(anc) {
+                                    if let Some(anc_tx) = self.storage.get(&anc_tx_hash) {
+                                        result.push(anc_tx.transaction.clone());
+                                        remaining_space -= 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(result)
+    }
+}
+
+/// Helper function to get current Unix timestamp
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_secs()
+}
+
+/// Computes ancestor fee scores for each node in the dependency graph.
+/// For each node, sums fees and serialized sizes for itself and all its ancestors,
+/// then computes a fee rate as total_fee/total_size.
+fn build_ancestor_scores(
+    order: &[NodeIndex],
+    storage: &TransactionStorage,
+    tracker: &DependencyTracker,
+) -> Vec<(NodeIndex, f64)> {
+    let mut scores = Vec::new();
+    for &node in order {
+        let ancestors = tracker.gather_ancestors(node);
+        let mut total_fee = 0u64;
+        let mut total_size = 0usize;
+
+        for anc in ancestors {
+            if let Some(tx_hash) = tracker.get_tx_by_node(anc) {
+                if let Some(mem_tx) = storage.get(&tx_hash) {
+                    total_fee = total_fee.saturating_add(mem_tx.fee);
+                    // Use cached size instead of recalculating
+                    total_size = total_size.saturating_add(mem_tx.serialized_size);
+                }
+            }
+        }
+
+        let score = if total_size == 0 { 0.0 } else { total_fee as f64 / total_size as f64 };
+        scores.push((node, score));
     }
     scores
 }

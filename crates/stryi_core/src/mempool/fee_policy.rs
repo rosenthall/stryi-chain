@@ -22,7 +22,6 @@ pub struct FeePolicy {
     pub byte_cost: u64,
 }
 
-
 impl Default for FeePolicy {
     /// Creates a default fee policy 
     fn default() -> Self {
@@ -47,7 +46,6 @@ impl FeePolicy {
     }
 }
 
-
 /// Fee calculator that uses FeePolicy to compute transaction fees
 pub struct FeeCalculator {
     policy: FeePolicy,
@@ -60,11 +58,7 @@ impl FeeCalculator {
     }
 
     /// Calculates the minimum required fee for a transaction
-    pub fn calculate_fee(&self, tx: &Transaction) -> u64 { 
-
-        // fee = fixed_fee + (input_cost * num_inputs) + (output_cost * num_outputs) + (byte_cost * tx_size)
-        
-
+    pub fn calculate_fee(&self, tx: &Transaction) -> u64 {
         // Get length of serialized transaction
         let tx_bytes = bincode::serde::encode_to_vec(tx, standard())
             .expect("Transaction serialization cannot fail")
@@ -101,7 +95,7 @@ mod tests {
                 sequence: 0xFFFFFFFF,
             });
         }
-        
+
         // Create dummy outputs
         let mut outputs = Vec::with_capacity(num_outputs);
         for i in 0..num_outputs {
@@ -136,7 +130,7 @@ mod tests {
         let expected_size1 = bincode::serde::encode_to_vec(&tx1, standard())
             .unwrap()
             .len() as u64;
-        
+
         assert_eq!(
             fee1,
             policy.fixed_fee + policy.input_cost + policy.output_cost + (policy.byte_cost * expected_size1)
@@ -149,7 +143,6 @@ mod tests {
             .unwrap()
             .len() as u64;
 
-        
         assert_eq!(
             fee2,
             policy.fixed_fee + (3 * policy.input_cost) + (2 * policy.output_cost) + (policy.byte_cost * expected_size2)
