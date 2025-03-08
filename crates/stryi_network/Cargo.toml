@@ -5,7 +5,7 @@ edition = "2024"
 description = "An implementation of the network protocol"
 authors = ["Rosenthall <rosenthall@riseup.net>"]
 license = "BSD-3-Clause"
-
+build = "build.rs"
 
 [lib]
 name = "stryi_network"
@@ -19,3 +19,10 @@ tokio-util = "0.7.13" # just for CancelationToken
 tracing = "0.1.41"
 libp2p = { version = "0.55.0", features = ["rendezvous", "ping", "gossipsub", "identify", "tcp", "noise", "yamux", "tokio", "macros"] }
 futures = "0.3.31"
+stryi_core = {path = "../stryi_core"}
+tonic = "0.12.3"
+prost = "0.13.5"
+
+[build-dependencies]
+prost = "0.13.5"
+tonic-build = { version = "0.12.3", features = ["prost"] }
