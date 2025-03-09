@@ -41,21 +41,13 @@ message BlockHashList {
 //---------------------------------------------
 message MempoolRequest {}
 
-//---------------------------------------------
-// Transaction submission response
-//---------------------------------------------
-message ProposalResponse {
-  bool   accepted = 1;       // True if added to mempool
-  string message  = 2;       // Explanation or error reason
-}
-
 
 //---------------------------------------------
 // Full block object
 //---------------------------------------------
 message Block {
-  BlockHeader header = 1;
-  BlockBody   body   = 2;
+  BlockHeader          header = 1;
+  SerializedBlockBody  body   = 2;
 }
 
 
@@ -86,13 +78,13 @@ message BlockHeader {
 // Note: As far as I know there are several bincode implementations for another languages/platforms, so it is still possible,
 // but no protobuf definitions are provided
 //---------------------------------------------
-message BlockBody {
+message SerializedBlockBody {
   bytes serialized = 1;
 }
 
 //---------------------------------------------
 // Bincode-serialized transaction.
-// Pretty the same thing as in BlockBody, storing as bytes.
+// Pretty the same thing as in SerializedBlockBody, storing as bytes.
 //---------------------------------------------
 message SerializedTransaction {
   bytes data = 1;
@@ -102,23 +94,22 @@ message SerializedTransaction {
 // gRPC service for chain synchronization
 //---------------------------------------------
 service BlockchainSync {
-  // 1) Basic chain info (height, head hash, difficulty, etc.)
+  // Basic chain info (height, head hash, difficulty, etc.)
   rpc GetChainInfo (google.protobuf.Empty) returns (ChainInfo);
 
-  // 2) Retrieve block headers by a height range (stream)
+  // Retrieve block headers by a height range (stream)
   rpc GetHeadersByHeight (BlockHeightRange) returns (stream BlockHeader);
 
-  // 3) Retrieve full blocks by a height range (stream)
+  // Retrieve full blocks by a height range (stream)
   rpc GetBlocksByHeight (BlockHeightRange) returns (stream Block);
 
-  // 4) Retrieve full blocks by a list of hashes (stream)
+  // Retrieve full blocks by a list of hashes (stream)
   rpc GetBlocksByHash (BlockHashList) returns (stream Block);
 
   // ------ Mempool operations ------
 
-  // 5) Fetch current mempool transactions (stream)
+  // Fetch current mempool transactions (stream)
   rpc GetMempoolTransactions (MempoolRequest) returns (stream SerializedTransaction);
 
-  // 6) Propose a raw transaction; returns acceptance status
-  rpc ProposeTransaction(SerializedTransaction) returns (ProposalResponse);
+  // something else?
 }
