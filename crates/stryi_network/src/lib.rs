@@ -3,7 +3,14 @@ mod behaviour;
 mod node_config;
 mod error;
 mod manager;
+mod model;
+mod grpc;
 
+pub use behaviour::*;
+pub use node_config::*;
+pub use error::StryiNetworkError;
+pub use manager::*;
+pub use grpc::*;
 
 use futures::Stream;
 use std::error::Error;
@@ -12,10 +19,14 @@ use std::time::Duration;
 use libp2p::identity::Keypair;
 use libp2p::{PeerId, Swarm};
 use tokio::time::sleep;
-use crate::behaviour::{StryiBehaviour, StryiBehaviourConfig};
-use crate::error::StryiNetworkError;
-use crate::manager::StryiNetworkManager;
-use crate::node_config::StryiNodeMode;
+use tokio_util::sync::CancellationToken;
+
+
+pub mod grpc_sync {
+    tonic::include_proto!("stryi.sync");
+}
+
+
 
 /// Commands that can be sent to the network service.
 #[derive(Debug, Clone)]
