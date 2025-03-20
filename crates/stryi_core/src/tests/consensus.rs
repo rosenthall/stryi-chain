@@ -21,8 +21,7 @@ mod tests {
     async fn test_consensus_negative_scenarios() {
         // 1. Initialize Consensus Rules with difficulty=0 (disables real PoW checks) and adjustment interval=1000
         let rules = ConsensusRules::new(0, 1000);
-        let engine = StryiConsensusEngine::new(rules);
-        let mut utxo_db = InMemoryUtxoStorage::default();
+        let engine = StryiConsensusEngine::<InMemoryUtxoStorage>::new_with_inmemory_storage(rules);        let mut utxo_db = InMemoryUtxoStorage::default();
 
         // 2. Generate keypairs for Alice and Bob.
         let sk_alice = SigningKey::random(&mut OsRng);
@@ -248,8 +247,7 @@ mod tests {
     async fn test_complex_multi_chain_scenario() {
         // Initialize Consensus Rules with difficulty=0 (disables real PoW checks) and adjustment interval=1000
         let rules = ConsensusRules::new(0, 1000);
-        let engine = StryiConsensusEngine::new(rules);
-        let mut utxo_db_ok1 = InMemoryUtxoStorage::default();
+        let engine = StryiConsensusEngine::<InMemoryUtxoStorage>::new_with_inmemory_storage(rules);        let mut utxo_db_ok1 = InMemoryUtxoStorage::default();
         let mut utxo_db_ok2 = InMemoryUtxoStorage::default();
         let mut utxo_db_err1 = InMemoryUtxoStorage::default();
         let mut utxo_db_err2 = InMemoryUtxoStorage::default();
@@ -283,7 +281,7 @@ mod tests {
 
         // Helper to create and apply blocks
         async fn create_and_apply_block(
-            engine: &StryiConsensusEngine,
+            engine: &StryiConsensusEngine<InMemoryUtxoStorage>,
             utxo_db: &mut InMemoryUtxoStorage,
             previous_hash: BlockHash,
             height: u64,

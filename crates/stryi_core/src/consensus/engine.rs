@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use crate::{
     block::Block,
     consensus::{ConsensusEngine, ConsensusRules},
@@ -5,29 +6,53 @@ use crate::{
     storage::in_memory_utxo::InMemoryUtxoStorage,
 };
 use crate::block::BlockValidator;
+use crate::storage::UtxoStorage;
 use crate::transactions::UtxoProcessor;
 
-pub struct StryiConsensusEngine {
-
-    /// Consensus rules object defines current of consensus algorithm
+/// StryiConsensusEngine is responsible for validating and processing blocks according to the consensus rules.
+///
+/// It is generic over a type parameter `DB` that implements the `UtxoStorage` trait. This enables the engine
+/// to work with any storage backend that conforms to the UTXO interface (e.g. InMemoryUtxoStorage, StryiStorage, etc.).
+///
+/// The `_phantom` field is a PhantomData marker used to hold the generic type parameter `DB` without storing an actual instance.
+pub struct StryiConsensusEngine<DB: UtxoStorage> {
+    /// Consensus rules object defining parameters like current difficulty and adjustment intervals.
     pub(crate) rules: ConsensusRules,
 
+    /// Block validator used to verify block-level properties such as proof-of-work, merkle root correctness,
+    /// coinbase placement, and transaction ordering.
     pub(crate) block_validator: BlockValidator,
+
+    /// UTXO processor that applies transactions within a block to update the UTXO set.
+    // TODO: consider renaming it later, maybe in TransactionsProcessor? Current name is little weird
     pub(crate) utxo_processor: UtxoProcessor,
+
+    /// PhantomData marker to associate the generic storage type DB with this engine.
+    _phantom: PhantomData<DB>,
 }
 
-impl StryiConsensusEngine {
-
-    /// Creates a new ConsensusEngine with the specified objects
+impl<DB: UtxoStorage> StryiConsensusEngine<DB> {
+    /// Constructs a new StryiConsensusEngine using the provided consensus rules.
+    ///
+    /// The engine is initialized with:
+    /// - A copy of the consensus rules.
+    /// - A new BlockValidator instance (initialized with the current difficulty).
+    /// - A new UtxoProcessor.
+    /// - A PhantomData marker for the DB type.
     pub fn new(rules: ConsensusRules) -> Self {
         Self {
-            rules : rules.clone(),
+            rules: rules.clone(),
             block_validator: BlockValidator::new(rules.current_difficulty),
             utxo_processor: UtxoProcessor::new(),
+            _phantom: PhantomData,
         }
     }
 
-    /// Computes total chain work by summing 2^(bits).
+    /// Computes the cumulative chain work for a given slice of blocks.
+    ///
+    /// For each block, the work is defined as 2^(difficulty_bits).
+    /// The total chain work is the sum of these values.
+    /// This metric is used in chain selection algorithms to determine which fork is "heavier."
     pub fn compute_chain_difficulty(&self, chain: &[Block]) -> u128 {
         let mut total = 0u128;
         for block in chain {
@@ -36,15 +61,16 @@ impl StryiConsensusEngine {
         }
         total
     }
-    
-    
 }
-impl ConsensusEngine for StryiConsensusEngine {
+
+
+
+impl<DB: UtxoStorage> ConsensusEngine for StryiConsensusEngine<DB> {
     type Error = StryiCoreError;
     type UtxoDatabase = InMemoryUtxoStorage;
 
     
-    /// Adjusts difficulty by incrementing once every N blocks (example).
+    /// Adjusts difficulty by incrementing once every N blocks.
     async fn adjust_difficulty(
         &mut self,
         chain: &[Block],
@@ -103,8 +129,6 @@ impl ConsensusEngine for StryiConsensusEngine {
                 details: format!("Failed to apply block: {}", e),
             })
     }
-    
-    
     /// Validates a given block according to consensus rules and sanity of transactions
     async fn validate_block(
         &self,
@@ -116,6 +140,18 @@ impl ConsensusEngine for StryiConsensusEngine {
 
 }
 
+
+#[cfg(test)]
+impl StryiConsensusEngine<InMemoryUtxoStorage> {
+    /// Testing-only constructor that creates a StryiConsensusEngine using InMemoryUtxoStorage.
+    ///
+    /// This simplifies testing by allowing you to instantiate the consensus engine
+    /// without manually specifying the storage type.
+    pub fn new_with_inmemory_storage(rules: ConsensusRules) -> Self {
+        // We simply call the generic new() method.
+        Self::new(rules)
+    }
+}
 
 
 #[cfg(test)]
@@ -161,8 +197,7 @@ mod tests {
     async fn test_select_chain_by_cumulative_difficulty() {
         // This test remains as is, from your code, no changes, verifying chain selection logic
         let rules = ConsensusRules::new(4, 1000);
-        let engine = StryiConsensusEngine::new(rules);
-
+        let engine = StryiConsensusEngine::<InMemoryUtxoStorage>::new_with_inmemory_storage(rules);
         // chainA => bits=4,4 => total ~ 2^4 + 2^4 = 32
         let chain_a = vec![make_block(4,0), make_block(4,0)];
 
@@ -187,8 +222,7 @@ mod tests {
     async fn test_genesis_block() {
         // 1) Set up an engine with difficulty=0 so we skip real PoW.
         let rules = ConsensusRules::new(0, 1000);
-        let engine = StryiConsensusEngine::new(rules);
-
+        let engine = StryiConsensusEngine::<InMemoryUtxoStorage>::new_with_inmemory_storage(rules);
         // 2) In-memory DB
         let mut store = InMemoryUtxoStorage::default();
         
