@@ -59,7 +59,16 @@ mod utxo;
 
 #[cfg(test)]
 mod tests;
-mod reorganization;
+
+/// Reorganizer module provides a convenient interface for performing chain reorganization:
+///
+/// * It defines a `ChainReorganizer` structure that locates the common ancestor between two tips
+///   and rolls back the old chain, then applies and validates blocks for the new chain.
+/// * This process ensures atomic reorg under a single storage write lock.
+/// * Used primarily when a fork becomes heavier than the current best chain.
+mod reorganizer;
+pub use reorganizer::*;
+
 mod stats;
 mod undo;
 mod actor;
