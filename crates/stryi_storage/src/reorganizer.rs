@@ -106,7 +106,8 @@ impl ChainReorganizer {
 
     /// Rolls back blocks from `old_tip` down to (but not including) `ancestor_hash`,
     /// removing them from the storage’s block index and reapplying block undo data
-    /// to restore the UTXOs.
+    /// to restore the UTXOs. We also remove each block’s height record from
+    /// the heights partition so that partition only holds the best chain’s blocks.
     async fn rollback_chain(
         &self,
         store: &mut StryiStorage,
@@ -126,6 +127,10 @@ impl ChainReorganizer {
             // Unapply (roll back) that block’s UTXO changes
             self.unapply_block_undo(store, undo).await?;
 
+            let block_to_remove = store.get_block_by_hash(tip_hash).await?;
+            let height_u64 = block_to_remove.header.height;
+            store.remove_block_height_index(height_u64 as usize)?;
+            
             // Remove the block’s index entry now that it’s not on main chain
             store.remove_block_index(&tip_hash)?;
             info!("Removed block index for {}", tip_hash);
@@ -188,9 +193,9 @@ impl ChainReorganizer {
         // 3) Validate & apply each block in ascending order
         for block in path {
             info!("[reorganizer] Validating and applying block {}", block.block_hash());
-            consensus_engine
-                .validate_and_apply_block(&block, store)
-                .await.expect("TODO: somehow handle validation error when reorganizing");
+            consensus_engine.validate_and_apply_block(&block, store)
+                .await
+                .expect("TODO: somehow handle validation error when reorganizing");
         }
 
         Ok(())
