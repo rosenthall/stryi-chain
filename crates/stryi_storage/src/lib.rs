@@ -1,6 +1,6 @@
 //! The database uses a **key-value storage model** to ensure efficiency and scalability.
 //!
-//! We maintain **four** separate partitions in this design:
+//! We maintain **seven** separate partitions in this design:
 //!
 //! 1. **Blocks**
 //!    - Key   : `stryi_core::block::BlockHash` (32 bytes of the block hash)
@@ -25,9 +25,8 @@
 //!    data (including its owner address, value, etc.).
 //!
 //! 4. **Addresses**
-//!    - Key   : 20 bytes of `AccountAddress` (assuming `AddressHasher::SIZE = 20`)
-//!    - Value : A `bincode`-serialized collection (e.g., `HashSet<OutPoint>`) referencing all outpoints
-//!              belonging to that address
+//!    - Key   : 20 bytes of `AccountAddress`
+//!    - Value : A `bincode`-serialized `HashSet<OutPoint>` referencing all outpoints belonging to that address
 //!
 //!    This partition is our **address index**, mapping each address to the set of outpoints owned by
 //!    that address. When inserting or removing UTXOs, we keep this index in sync. Then, for lookups such
@@ -47,6 +46,10 @@
 //!     `BlockUndo` in base. Restoration is just simple as deleting all the new outputs and restoring all the existing ones. 
 //!     High-level struct for implementing this functionality is `ChainReorganizer`
 //!
+//! 7. **Block Indexes**
+//!     - Key : `stryi_core::block::BlockHash` (32 bytes of the block hash)
+//!     - Value : A `bincode`-serialized `stryi_storage::index::BlockIndexData` object 
+//! 
 //! By maintaining these six partitions, we get efficient lookups for blocks, block heights, UTXOs by
 //! outpoint, addresses to outpoint sets and will be able to correctly and safely reorganize chain for consensus purposes.
 #![allow(incomplete_features)]
@@ -71,18 +74,17 @@ pub use reorganizer::*;
 
 mod stats;
 mod undo;
-mod actor;
+mod index;
 
 use std::path::PathBuf;
-use fjall::{Config as FjallConfig, PartitionCreateOptions, Slice, TxKeyspace, TxPartition};
+use fjall::{Config as FjallConfig, PartitionCreateOptions, TxKeyspace, TxPartition};
 use tracing::info;
 
 pub use crate::error::StryiStorageError;
 pub use blocks::*;
 pub use utxo::*;
 
-use stryi_core::block::{Block, BlockHash};
-use stryi_core::transactions::{OutPoint, UTXO};
+use stryi_core::block::BlockHash;
 use crate::stats::StorageStateInformation;
 
 /// `StryiStorage` manages six partitions within a single Fjall keyspace:
@@ -110,8 +112,11 @@ pub struct StryiStorage {
     /// Partition stores only one value - current chain state, must be updated after each new block or a reorganization
     pub(crate) stats_partition: TxPartition,
 
-    /// Partitions storing block hash → `stryi_core::undo::UndoData` 
+    /// Partition storing block hash → `stryi_core::undo::UndoData` 
     pub(crate) undo_partition: TxPartition,
+    
+    /// Partition storing block hash → `stryi_storage::index::BlockIndexData`
+    pub(crate) block_index_partition: TxPartition,
     
     /// Keyspace for the entire database
     pub keyspace: TxKeyspace,
@@ -132,13 +137,14 @@ impl StryiStorage {
         info!("Successfully initialized key space!");
         info!("Current database disk usage is : {} bytes", keyspace.disk_space());
 
-        // Open or create the six partitions with default options
+        // Open or create the seven partitions with default options
         let blocks_partition = keyspace.open_partition("blocks", PartitionCreateOptions::default())?;
         let heights_partition = keyspace.open_partition("heights", PartitionCreateOptions::default())?;
         let utxo_partition = keyspace.open_partition("utxo", PartitionCreateOptions::default())?;
         let addresses_partition = keyspace.open_partition("addresses", PartitionCreateOptions::default())?;
         let stats_partition = keyspace.open_partition("stats", PartitionCreateOptions::default())?;
         let undo_partition = keyspace.open_partition("undo", PartitionCreateOptions::default())?;
+        let block_index_partition = keyspace.open_partition("block_indexes", PartitionCreateOptions::default())?;
 
 
         // Create storage instance
@@ -149,6 +155,7 @@ impl StryiStorage {
             addresses_partition,
             stats_partition,
             undo_partition,
+            block_index_partition,
             keyspace,
         };
 
