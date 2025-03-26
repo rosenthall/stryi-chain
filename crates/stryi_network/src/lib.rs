@@ -22,11 +22,6 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
 
-pub mod grpc_sync {
-    tonic::include_proto!("stryi.sync");
-}
-
-
 
 /// Commands that can be sent to the network service.
 #[derive(Debug, Clone)]

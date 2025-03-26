@@ -1,21 +1,21 @@
 use std::pin::Pin;
 use tonic::{Request, Response, Status};
 use tonic::codegen::tokio_stream::Stream;
-use crate::grpc_sync::{
-    
-    // Some renaming
+use crate::grpc_services::{
+
+    // Some aliases to avoid overlapping with similar structs from stryi_core 
     Block as PbBlock,
     BlockHeader as PbBlockHeader,
-    ChainInfo as PbChainInfo, 
-    
-    MempoolRequest, BlockHeightRange,  BlockHashList, SerializedTransaction
+    ChainInfo as PbChainInfo,
+
+    BlockHeightRange,  BlockHashList, SerializedTransaction
 };
 
 
 /// Implementation of grpc sync protocol, see protos/sync.proto
 pub struct StryiSyncService {
     /// Basic configuration fields, like version of the protocol or the name of chain
-    config: StryiSyncServiceConfig
+    config: StryiSyncServiceConfig,
 }
 
 
@@ -32,8 +32,8 @@ pub struct StryiSyncServiceConfig {
 }
 
 
-#[tonic::async_trait] 
-impl crate::grpc_sync::blockchain_sync_server::BlockchainSync for StryiSyncService {
+#[tonic::async_trait]
+impl crate::grpc_services::blockchain_sync_server::BlockchainSync for StryiSyncService {
     async fn get_chain_info(&self, request: Request<()>) -> Result<Response<PbChainInfo>, Status> {
         todo!()
     }
@@ -50,12 +50,6 @@ impl crate::grpc_sync::blockchain_sync_server::BlockchainSync for StryiSyncServi
 
     type GetBlocksByHashStream = Pin<Box<dyn Stream<Item = Result<PbBlock, Status>> + Send + 'static>>;
     async fn get_blocks_by_hash(&self, request: Request<BlockHashList>) -> Result<Response<Self::GetBlocksByHashStream>, Status> {
-        todo!()
-    }
-
- 
-    type GetMempoolTransactionsStream = Pin<Box<dyn Stream<Item = Result<SerializedTransaction, Status>> + Send + 'static>>;
-    async fn get_mempool_transactions(&self, request: Request<MempoolRequest>) -> Result<Response<Self::GetMempoolTransactionsStream>, Status> {
         todo!()
     }
 }

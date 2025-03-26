@@ -36,13 +36,6 @@ message BlockHashList {
 }
 
 //---------------------------------------------
-// Mempool retrieval message, no parameters
-// are required
-//---------------------------------------------
-message MempoolRequest {}
-
-
-//---------------------------------------------
 // Full block object
 //---------------------------------------------
 message Block {
@@ -105,11 +98,6 @@ service BlockchainSync {
 
   // Retrieve full blocks by a list of hashes (stream)
   rpc GetBlocksByHash (BlockHashList) returns (stream Block);
-
-  // ------ Mempool operations ------
-
-  // Fetch current mempool transactions (stream)
-  rpc GetMempoolTransactions (MempoolRequest) returns (stream SerializedTransaction);
-
+  
   // something else?
 }

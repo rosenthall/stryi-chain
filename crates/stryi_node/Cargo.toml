@@ -5,6 +5,7 @@ edition = "2024"
 description = "An implementation of the validator node for the Stryi Chain!"
 authors = ["Rosenthall <rosenthall@riseup.net>"]
 license = "BSD-3-Clause"
+build = "build.rs"
 
 [[bin]]
 name = "stryi_node"
@@ -14,3 +15,14 @@ path = "src/main.rs"
 tokio = {version = "1.43.0", features = ["rt", "macros", "rt-multi-thread"]}
 tracing = "0.1"
 tracing-subscriber = "0.3"
+stryi_network = {path = "../stryi_network"}
+stryi_core = {path = "../stryi_core"}
+stryi_storage = {path = "../stryi_storage"}
+futures-util = "0.3.31"
+clap = { version = "4.5.27", features = ["derive"] }
+tonic = "0.13.0"
+prost = "0.13.5"
+
+[build-dependencies]
+prost = "0.13.5"
+tonic-build = { version = "0.13.0", features = ["prost"]}
