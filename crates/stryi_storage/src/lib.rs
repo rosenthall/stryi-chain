@@ -52,6 +52,7 @@
 //! 
 //! By maintaining these six partitions, we get efficient lookups for blocks, block heights, UTXOs by
 //! outpoint, addresses to outpoint sets and will be able to correctly and safely reorganize chain for consensus purposes.
+
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)] // This feature was added to avoid a known bug: https://github.com/rust-lang/rust/issues/133199
 
@@ -70,6 +71,8 @@ mod tests;
 /// * This process ensures atomic reorg under a single storage write lock.
 /// * Used primarily when a fork becomes heavier than the current best chain.
 mod reorganizer;
+
+use std::collections::{HashMap, HashSet};
 pub use reorganizer::*;
 
 mod stats;
@@ -78,13 +81,16 @@ mod index;
 
 use std::path::PathBuf;
 use fjall::{Config as FjallConfig, PartitionCreateOptions, TxKeyspace, TxPartition};
-use tracing::info;
+use serde::{Deserialize, Serialize};
+use tracing::{error, info};
 
 pub use crate::error::StryiStorageError;
 pub use blocks::*;
+use stryi_core::address::AccountAddress;
 pub use utxo::*;
 
-use stryi_core::block::BlockHash;
+use stryi_core::block::{Block, BlockHash};
+use stryi_core::storage::BlockStorage;
 use crate::stats::StorageStateInformation;
 
 /// `StryiStorage` manages six partitions within a single Fjall keyspace:
@@ -122,12 +128,26 @@ pub struct StryiStorage {
     pub keyspace: TxKeyspace,
 }
 
+
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+// This struct stores the data needed to create a custom genesis block: balances for each address, plus block header fields.
+pub struct GenesisInitConfig {
+    pub wanted_balances: HashMap<AccountAddress, u64>,
+    pub difficulty_bits: u8,
+    pub version: u16,
+}
+
+
+
 impl StryiStorage {
-    /// Creates (or opens) the database at the given `path`, setting up four partitions:
-    /// "blocks", "heights", "utxo", and "addresses".
+    /// Creates (or opens) the database at the given `path`.
+    ///
+    /// If path database doesn't exist yet - it must be initialized with `genesis_config`
+    /// If database is not initialized and no initialization config is provided - returns `NoInitializationConfigProvided`
     ///
     /// We open it in transactional mode so we can do atomic writes across multiple partitions.
-    pub fn initialize_in_path(path: PathBuf) -> Result<Self, StryiStorageError> {
+    pub async fn initialize_in_path(path: PathBuf, genesis_config: Option<GenesisInitConfig>) -> Result<Self, StryiStorageError> {
         info!("Trying to access Stryi storage at path {}", &path.display());
 
         // Create or open the KeySpace
@@ -159,10 +179,48 @@ impl StryiStorage {
             keyspace,
         };
 
-        // Initialize storage state if needed
-        storage.initialize_storage_state()?;
+        // Attempt to load existing chain state
+
+        if let Err(StryiStorageError::NoStorageStatsFound(_)) = storage.get_current_storage_state() {
+
+            // Initialize very first state
+            storage.initialize_storage_state()?;
+
+
+            // Insert genesis block if genesis_config was provided
+            if let Some(gconfig) = genesis_config {
+                info!("Inserting genesis block!");
+                storage.init_with_genesis(gconfig.clone()).await?;
+                info!("Successfully inserted genesis block with {} predefined balances, {} basic difficulty bits and version {}", &gconfig.wanted_balances.len(), &gconfig.difficulty_bits, &gconfig.version);
+            } else {
+                // if user didn't provide config, but the DB is brand new - return error
+                error!("Database is not initialized and no genesis config provided!");
+                return Err(StryiStorageError::NoInitializationConfigProvided);
+            }
+        }
 
         Ok(storage)
+    }
+
+
+    /// Inserts a genesis block if the database is empty, using the user-provided config.
+    ///
+    /// 1) Constructs the genesis block
+    /// 2) Calls self.put_block to store it and update the chain stats
+    pub async fn init_with_genesis(
+        &mut self,
+        cfg: GenesisInitConfig
+    ) -> Result<(), StryiStorageError> {
+
+        // Build the genesis block from user config
+        let genesis_block = Block::new_genesis(
+            cfg.version,
+            cfg.difficulty_bits,
+            cfg.wanted_balances,
+        );
+
+        // try store it via put_block
+        self.put_block(&genesis_block).await
     }
 
     /// Creates initial storage state if it doesn't exist
