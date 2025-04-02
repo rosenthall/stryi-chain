@@ -17,28 +17,32 @@ use crate::grpc_services::{
 
 
 /// Implementation of grpc sync protocol, see protos/sync.proto
+#[derive(Clone)]
 pub struct StryiSyncService<DB>
 where DB:
     BlockStorage + UtxoStorage
 {
     /// Basic configuration fields, like version of the protocol or the name of chain
-    config: StryiSyncServiceConfig,
+    pub(crate) config: StryiSyncServiceConfig,
 
     /// Arc'd storage reference
-    storage : Arc<RwLock<DB>>
+    pub(crate) storage : Arc<RwLock<DB>>
 }
 
-
+#[derive(Clone, Debug)]
 pub struct StryiSyncServiceConfig {
 
+    /// Serving port
+    pub(crate) port : usize,
+
     /// Name of this exact chain and network, e.g `testnet`, `stryichain`, whatever
-    chain_name: String,
+    pub(crate) chain_name: String,
 
     /// Numerical value that represents version of sync protocol
-    protocol_version : usize,
+    pub(crate) protocol_version : usize,
 
     /// Value to avoid asking for entire chain quickly.
-    max_blocks_range_per_request : usize,
+    pub(crate) max_blocks_range_per_request : usize,
 }
 
 
@@ -57,7 +61,7 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync for StryiSyncS
         // Construct PbChainInfo from StorageStateInformation we got and some values from self.config
         let pb = PbChainInfo {
             height: chain_info.latest_block.0 as u64,
-            latest_block_hash: chain_info.latest_block.1.to_string().into_bytes(),
+            latest_block_hash: chain_info.latest_block.1.to_string(),
             total_difficulty: chain_info.chain_difficulty as u64,
             last_update_time: chain_info.last_update_time as u64,
             protocol_version: self.config.protocol_version.clone() as u32,
@@ -215,14 +219,13 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync for StryiSyncS
         // Produce a stream by iterating over each raw hash. For each hash, we do an async fetch
         // to get the block from storage, then return Ok(pb_block) or an Err(Status).
         let block_stream = stream::iter(hashes)
-            .then(move |raw_bytes| {
+            .then(move |block_hash| {
                 let storage = storage.clone();
                 async move {
-                    // 1) Parse the block hash from raw bytes
-                    let block_hash_str = String::from_utf8(raw_bytes)
-                        .map_err(|e| Status::invalid_argument(format!("Invalid UTF-8: {e}")))?;
 
-                    let block_hash = BlockHash::from_hash_string(&block_hash_str)
+
+                    // Convert string hash to BlockHash
+                    let block_hash = BlockHash::from_hash_string(&block_hash)
                         .map_err(|e| Status::invalid_argument(format!("Invalid hash: {e:?}")))?;
 
                     // 2) Read from storage
@@ -247,9 +250,9 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync for StryiSyncS
             });
 
 
-        // box and pin stream 
+        // box and pin stream
         let pinned_stream = Box::pin(block_stream);
-        
+
         Ok(Response::new(pinned_stream))
     }
 }
@@ -261,7 +264,7 @@ impl From<Block> for PbBlock {
         let header = PbBlockHeader {
             version: block.header.version as u32,
             merkle_root_hash: block.header.merkle_root_hash.to_vec(),
-            previous_block_hash: block.header.previous_block_hash.data.to_vec(),
+            previous_block_hash: block.header.previous_block_hash.to_string(),
             height: block.header.height,
             difficulty_bits: block.header.difficulty_bits as u32,
             timestamp: block.header.timestamp,

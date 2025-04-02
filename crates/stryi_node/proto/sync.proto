@@ -11,28 +11,28 @@ import "google/protobuf/empty.proto";
 // and just new node initialization
 //---------------------------------------------
 message ChainInfo {
-  uint64 height = 1;              // Current main chain height
-  bytes  latest_block_hash = 2;   // Hash of the chain's head block
-  uint64 total_difficulty = 3;    // Summed chain work (PoW difficulty)
-  uint64 last_update_time = 4;    // Unix timestamp of last chain update
-  uint32 protocol_version = 5;    // Protocol version for compatibility
-  string chain_name = 6;          // E.g. "Testnet", "Mainnet", or custom
+  uint64 height            = 1; // Current main chain height
+  string latest_block_hash = 2; // Hash of the chain's head block
+  uint64 total_difficulty  = 3; // Summed chain work (PoW difficulty)
+  uint64 last_update_time  = 4; // Unix timestamp of last chain update
+  uint32 protocol_version  = 5; // Protocol version for compatibility
+  string chain_name        = 6; // E.g. "Testnet", "Mainnet", or custom
 }
 
 //---------------------------------------------
 // Requests for blocks or headers by height
 //---------------------------------------------
 message BlockHeightRange {
-  uint64 start_height = 1;        // Inclusive start
-  uint64 end_height   = 2;        // Inclusive end
-  uint32 max_blocks   = 3;        // Limit for streaming
+  uint64 start_height = 1; // Inclusive start
+  uint64 end_height   = 2; // Inclusive end
+  uint32 max_blocks   = 3; // Limit for streaming
 }
 
 //---------------------------------------------
 // Requests for blocks by a list of hashes
 //---------------------------------------------
 message BlockHashList {
-  repeated bytes block_hashes = 1; // Repeated raw hash values
+  repeated string block_hashes = 1; // Repeated raw hash values in their "native" format (e.g Bx12341234...)
 }
 
 //---------------------------------------------
@@ -49,14 +49,14 @@ message Block {
 // Can be easily mapped to rust structure.
 //---------------------------------------------
 message BlockHeader {
-  uint32 version           = 1;
-  bytes  merkle_root_hash  = 2;
-  bytes  previous_block_hash = 3;
-  uint64 height            = 4;
-  uint32 difficulty_bits   = 5;
-  uint64 timestamp         = 6;
-  uint32 nonce             = 7;
-  bool   is_genesis        = 8;
+  uint32 version             = 1;
+  bytes merkle_root_hash     = 2;
+  string previous_block_hash = 3; // using our string representation (Bx..) of block hash
+  uint64 height              = 4;
+  uint32 difficulty_bits     = 5;
+  uint64 timestamp           = 6;
+  uint32 nonce               = 7;
+  bool   is_genesis          = 8;
 }
 
 
