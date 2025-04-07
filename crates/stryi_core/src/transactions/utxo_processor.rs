@@ -2,6 +2,7 @@ use crate::storage::UtxoStorage;
 use crate::transactions::{Transaction, TransactionKind, OutPoint, UTXO};
 
 /// UtxoProcessor is responsible for applying and reverting blocks to the UTXO set.
+// TODO: Add some configuration structs?
 pub struct UtxoProcessor;
 
 impl UtxoProcessor {

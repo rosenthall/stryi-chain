@@ -3,9 +3,9 @@ use crate::{
     block::Block,
     consensus::{ConsensusEngine, ConsensusRules},
     error::StryiCoreError,
-    storage::in_memory_utxo::InMemoryUtxoStorage,
 };
 use crate::block::BlockValidator;
+use crate::storage::in_memory_utxo::InMemoryUtxoStorage;
 use crate::storage::UtxoStorage;
 use crate::transactions::UtxoProcessor;
 
@@ -24,7 +24,7 @@ pub struct StryiConsensusEngine<DB: UtxoStorage> {
     pub(crate) block_validator: BlockValidator,
 
     /// UTXO processor that applies transactions within a block to update the UTXO set.
-    // TODO: consider renaming it later, maybe in TransactionsProcessor? Current name is little weird
+    // TODO: consider renaming it later, maybe in TransactionsProcessor? Current name is a little weird
     pub(crate) utxo_processor: UtxoProcessor,
 
     /// PhantomData marker to associate the generic storage type DB with this engine.
@@ -67,8 +67,7 @@ impl<DB: UtxoStorage> StryiConsensusEngine<DB> {
 
 impl<DB: UtxoStorage> ConsensusEngine for StryiConsensusEngine<DB> {
     type Error = StryiCoreError;
-    type UtxoDatabase = InMemoryUtxoStorage;
-
+    type UtxoDatabase = DB;
     
     /// Adjusts difficulty by incrementing once every N blocks.
     async fn adjust_difficulty(
@@ -159,7 +158,6 @@ mod tests {
     use std::collections::HashMap;
     use super::*;
     use crate::block::{Block, BlockData, BlockHeader, BlockHash};
-    use crate::transactions::{TransactionData, TransactionOut, TransactionKind};
     use crate::address::AccountAddress;
     use crate::storage::in_memory_utxo::InMemoryUtxoStorage;
 
@@ -179,18 +177,6 @@ mod tests {
         Block { header, data }
     }
 
-    // A small helper for building transaction data of a specific kind, no inputs, one or more outputs
-    fn build_tx_data(kind: TransactionKind, outputs: Vec<(u64, AccountAddress)>) -> TransactionData {
-        TransactionData {
-            version: 1,
-            kind,
-            inputs: vec![], // typically none for coinbase/genesis
-            outputs: outputs
-                .into_iter()
-                .map(|(val, addr)| TransactionOut { value: val, recipient: addr })
-                .collect(),
-        }
-    }
 
     // Hard-coded meets_difficulty = true. We'll skip real PoW in the test to focus on TX logic
     #[tokio::test]

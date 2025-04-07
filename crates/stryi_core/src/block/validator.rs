@@ -44,7 +44,8 @@ impl BlockValidator {
         self.verify_difficulty(block)?;
         // Verify if block actually can be hashed to get provided hash
         self.verify_proof_of_work(block)?;
-        // Check if coinbase transaction is first in the block. TODO: Somehow make reward system actually work
+        // Check if coinbase transaction is first in the block. 
+        // TODO: Somehow make reward system actually work, maybe just define some formula that will count maximal reward based on: fixed value, block's transactions.
         self.verify_coinbase_transaction(block)?;
         // Verify consistency of provided transaction and merkle root in header
         self.verify_merkle_root(block)?;

@@ -2,7 +2,7 @@ use thiserror::Error;
 use crate::address::AccountAddress;
 use crate::mempool::storage::TransactionStorage;
 use crate::mempool::UtxoLookup;
-use crate::transactions::{Transaction, TransactionKind, OutPoint, UTXO, TransactionHash};
+use crate::transactions::{Transaction, TransactionKind, OutPoint, UTXO};
 
 /// Errors that can arise during mempool validation of transactions.
 #[derive(Debug, Error)]

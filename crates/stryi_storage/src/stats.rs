@@ -2,19 +2,18 @@ use bincode::config::standard;
 use fjall::{UserKey, UserValue};
 use serde::{Deserialize, Serialize};
 use stryi_core::block::BlockHash;
-use stryi_core::storage::StorageStats;
 use crate::{StryiStorage, StryiStorageError};
 
-/// Private struct, the only purpose it has - store current storage's stats
+/// Struct with only purpose for storing current storage's stats
 /// It meant to be serialized and deserialized after each new block (put_block method)
+/// todo: Some pretty tables for StorageStateInformation via https://lib.rs/crates/prettytable-rs would be cool
 #[derive(Clone, Serialize, Debug, Deserialize, PartialEq)]
 pub struct StorageStateInformation {
-    pub(crate) latest_block : (usize, BlockHash),
-    pub(crate) last_update_time : usize,
-    pub(crate) blocks_count : usize,
-    pub(crate) chain_difficulty : usize,
+    pub latest_block : (usize, BlockHash),
+    pub last_update_time : usize,
+    pub blocks_count : usize,
+    pub chain_difficulty : usize,
 }
-
 
 // Define some helper impls
 
@@ -45,7 +44,7 @@ impl TryInto<UserValue> for StorageStateInformation {
 
 
 impl StryiStorage {
-    pub(crate) fn get_current_storage_state(&self) -> Result<StorageStateInformation, StryiStorageError> {
+    pub fn get_current_storage_state(&self) -> Result<StorageStateInformation, StryiStorageError> {
 
         // the key for storage state is always just 256 zero bits
         let key = UserKey::from([0u8; 32]);
@@ -75,34 +74,6 @@ impl StryiStorage {
     }
 
 }
-
-
-
-impl StorageStats for StryiStorage {
-    type StorageError = StryiStorageError;
-
-    async fn get_latest_block(&self) -> Result<(usize, BlockHash), Self::StorageError> {
-        let state = self.get_current_storage_state()?;
-        Ok(state.latest_block)
-    }
-
-    async fn get_last_update_time(&self) -> Result<usize, Self::StorageError> {
-        let state = self.get_current_storage_state()?;
-        Ok(state.last_update_time)
-        
-    }
-
-    async fn get_blocks_count(&self) -> Result<usize, Self::StorageError> {
-        let state = self.get_current_storage_state()?;
-        Ok(state.blocks_count)
-    }
-
-    async fn get_chain_difficulty(&self) -> Result<usize, Self::StorageError>  { 
-        let state = self.get_current_storage_state()?;
-        Ok(state.chain_difficulty)
-    }
-}
-
 
 
 

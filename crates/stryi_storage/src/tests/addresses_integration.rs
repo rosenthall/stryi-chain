@@ -39,7 +39,7 @@ async fn test_addresses_integration() -> Result<(), StryiStorageError> {
 
     // 1) Create a temp directory and initialize StryiStorage
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let mut storage = StryiStorage::initialize_in_path(temp_dir.path().to_owned())?;
+    let mut storage = StryiStorage::initialize_in_path(temp_dir.path().to_owned(), None).await?;
     println!("Initialized StryiStorage at: {:?}", temp_dir.path());
 
     // 2) Create distinct addresses
