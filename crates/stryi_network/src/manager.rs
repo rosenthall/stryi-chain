@@ -1,6 +1,6 @@
-use std::{pin::Pin, time::Duration, mem};
+use std::time::Duration;
 use std::sync::Arc;
-use futures::{Stream, StreamExt};
+use futures::StreamExt;
 use libp2p::{
     core::upgrade,
     identity::Keypair,
@@ -14,18 +14,13 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    node_config::{StryiNodeConfig, StryiNodeMode},
-    error::StryiNetworkError,
-    behaviour::{StryiBehaviour, StryiBehaviourConfig, StryiEvent},
-    ServiceStatus,
-};
+use crate::{StryiNodeMode, error::StryiNetworkError, behaviour::{StryiBehaviour, StryiBehaviourConfig, StryiEvent}, ServiceStatus, StryiNetworkManagerState};
 
 /// StryiNetworkManager sets up the transport, constructs a swarm using our unified behaviour,
 /// and runs the event loop. The swarm is stored as an Option so that the run loop can be spawned
 /// and later taken out for shutdown or restart.
 pub struct StryiNetworkManager {
-    pub(crate) config: StryiNodeConfig,
+    pub(crate) config: StryiNetworkManagerState,
     pub(crate) swarm: Option<Swarm<StryiBehaviour>>,
     pub(crate) status: Arc<RwLock<ServiceStatus>>,
     pub(crate) cancel_token: CancellationToken,
@@ -34,7 +29,7 @@ pub struct StryiNetworkManager {
 
 impl StryiNetworkManager {
     /// Creates a new StryiNetworkManager based on the provided configuration.
-    pub fn new(config: &StryiNodeConfig) -> Result<Self, StryiNetworkError> {
+    pub fn new(config: &StryiNetworkManagerState) -> Result<Self, StryiNetworkError> {
         // Use provided key or generate one.
         let key = config
             .clone()
@@ -107,7 +102,7 @@ impl StryiNetworkManager {
     }
 
     /// Internal run loop that processes swarm events and exits gracefully when the cancellation token is triggered.
-    async fn run_loop(&mut self, token: CancellationToken) {
+    pub(crate) async fn run_loop(&mut self, token: CancellationToken) {
         // We require a mutable reference to the swarm. Since self.swarm is an Option,
         // we take it out and then later put it back if needed.
         let mut swarm = self.swarm.take().expect("Swarm should be available in run_loop");

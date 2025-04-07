@@ -1,26 +1,68 @@
 #![allow(async_fn_in_trait)]
 mod behaviour;
-mod node_config;
 mod error;
 mod manager;
 mod model;
-mod grpc;
 
 pub use behaviour::*;
-pub use node_config::*;
 pub use error::StryiNetworkError;
 pub use manager::*;
-pub use grpc::*;
 
 use futures::Stream;
 use std::error::Error;
 use std::pin::Pin;
 use std::time::Duration;
-use libp2p::identity::Keypair;
 use libp2p::{PeerId, Swarm};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
+pub use libp2p::identity::Keypair;
+
+/// Indicates whether we run as a Rendezvous **Server** or a **Client** node.
+#[derive(Debug, Clone)]
+pub enum StryiNodeMode {
+    /// Rendezvous Server (no block logic, just peer discovery)
+    Server,
+    /// Regular Rendezvous Client (connects to a server, discovers peers)
+    Node,
+}
+
+/// Global config for a node: addresses, keypair, mode, etc.
+#[derive(Debug, Clone)]
+pub struct StryiNetworkManagerState {
+    /// Which mode to run (Server or Node).
+    pub mode: StryiNodeMode,
+
+    /// Multiaddr to listen on, e.g. `/ip4/0.0.0.0/tcp/62649`.
+    /// If you specify `/tcp/0` it picks a random port.
+    pub listen_addr: String,
+
+    /// If we are in Node mode, we can optionally dial a Rendezvous server,
+    /// e.g. `/ip4/127.0.0.1/tcp/62649/p2p/<PEER_ID>`
+    pub rendezvous_server_addr: Option<String>,
+
+    /// Rendezvous namespace, e.g. `"stryichain"`.
+    pub rendezvous_namespace: String,
+
+    /// Optional identity key. If None, we generate a random Ed25519 key.
+    pub keypair: Option<Keypair>,
+    
+    /// Config for the p2p behaviour.
+    pub stryi_behaviour_config: StryiBehaviourConfig,
+}
+
+impl Default for StryiNetworkManagerState {
+    fn default() -> Self {
+        Self {
+            mode: StryiNodeMode::Node,
+            listen_addr: "/ip4/127.0.0.1/tcp/0".to_string(),
+            rendezvous_server_addr: None,
+            rendezvous_namespace: "stryichain".to_string(),
+            keypair: None,
+            stryi_behaviour_config: Default::default(),
+        }
+    }
+}
 
 
 /// Commands that can be sent to the network service.
@@ -45,9 +87,6 @@ pub enum NetworkEvent {
     PeerConnected(String),
     /// A peer has disconnected.
     PeerDisconnected(String),
-    
-    
-    
     
     // Something more I need?
 }
@@ -103,7 +142,7 @@ pub trait NetworkService {
 impl NetworkService for StryiNetworkManager {
     type Error = StryiNetworkError;
     type Event = NetworkEvent;
-    type Config = crate::node_config::StryiNodeConfig;
+    type Config = StryiNetworkManagerState;
     
     async fn start(&mut self) -> Result<(), Self::Error> {
         {
@@ -127,13 +166,17 @@ impl NetworkService for StryiNetworkManager {
         });
         self.handle = Some(handle);
         // Alternatively, you could call self.run_loop(token) directly here.
-        Ok(())
+
+        let token = CancellationToken::new();
+
+        self.cancel_token = token.clone();
+        
+        Ok(self.run_loop(token).await)
+
     }
     
     async fn subscribe(&mut self) -> Pin<Box<dyn Stream<Item = Self::Event> + Send>> {
         // For demonstration, create an interval stream emitting a dummy event every 3 seconds.
-
-
         Box::pin(futures::stream::unfold((), |()| async {
             sleep(Duration::from_secs(3)).await;
             Some((NetworkEvent::NewBlock(vec![0; 32]), ()))
