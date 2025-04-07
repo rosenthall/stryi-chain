@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use futures_util::stream;
@@ -32,9 +33,8 @@ where DB:
 #[derive(Clone, Debug)]
 pub struct StryiSyncServiceConfig {
 
-    /// Serving port
-    pub(crate) port : usize,
-
+    pub(crate) address : SocketAddr,
+    
     /// Name of this exact chain and network, e.g `testnet`, `stryichain`, whatever
     pub(crate) chain_name: String,
 

@@ -5,18 +5,22 @@
 mod node;
 mod grpc;
 mod error;
+mod mining_manager;
 
 use std::error::Error;
 use std::io::{ErrorKind, Read};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::Arc;
 use clap::Parser;
 use std::time::Duration;
+use colored::Colorize;
 use tokio::io;
 use tokio::time::sleep;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 use tokio::sync::RwLock;
+use stryi_network::{StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerState, StryiNodeMode};
 use stryi_storage::{GenesisInitConfig, StryiStorage};
 use crate::grpc::{StryiSyncServiceConfig};
 use crate::node::StryiChainNode;
@@ -74,40 +78,49 @@ fn try_genesis_config_from_path(path : PathBuf) ->  Result<GenesisInitConfig, Bo
 }
 
 
-fn print_essential_info() {
-    info!("Hello world");
-    info!("- Version: {}", env!("CARGO_PKG_VERSION"));
-    info!("- Description: {}", env!("CARGO_PKG_DESCRIPTION"));
-    info!("GitHub: github.com/rosenthall");
-    info!("Starting node");
+fn print_essentials() {
+    println!("{}", "Welcome to the StryiChain Node CLI !".bright_yellow());
+    println!("- Node version: {}", env!("CARGO_PKG_VERSION").green());
+    println!("- Description: {}", env!("CARGO_PKG_DESCRIPTION").white());
+    println!("My {}: https://github.com/rosenthall", "GitHub".green());
+    println!("StryiChain {} repository: https://github.com/rosenthall/stryi-chain/", "GitHub".green());
+
+    println!("{}{}",
+    r#"
+    █▀▀ ▀█▀ █▀█ ▀▄▀ ▀█▀  █▀▀ █▄█ ▄▀▄ ▀█▀ █▄ █
+    ▄██  █  █▀▄  █  ▄█▄  █▄▄ █ █ █▀█ ▄█▄ █ ▀█
+    "#.blue(),
+    r#"
+                █▄ █ █▀█ █▀▄ █▀▀
+                █ ▀█ █▄█ █▄▀ ██▄
+    "#.yellow())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    
-    
-    // TODO: Some thiserror enum for common errors for this target.
-    
+
+    print_essentials();
+
     // Initialize the tracing subscriber.
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::TRACE)
         .finish();
+    
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");
 
     // Parse command-line arguments.
     let args = Args::parse();
     
-    print_essential_info();
 
     // TODO: make configuration of sync service actually configurable from CLI
     let sync_service_config = StryiSyncServiceConfig {
-        port : 222,
+        address: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0,0,0,0), 5555)),
         chain_name : "dev".to_string(),
         protocol_version : 1,
         max_blocks_range_per_request: 100,
     };
-    
+
     let genesis_config = if args.genesis_config_path.is_some() {
         info!("Genesis config path is provided, trying to deserialize config.");
         Some(try_genesis_config_from_path(PathBuf::from(args.genesis_config_path.unwrap()))?)
@@ -119,16 +132,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let storage = StryiStorage::initialize_in_path(PathBuf::from(args.database_dir_path), genesis_config).await?;
     let storage = Arc::new(RwLock::new(storage));
 
+    // Initalize NetworkManager
+
+    let keypair =  stryi_network::Keypair::generate_ed25519(); // TODO: make node's keypair configurable.
+
+    let behaviour_config = StryiBehaviourConfig {
+        keypair : keypair.clone(),
+        enable_server: true,
+        ..Default::default()
+    };
+
+    let network_manager_state = StryiNetworkManagerState {
+        mode: StryiNodeMode::Server,
+        keypair: Some(keypair.clone()),
+        stryi_behaviour_config: behaviour_config,
+        ..Default::default()
+
+    };
     
-    // Instantiate the StryiChainNode   
+    
+    let network_manager = StryiNetworkManager::new(&network_manager_state)?;
+
+    // Instantiate the StryiChainNode
     let node = StryiChainNode {
         storage,
-        stryi_sync_service_config: sync_service_config,
+        network_manager,
+        sync_service_config,
     };
     
     node.start().await?;
-    
-    
     
     // Keep the node running indefinitely.
     loop {
