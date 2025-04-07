@@ -137,9 +137,9 @@ pub type BlockHash = crate::hash::Hash<BlockHashKind>;
 
 impl BlockHash {
     
-    /// Return null blockhash value
-    pub fn empty() -> BlockHash {
-        BlockHash::new(&[0u8; BlockHashKind::SIZE])
+    /// Returns static blockhash value (Bx0000....) for genesis block.
+    pub const fn empty() -> BlockHash {
+        BlockHash { kind: BlockHashKind, data: [0u8; BlockHashKind::SIZE] }
     }
 }
 
