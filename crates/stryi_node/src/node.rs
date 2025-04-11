@@ -1,12 +1,14 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::join;
+use tokio_stream::StreamExt;
 use tonic::transport::Server;
+use tower::ServiceBuilder;
 use tracing::info;
-use stryi_network::{NetworkService, StryiNetworkManager};
+use stryi_network::{NetworkEvent, NetworkService, ServiceStatus, StryiNetworkManager};
 use stryi_storage::StryiStorage;
 use crate::error::StryiNodeError;
-use crate::grpc::{StryiSyncService, StryiSyncServiceConfig};
+use crate::grpc::{ReadinessMiddlewareLayer, StryiSyncService, StryiSyncServiceConfig};
 use crate::grpc_services::blockchain_sync_server::BlockchainSyncServer;
 
 /// The main struct representing the Stryi node instance.
@@ -42,7 +44,7 @@ impl StryiChainNode {
 
     /// Starts the node instance and basic services, like mempool, grpc sync server, mining-loop (if set in the config), handles network events,  
     /// Meant to be called after `connect()` and `synchronize()`. 
-    pub async fn start(self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn start_services(self) -> Result<(), Box<dyn std::error::Error>> {
 
         // Destructure to avoid partial borrows
         // After this - there will be no more "self" itself, but just all the fields/values separated
@@ -64,10 +66,19 @@ impl StryiChainNode {
             // Wrap the instance in Tonic’s generated server
             let svc = BlockchainSyncServer::new(service_impl);
 
+
+            // Build the readiness layer middleware.
+            let readiness_layer = ReadinessMiddlewareLayer::default();
+
+
             info!("Starting gRPC sync service on {}", &sync_service_config.address);
 
             // Start serving the sync service on the configured port
             Server::builder()
+                .layer(
+                    ServiceBuilder::new()
+                        .layer(readiness_layer)
+                )
                 .add_service(svc)
                 .serve(sync_service_config.address)
                 .await

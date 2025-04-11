@@ -160,7 +160,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         sync_service_config,
     };
     
-    node.start().await?;
+    node.start_services().await?;
     
     // Keep the node running indefinitely.
     loop {

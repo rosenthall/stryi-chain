@@ -1,20 +1,25 @@
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use futures_util::stream;
 use tokio::sync::RwLock;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 use tonic::codegen::tokio_stream::Stream;
+use tower::{Layer, Service};
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::storage::{BlockStorage, UtxoStorage};
 use stryi_storage::StryiStorage;
+use http::{Request as HttpRequest, Response as HttpResponse, StatusCode};
+use tonic::body::Body;
 use crate::grpc_services::{
     // Some aliases to avoid overlapping with similar structs from stryi_core 
     Block as PbBlock,
     BlockHeader as PbBlockHeader,
     ChainInfo as PbChainInfo,
-    BlockHeightRange, BlockHashList, SerializedBlockBody};
+    BlockHeightRange, BlockHashList, SerializedBlockBody
+};
 
 
 /// Implementation of grpc sync protocol, see protos/sync.proto
@@ -27,7 +32,7 @@ where DB:
     pub(crate) config: StryiSyncServiceConfig,
 
     /// Arc'd storage reference
-    pub(crate) storage : Arc<RwLock<DB>>
+    pub(crate) storage : Arc<RwLock<DB>>,
 }
 
 #[derive(Clone, Debug)]
@@ -43,6 +48,97 @@ pub struct StryiSyncServiceConfig {
 
     /// Value to avoid asking for entire chain quickly.
     pub(crate) max_blocks_range_per_request : usize,
+}
+
+
+/// A layer that adds "readiness" checking to any service. By default, it
+/// starts with `is_ready = false`, meaning the service will return a 503 response.
+/// You can later set `is_ready` to `true` to let requests pass through.
+#[derive(Debug, Clone, Default)]
+pub struct ReadinessMiddlewareLayer {}
+
+
+impl<S> Layer<S> for ReadinessMiddlewareLayer {
+    type Service = ReadinessMiddleware<S>;
+
+
+    /// Wraps the given service `S` in a `ReadinessMiddleware`, injecting
+    /// an Arc<RwLock<bool>> to track whether the node is "ready."
+    fn layer(&self, service: S) -> Self::Service {
+        ReadinessMiddleware {
+            inner: service,
+            // Initially, the node is not ready. You can set this to `true` later on.
+            is_ready: Arc::new(RwLock::new(false)),
+        }
+    }
+}
+
+/// A pinned, boxed future type alias.
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// The middleware struct itself, holding the inner service and
+/// a shared readiness state.
+#[derive(Debug, Clone)]
+pub struct ReadinessMiddleware<S> {
+    /// The underlying service we’re wrapping.
+    pub inner: S,
+    /// A shared boolean indicating whether this node is ready to serve requests.
+    pub is_ready: Arc<RwLock<bool>>,
+}
+
+impl<S, ReqBody> Service<HttpRequest<ReqBody>> for ReadinessMiddleware<S>
+where
+
+    // The inner service must produce `HttpResponse<Body>` to match our short-circuit response.
+    S: Service<HttpRequest<ReqBody>, Response = HttpResponse<Body>> + Clone + Send + 'static,
+    // The future from the inner service must be `Send` + 'static.
+    S::Future: Send + 'static,  
+    // The request body must be `Send` + 'static.
+    ReqBody: Send + 'static,
+{
+    // just use the same response and error types 
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+
+    /// Forwards readiness checks to the inner service's readiness.
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    /// The core call method: if `is_ready` is false, return a 503. Otherwise, call `inner`
+    fn call(&mut self, req: HttpRequest<ReqBody>) -> Self::Future {
+        let clone_inner = self.inner.clone();
+        let mut inner = std::mem::replace(&mut self.inner, clone_inner);
+        let readiness_flag = self.is_ready.clone();
+
+        Box::pin(async move {
+
+
+            let ready = {
+                let guard = readiness_flag.read().await;
+                *guard
+            };
+
+            if !ready {
+                
+                // If not ready - build an HTTP 503 response
+                let resp = HttpResponse::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .header("content-type", "text/plain")
+                    .body(Body::new("Node is not synchronized yet. Try again later".to_string()))
+                    .expect("Error building 503 response");
+
+
+                return Ok(resp);
+            }
+            
+            // If ready, delegate the request to the underlying service.
+            let response = inner.call(req).await?;
+            Ok(response)
+        })
+    }
 }
 
 
