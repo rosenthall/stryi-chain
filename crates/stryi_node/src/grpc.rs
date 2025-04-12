@@ -51,11 +51,21 @@ pub struct StryiSyncServiceConfig {
 }
 
 
-/// A layer that adds "readiness" checking to any service. By default, it
-/// starts with `is_ready = false`, meaning the service will return a 503 response.
+/// A layer that adds "readiness" checking to any service.
+/// `is_ready`=false means the service will return a UNAVAILABLE response.
 /// You can later set `is_ready` to `true` to let requests pass through.
 #[derive(Debug, Clone, Default)]
-pub struct ReadinessMiddlewareLayer {}
+pub struct ReadinessMiddlewareLayer {
+    is_ready : Arc<RwLock<bool>>,
+}
+
+impl ReadinessMiddlewareLayer {
+    pub fn new(shared_flag: Arc<RwLock<bool>>) -> Self {
+        ReadinessMiddlewareLayer {
+            is_ready: shared_flag,
+        }
+    }
+}
 
 
 impl<S> Layer<S> for ReadinessMiddlewareLayer {
@@ -67,8 +77,7 @@ impl<S> Layer<S> for ReadinessMiddlewareLayer {
     fn layer(&self, service: S) -> Self::Service {
         ReadinessMiddleware {
             inner: service,
-            // Initially, the node is not ready. You can set this to `true` later on.
-            is_ready: Arc::new(RwLock::new(false)),
+            is_ready: self.is_ready.clone(), 
         }
     }
 }
@@ -92,11 +101,11 @@ where
     // The inner service must produce `HttpResponse<Body>` to match our short-circuit response.
     S: Service<HttpRequest<ReqBody>, Response = HttpResponse<Body>> + Clone + Send + 'static,
     // The future from the inner service must be `Send` + 'static.
-    S::Future: Send + 'static,  
+    S::Future: Send + 'static,
     // The request body must be `Send` + 'static.
     ReqBody: Send + 'static,
 {
-    // just use the same response and error types 
+    // just use the same response and error types
     type Response = S::Response;
     type Error = S::Error;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
@@ -107,33 +116,36 @@ where
         self.inner.poll_ready(cx)
     }
 
-    /// The core call method: if `is_ready` is false, return a 503. Otherwise, call `inner`
+    /// The core call method: if `is_ready` is false, return an UNAVAILABLE. Otherwise, call `inner`
     fn call(&mut self, req: HttpRequest<ReqBody>) -> Self::Future {
         let clone_inner = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone_inner);
         let readiness_flag = self.is_ready.clone();
 
         Box::pin(async move {
-
-
+            
+            // check the flag
             let ready = {
                 let guard = readiness_flag.read().await;
                 *guard
             };
 
+            // if not ready - return UNAVAILABLE
             if !ready {
                 
-                // If not ready - build an HTTP 503 response
-                let resp = HttpResponse::builder()
-                    .status(StatusCode::SERVICE_UNAVAILABLE)
-                    .header("content-type", "text/plain")
-                    .body(Body::new("Node is not synchronized yet. Try again later".to_string()))
-                    .expect("Error building 503 response");
+                // Construct a gRPC "UNAVAILABLE" error response
+                let grpc_error = tonic::codegen::http::Response::builder()
+                    .status(StatusCode::OK) // gRPC specs typically use 200 OK here, and rely on the grpc-status header
+                    .header("content-type", "application/grpc")
+                    .header("grpc-status", "14") // 14 is "UNAVAILABLE" per https://github.com/grpc/grpc/blob/master/doc/statuscodes.md
+                    .header("grpc-message", "Node is not synchronized yet. Try again later")
+                    .body(Body::empty())
+                    .unwrap();
 
+                return Ok(grpc_error);
 
-                return Ok(resp);
             }
-            
+
             // If ready, delegate the request to the underlying service.
             let response = inner.call(req).await?;
             Ok(response)

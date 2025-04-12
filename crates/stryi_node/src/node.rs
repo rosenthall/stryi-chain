@@ -52,6 +52,7 @@ impl StryiChainNode {
             storage,
             mut network_manager,
             sync_service_config,
+            grpc_is_ready
         } = self;
 
         // gRPC server future
@@ -66,9 +67,8 @@ impl StryiChainNode {
             // Wrap the instance in Tonic’s generated server
             let svc = BlockchainSyncServer::new(service_impl);
 
-
             // Build the readiness layer middleware.
-            let readiness_layer = ReadinessMiddlewareLayer::default();
+            let readiness_layer = ReadinessMiddlewareLayer::new(grpc_is_ready.clone());
 
 
             info!("Starting gRPC sync service on {}", &sync_service_config.address);
