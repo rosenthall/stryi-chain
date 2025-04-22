@@ -20,7 +20,11 @@ use tokio::time::sleep;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 use tokio::sync::RwLock;
-use stryi_network::{StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerState, StryiNodeMode};
+use tokio_util::sync::CancellationToken;
+use stryi_core::mempool::{FeePolicy, MemPool, MemPoolConfig, RbfPolicy, UtxoLookup};
+use stryi_core::storage::UtxoStorage;
+use stryi_core::transactions::OutPoint;
+use stryi_network::{StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig, RendezvousMode};
 use stryi_storage::{GenesisInitConfig, StryiStorage};
 use crate::grpc::{StryiSyncServiceConfig};
 use crate::node::StryiChainNode;
@@ -93,7 +97,7 @@ fn print_essentials() {
     r#"
                 █▄ █ █▀█ █▀▄ █▀▀
                 █ ▀█ █▄█ █▄▀ ██▄
-    "#.yellow())
+    "#.green().on_black())
 }
 
 #[tokio::main]
@@ -101,7 +105,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     print_essentials();
 
-    // Initialize the tracing subscriber.
+    // Initialize the tracing subscriber. TODO: Make logging better, filter useless stuff like h2, handshakes, etc.. `env-filter` feature for tracing-subscriber would be helpful
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::TRACE)
         .finish();
@@ -132,34 +136,63 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let storage = StryiStorage::initialize_in_path(PathBuf::from(args.database_dir_path), genesis_config).await?;
     let storage = Arc::new(RwLock::new(storage));
 
-    // Initalize NetworkManager
 
-    let keypair =  stryi_network::Keypair::generate_ed25519(); // TODO: make node's keypair configurable.
 
-    let behaviour_config = StryiBehaviourConfig {
-        keypair : keypair.clone(),
-        enable_server: true,
-        ..Default::default()
+    // TODO: Make mempool configurable as well
+    let mempool_config = MemPoolConfig::new(100, FeePolicy::default(), RbfPolicy::default(), 36000);
+
+    // Create utxo_lookup for mempool that reads UTXO by outpoint from storage
+    let utxo_lookup: UtxoLookup = {
+        let storage = storage.clone();
+
+        // Closure captures Arc-ed storage
+        Box::new(move |out_point: &OutPoint| {
+            // Clone storage for the async block
+            let storage = storage.clone();
+
+            // Copy outpoint by value into async block
+            let out_point = *out_point;
+
+            // Return boxed async future that reads UTXO
+            Box::pin(async move {
+                storage.read().await.get_utxo(&out_point).await.ok()
+            })
+        })
     };
 
-    let network_manager_state = StryiNetworkManagerState {
-        mode: StryiNodeMode::Server,
-        keypair: Some(keypair.clone()),
+
+
+    let mempool = Arc::new(RwLock::new(MemPool::new(mempool_config, utxo_lookup)));
+
+
+    // Initalize NetworkManager
+
+    let keypair = stryi_network::Keypair::generate_ed25519(); // TODO: make node's keypair configurable.
+
+    let behaviour_config = StryiBehaviourConfig::default();
+    
+
+    let network_manager_state = StryiNetworkManagerConfig {
+        rendezvous_mode: RendezvousMode::Server,
+        keypair: keypair.clone(),
         stryi_behaviour_config: behaviour_config,
         ..Default::default()
 
     };
+
+    let network_manager_cancellation_token = CancellationToken::new();
+    let network_manager = StryiNetworkManager::new(&network_manager_state, mempool.clone(), network_manager_cancellation_token)?;
     
-    
-    let network_manager = StryiNetworkManager::new(&network_manager_state)?;
 
     // Instantiate the StryiChainNode
     let node = StryiChainNode {
+        mempool,
         storage,
         network_manager,
         sync_service_config,
+        grpc_is_ready: Arc::new(RwLock::new(false)),
     };
-    
+
     node.start_services().await?;
     
     // Keep the node running indefinitely.

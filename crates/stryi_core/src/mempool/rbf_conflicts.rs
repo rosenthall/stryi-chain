@@ -1,4 +1,4 @@
-use std::collections::{HashSet, HashMap};
+use std::collections::HashSet;
 use thiserror::Error;
 use crate::mempool::dependencies::DependencyTracker;
 use crate::transactions::{Transaction, TransactionHash};

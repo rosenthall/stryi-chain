@@ -3,7 +3,7 @@ use crate::mempool::{FeePolicy, RbfPolicy};
 use crate::transactions::Transaction;
 
 /// Serializable mempool state for network synchronization
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MemPoolSyncData {
     /// List of all transactions in mempool
     pub(crate) transactions: Vec<Transaction>,

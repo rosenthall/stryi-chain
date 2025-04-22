@@ -10,6 +10,7 @@ pub use rbf_conflicts::*;
 
 mod validator;
 mod error;
+pub use error::MemPoolError;
 mod types;
 pub use types::{MemPoolConfig, MemPoolSyncData};
 
@@ -24,7 +25,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use petgraph::graph::NodeIndex;
 use crate::block::BlockData;
 use crate::mempool::dependencies::DependencyTracker;
-use crate::mempool::error::MemPoolError;
 use crate::mempool::storage::TransactionStorage;
 use crate::mempool::validator::{MempoolTxValidator, MempoolValidationError};
 use crate::transactions::{OutPoint, Transaction, TransactionHash, UTXO};
@@ -187,14 +187,14 @@ impl MemPool {
     ///
     /// Builds a MemPoolSyncData struct containing all transactions and the current timestamp,
     /// then serializes it using bincode.
-    pub async fn handle_get_state(&self) -> Result<Vec<u8>, MemPoolError> {
+    pub async fn get_sync_state(&self) -> Result<MemPoolSyncData, MemPoolError> {
         let all_tx = self.storage.get_all();
         let sync_data = MemPoolSyncData {
             transactions: all_tx.iter().map(|entry| entry.transaction.clone()).collect(),
             timestamp: current_timestamp(),
         };
-        bincode::serde::encode_to_vec(&sync_data, bincode::config::standard())
-            .map_err(|e| MemPoolError::Storage(Box::new(e)))
+
+        Ok(sync_data)
     }
 
     /// Restores the mempool state from a serialized snapshot.

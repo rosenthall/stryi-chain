@@ -1,6 +1,6 @@
 use crate::mempool::FeeCalculator;
 use std::sync::Arc;
-
+use bincode::config::standard;
 use k256::{
     ecdsa::{SigningKey, VerifyingKey},
     elliptic_curve::rand_core::OsRng,
@@ -224,8 +224,9 @@ async fn test_mempool_state_serialization() {
     let tx = create_simple_transaction(&alice_sk, genesis_hash.clone(), 0, 40_000, bob_addr);
     mempool_original.add_transaction(tx.clone()).await.unwrap();
 
-    let serialized = mempool_original.handle_get_state().await.unwrap();
-
+    let state = mempool_original.get_sync_state().await.unwrap();
+    let serialized = bincode::serde::encode_to_vec(state, standard()).unwrap();
+    
     let restore_utxo_lookup = create_utxo_lookup(vec![(alice_outpoint, alice_utxo)]);
     let mut mempool_restored = MemPool::new(config, restore_utxo_lookup);
 

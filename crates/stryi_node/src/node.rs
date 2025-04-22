@@ -1,11 +1,11 @@
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tokio::join;
-use tokio_stream::StreamExt;
+use tokio::sync::RwLock;
 use tonic::transport::Server;
 use tower::ServiceBuilder;
 use tracing::info;
-use stryi_network::{NetworkEvent, NetworkService, ServiceStatus, StryiNetworkManager};
+use stryi_core::mempool::MemPool;
+use stryi_network::StryiNetworkManager;
 use stryi_storage::StryiStorage;
 use crate::error::StryiNodeError;
 use crate::grpc::{ReadinessMiddlewareLayer, StryiSyncService, StryiSyncServiceConfig};
@@ -15,33 +15,36 @@ use crate::grpc_services::blockchain_sync_server::BlockchainSyncServer;
 /// This node will later integrate networking, consensus, gRPC sync, mempool and mining services.
 pub struct StryiChainNode {
 
-    // TODO: Integrate consensus engine, mempool, mining loop manager, ...
+    // TODO: Integrate consensus engine, mining loop manager, ...
 
+    /// Mempool object.
+    pub(crate) mempool: Arc<RwLock<MemPool>>,
+    
     /// The blockchain storage (UTXO set, block storage, undo data etc.)
     pub(crate) storage: Arc<RwLock<StryiStorage>>,
     
     // The blockchain's p2p layer, instance of StryiNetworkManager that allows to communicate with other nodes
     pub(crate) network_manager: StryiNetworkManager,
-    
+
     /// Configuration for the gRPC-based synchronization service.
     pub(crate) sync_service_config: StryiSyncServiceConfig,
+
+    /// The readiness flag used by the gRPC middleware.
+    pub(crate) grpc_is_ready: Arc<RwLock<bool>>,
 }
 
 impl StryiChainNode {
-
-
-
     /// TODO: Implement `connect` method for StryiChainNode, must be performed as very first step when initializing node.
     async fn connect(mut self) -> Result<(), StryiNodeError> {
         unimplemented!()
     }
-    
+
     /// TODO: Implement synchronization functional for StryiChainNode. Synchronization must be *after* connecting to the network and *before* hosting sync service and processing network events.
     async fn synchronize(mut self) -> Result<(), StryiNodeError> {
         unimplemented!()
     }
 
-
+    
     /// Starts the node instance and basic services, like mempool, grpc sync server, mining-loop (if set in the config), handles network events,  
     /// Meant to be called after `connect()` and `synchronize()`. 
     pub async fn start_services(self) -> Result<(), Box<dyn std::error::Error>> {
@@ -49,12 +52,13 @@ impl StryiChainNode {
         // Destructure to avoid partial borrows
         // After this - there will be no more "self" itself, but just all the fields/values separated
         let StryiChainNode {
+            mempool,
             storage,
             mut network_manager,
             sync_service_config,
             grpc_is_ready
         } = self;
-
+        
         // gRPC server future
         let grpc_fut = async {
 
@@ -85,12 +89,12 @@ impl StryiChainNode {
         };
 
         // network manager future
-        let network_fut = network_manager.start();
+        let network_fut = network_manager.run_loop();
 
         // run both concurrently
-        let (grpc_res, net_res) = join!(grpc_fut, network_fut);
+        let (grpc_res, net_res_) = join!(grpc_fut, network_fut);
+
         grpc_res?;
-        net_res?;
 
         Ok(())
     }
