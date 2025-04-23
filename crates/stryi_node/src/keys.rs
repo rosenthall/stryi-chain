@@ -1,10 +1,10 @@
-//! Utilities for **peer‑identity key** handling.
+//! Utilities for **peer-identity key** handling.
 //!
-//! * Generate or restore a `stryi_network::Keypair` (note: we use ed25519).
-//! * Back up the key into a single binary file (`*.stryi_keys` / `*.bin`) with `0o600` permissions.
-//! * Zeroize sensitive buffers after use and on drop.
+//! * Generate or restore a `stryi_network::Keypair` (Ed25519).
+//! * Back up the key into a single binary file (`*.stryi_keys` / `*.bin`)
+//!   using libp2p-protobuf encoding and `0o600` permissions.
 //!
-//! This module handles the *peer* key only; wallet keys live elsewhere.
+//! This module deals with the *peer* key only; wallet keys are stored elsewhere.
 
 use std::{
     fs::{File, OpenOptions},
@@ -13,12 +13,12 @@ use std::{
     path::Path,
 };
 
-use stryi_network::{Keypair};
+use stryi_network::Keypair;
 use zeroize::Zeroize;
 
 use crate::error::StryiNodeError;
 
-/// Wrapper around Keypair for convenient backups and restoring from file.
+/// Wrapper around `Keypair` that guarantees secret wipe on drop.
 pub struct PeerKey(pub Keypair);
 
 impl PeerKey {
@@ -27,51 +27,45 @@ impl PeerKey {
         Self(Keypair::generate_ed25519())
     }
 
-    /// Write the key to `path` in libp2p protobuf encoding.
-    /// `path` meant to have either .stryi_keys or .bin extension for better consistency, but you can use whatever you want
-    /// 
-    /// The file is created (or truncated) with mode `0o600`.
+    /// Back up the key to `path` (protobuf encoding, 0o600).
+    ///
+    /// Extensions like `.stryi_keys` or `.bin` are customary but not enforced.
     pub fn backup<P: AsRef<Path>>(&self, path: P) -> Result<(), StryiNodeError> {
-        
-        // Serialize the key
+        // serialize
         let mut bytes = self
             .0
             .to_protobuf_encoding()
-            .map_err(|e| StryiNodeError::other(format!("encode peer key: {e:?}")))?;
+            .map_err(StryiNodeError::from)?; // KeyEncode
 
-        // Securely create or overwrite the file
+        // secure file create/overwrite
         let mut file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
             .mode(0o600)
             .open(path.as_ref())
-            .map_err(|e| StryiNodeError::other(format!("open backup file: {e}")))?;
+            .map_err(StryiNodeError::from)?; // Io
 
-        // Write and flush
-        file.write_all(&bytes)
-            .and_then(|_| file.flush())
-            .map_err(|e| StryiNodeError::other(format!("write backup file: {e}")))?;
+        // write & flush
+        file.write_all(&bytes).and_then(|_| file.flush()).map_err(StryiNodeError::from)?;
 
-        // Zeroize the serialized buffer
+        // wipe buffer
         bytes.zeroize();
         Ok(())
     }
 
     /// Restore a key from `path`.
     pub fn restore<P: AsRef<Path>>(path: P) -> Result<Self, StryiNodeError> {
-        // Read file contents
-        let mut file = File::open(path.as_ref())
-            .map_err(|e| StryiNodeError::other(format!("open restore file: {e}")))?;
+        // read file
         let mut buf = Vec::new();
-        file.read_to_end(&mut buf)
-            .map_err(|e| StryiNodeError::other(format!("read restore file: {e}")))?;
+        File::open(path.as_ref())?.read_to_end(&mut buf)?;
 
-        // Deserialize
-        let key = Keypair::from_protobuf_encoding(&buf)
-            .map_err(|e| StryiNodeError::other(format!("decode peer key: {e:?}")))?;
+        // deserialize
+        let key = Keypair::from_protobuf_encoding(&buf).map_err(StryiNodeError::from)?; // KeyDecode
 
+        // wipe buffer
         buf.zeroize();
+
         Ok(Self(key))
     }
 

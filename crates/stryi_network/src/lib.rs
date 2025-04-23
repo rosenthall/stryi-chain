@@ -11,7 +11,7 @@ pub use manager::*;
 
 use libp2p::{Multiaddr};
 
-pub use libp2p::identity::Keypair;
+pub use libp2p::identity::{Keypair, ed25519, SigningError, DecodingError};
 use stryi_core::transactions::Transaction;
 use crate::model::BroadcastBlock;
 
