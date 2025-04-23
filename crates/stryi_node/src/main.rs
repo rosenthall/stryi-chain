@@ -6,6 +6,7 @@ mod node;
 mod grpc;
 mod error;
 mod mining_manager;
+mod keys;
 
 use std::error::Error;
 use std::io::{ErrorKind, Read};
@@ -27,6 +28,7 @@ use stryi_core::transactions::OutPoint;
 use stryi_network::{StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig, RendezvousMode};
 use stryi_storage::{GenesisInitConfig, StryiStorage};
 use crate::grpc::{StryiSyncServiceConfig};
+use crate::keys::PeerKey;
 use crate::node::StryiChainNode;
 
 pub(crate) mod grpc_services {
@@ -52,6 +54,10 @@ struct Args {
     /// Path to .json file with wanted configuration for genesis block
     #[arg(long, required = false)]
     genesis_config_path: Option<String>,
+
+    /// Path to peer-key backup file
+    #[arg(long, default_value = "/var/lib/stryi_chain/peer.stryi_keys")]
+    peer_key_path: String,
     
     /// Rendezvous server multiaddr (used in node mode only)
     #[arg(long)]
@@ -165,9 +171,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mempool = Arc::new(RwLock::new(MemPool::new(mempool_config, utxo_lookup)));
 
 
-    // Initalize NetworkManager
+    // -- Initialize NetworkManager --
+    
+    
+    // Backup peer key
+    let peer_key = match PeerKey::restore(&args.peer_key_path) {
+        Ok(k) => {
+            info!("Restored peer key from {}", &args.peer_key_path);
+            k
+        }
+        Err(_) => {
+            info!("No existing peer key, generating a fresh one");
+            let fresh = PeerKey::generate_random();
+            // Ignore I/O error on first run; report only if backup fails later.
+            let _ = fresh.backup(&args.peer_key_path);
+            fresh
+        }
+    };
 
-    let keypair = stryi_network::Keypair::generate_ed25519(); // TODO: make node's keypair configurable.
+    let keypair = peer_key.inner().clone(); // clone to hand over to NetworkManager
 
     let behaviour_config = StryiBehaviourConfig::default();
     
