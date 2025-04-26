@@ -8,16 +8,15 @@ use libp2p::{gossipsub::{
     Behaviour as Gossipsub, Event as GossipsubEvent, MessageAuthenticity,
     MessageId, ValidationMode,
     ConfigBuilder as GossipsubConfigBuilder,
-}, identify::{Behaviour as Identify, Event as IdentifyEvent, Config as IdentifyConfig},
-   ping::{Behaviour as Ping, Event as PingEvent, Config as PingConfig}, rendezvous::{server::{Behaviour as RzvServer, Event as RzvServerEvent, Config as RzvServerConfig},
-    client::{Behaviour as RzvClient, Event as RzvClientEvent},
-}, swarm::{
-    NetworkBehaviour,
-    behaviour::toggle::Toggle,
-}};
+}, identify::{Behaviour as Identify, Event as IdentifyEvent, Config as IdentifyConfig}, ping::{Behaviour as Ping, Event as PingEvent, Config as PingConfig},
+             rendezvous::{server::{Behaviour as RzvServer, Event as RzvServerEvent, Config as RzvServerConfig},
+                          client::{Behaviour as RzvClient, Event as RzvClientEvent}
+             }, swarm::{NetworkBehaviour, behaviour::toggle::Toggle}, StreamProtocol};
 use libp2p::identity::Keypair;
+use libp2p::request_response::ProtocolSupport;
 use crate::error::{StryiNetworkError, StryiNetworkError::GossipsubConfigError};
-use crate::mempool::MempoolMessage;
+use crate::mempool::{MempoolEvent, MempoolSyncBehaviour};
+use crate::services::{ServicesEvent, ServicesInfoBehaviour, };
 
 /// High-level event combining all sub-protocol events.
 #[derive(Debug)]
@@ -27,7 +26,8 @@ pub enum StryiEvent {
     Identify(IdentifyEvent),
     RzvServer(RzvServerEvent),
     RzvClient(RzvClientEvent),
-    MempoolRequest(MempoolMessage),
+    Mempool(MempoolEvent),
+    Services(ServicesEvent),
 }
 
 impl From<GossipsubEvent> for StryiEvent {
@@ -87,7 +87,7 @@ impl Default for StryiBehaviourConfig {
     }
 }
 
-/// A single `NetworkBehaviour` that includes Gossipsub, Ping, Identify
+/// A single `NetworkBehaviour` that includes Gossipsub, Ping, Identify, ServicesInfo
 /// and a Toggle-wrapped (optional) Rendezvous server or client
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "StryiEvent")]
@@ -98,6 +98,8 @@ pub struct StryiBehaviour {
     pub identify: Identify,
     pub rendezvous_server: Toggle<RzvServer>,
     pub rendezvous_client: Toggle<RzvClient>,
+    pub mempool_sync: MempoolSyncBehaviour,
+    pub services_info: ServicesInfoBehaviour,
 }
 
 impl StryiBehaviour {
@@ -113,6 +115,21 @@ impl StryiBehaviour {
             .with_timeout(cfg.ping_timeout);
         let ping = Ping::new(ping_cfg);
 
+        // --- request-response behaviours ---
+        let mempool_sync = MempoolSyncBehaviour::new(
+            [(StreamProtocol::new("/stryichain/mempool"),
+              ProtocolSupport::Full)],
+            libp2p::request_response::Config::default(),
+        );
+
+        let services_info = ServicesInfoBehaviour::new(
+            [(StreamProtocol::new("/stryichain/services"),
+              ProtocolSupport::Full)],
+            libp2p::request_response::Config::default(),
+
+        );
+
+
         // Build Identify with a fixed protocol version.
         let id_cfg = IdentifyConfig::new(protocol_version.to_string(), keypair.public());
         let identify = Identify::new(id_cfg);
@@ -123,7 +140,6 @@ impl StryiBehaviour {
         } else {
             Toggle::from(None)
         };
-
         let rendezvous_client = if cfg.enable_rendezvous_client {
             Toggle::from(Some(RzvClient::new(keypair.clone())))
         } else {
@@ -134,6 +150,8 @@ impl StryiBehaviour {
             gossipsub,
             ping,
             identify,
+            mempool_sync,
+            services_info,
             rendezvous_server,
             rendezvous_client,
         })

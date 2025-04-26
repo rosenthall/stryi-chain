@@ -14,6 +14,10 @@ pub enum StryiNodeError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
+    #[error(transparent)]
+    Pkcs8(#[from] pkcs8::Error),
+    
+    
     // fallback / misc
     #[error("unexpected error: {0}")]
     Other(String),

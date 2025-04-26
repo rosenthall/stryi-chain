@@ -6,8 +6,8 @@ use bincode::config::standard;
 use bincode::serde::decode_from_slice;
 use futures::StreamExt;
 use libp2p::{core::upgrade, identity::Keypair, noise, tcp, yamux, swarm::{Swarm, Config as SwarmConfig}, Transport, PeerId, Multiaddr, StreamProtocol, request_response, gossipsub};
-use libp2p::gossipsub::{IdentTopic, MessageId};
-use libp2p::request_response::{InboundRequestId, ProtocolSupport, ResponseChannel};
+use libp2p::gossipsub::IdentTopic;
+use libp2p::request_response::{InboundRequestId, ProtocolSupport, ResponseChannel, Event as ReqRespEvent};
 use libp2p::swarm::SwarmEvent;
 use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -17,13 +17,14 @@ use stryi_core::transactions::Transaction;
 use crate::{RendezvousMode, error::StryiNetworkError, behaviour::{StryiBehaviour, StryiBehaviourConfig, StryiEvent}, StryiNetworkManagerConfig, NetworkCommand, NetworkEvent, behaviour};
 use crate::mempool::{MempoolMessage, MempoolRequest, MempoolResponse, MempoolSyncBehaviour};
 use crate::model::BroadcastBlock;
+use crate::services::{ServiceInfo, ServicesInfoBehaviour, ServicesInfoRequest, ServicesResponse};
 use crate::StryiNetworkError::CannotRespond;
 
 /// StryiNetworkManager sets up the transport, constructs a swarm using our unified StryiBehaviour,
 /// and runs the event loop.
 /// Provides high-level communication layer with network via channels and messaging such as
 /// - `command_tx` : Channel for communicating with entire network, allows performing operations like publish blocks/transactions, dial with specific node, etc.
-/// - `event_tx` : Channel for
+/// - `event_tx` : Channel for receiving `NetworkEvents` from StryiNetworkManager
 pub struct StryiNetworkManager {
 
     /// Configuration for entire StryiNetworkManager instance, defines addresses, keypair, rendezvous mode, etc.
@@ -43,10 +44,17 @@ pub struct StryiNetworkManager {
     // Event channel: network manager broadcasts events (e.g., peer events) to subscribers
     pub event_tx: broadcast::Sender<NetworkEvent>,
 
+    /// Thread-safe, mutable registry of this node’s active services.
+    /// Wrapped in an `RwLock` to allow concurrent reads and real-time updates
+    /// (e.g. when a service starts, stops, or changes its listening port).
+    pub services_info: Arc<RwLock<Vec<ServiceInfo>>>,
+
 
     /// Connected peers tracking TODO : Actually track peers
     pub(crate) connected_peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
 
+    /// Peer id of this network manager
+    pub(crate) peer_id: PeerId,
 
     /// Cancellation token for graceful shutdown of the run loop
     cancel_token: CancellationToken,
@@ -71,7 +79,7 @@ const TRANSACTIONS_TOPIC_NAME: &str = "stryichain-txs";
 
 impl StryiNetworkManager {
     /// Creates a new StryiNetworkManager based on the provided configuration, Arc-ed mempool, and cancellation_token
-    pub fn new(config: &StryiNetworkManagerConfig, mempool: Arc<RwLock<MemPool>>, cancel_token: CancellationToken) -> Result<Self, StryiNetworkError> {
+    pub fn new(config: &StryiNetworkManagerConfig, mempool: Arc<RwLock<MemPool>>, services_info: Arc<RwLock<Vec<ServiceInfo>>>, cancel_token: CancellationToken) -> Result<Self, StryiNetworkError> {
         // Use provided key or generate one.
         let key = config.clone().keypair;
         let local_peer_id = PeerId::from(key.public());
@@ -92,7 +100,7 @@ impl StryiNetworkManager {
 
         // Create the swarm with default SwarmConfig.
         let swarm_config = SwarmConfig::with_tokio_executor();
-        let mut swarm = Swarm::new(transport, behaviour, local_peer_id, swarm_config);
+        let mut swarm = Swarm::new(transport, behaviour, local_peer_id.clone(), swarm_config);
 
         // Listen on the configured address.
         let listen_addr: Multiaddr = config
@@ -129,10 +137,17 @@ impl StryiNetworkManager {
             command_tx,
             command_rx,
             event_tx,
+            services_info,
             connected_peers: Arc::new(Default::default()),
+            peer_id: local_peer_id,
             cancel_token,
 
         })
+    }
+
+    /// Get own peer id
+    pub fn peer_id(&self) -> PeerId {
+        self.peer_id
     }
 
     /// Returns a new receiver that can be used by callers to listen for network events.
@@ -209,12 +224,22 @@ impl StryiNetworkManager {
 
 
                                 // --- Mempool ---
-                                StryiEvent::MempoolRequest(mempool_msg) => {
-                                    if let MempoolMessage::Request  {request_id,request,channel} = mempool_msg  {
-                                        // process respond and ignore possible errors
-                                        self.handle_mempool_request(request_id, request, channel).await.ok();
+                                StryiEvent::Mempool(ev) => {
+                                    if let ReqRespEvent::Message { peer, message, connection_id } = ev {
+                                        if let request_response::Message::Request { request_id, request, channel } = message {
+                                            self.handle_mempool_request(request_id, request, channel).await.ok();
+                                        }
                                     }
                                 },
+
+                                // --- Services Info ---
+                                StryiEvent::Services(ev) => {
+                                    if let ReqRespEvent::Message { peer, message, connection_id } = ev {
+                                        if let request_response::Message::Request { request_id, request, channel } = message {
+                                            self.handle_services_info_request(request_id, request, channel).await.ok();
+                                        }
+                                    }
+                                }
 
                                 // --- Gossipsub ---
                                 StryiEvent::Gossipsub(gossipsub_event) => {
@@ -223,9 +248,6 @@ impl StryiNetworkManager {
 
                                 // --- Identify ---
                                 // TODO: Setup Identify events handling
-
-                                // -- Get-services ---
-                                // TODO: Setup ServicesInfo request-response service for a convenient way to get grpc server address
 
 
                                 // -- temporal stubs --
@@ -298,6 +320,39 @@ impl StryiNetworkManager {
             gossipsub::Event::SlowPeer { .. } => Ok(()),
         }
     }
+
+    /// Handles an inbound Services-Info request.
+    async fn handle_services_info_request(
+        &self,
+        request_id: InboundRequestId,
+        request: ServicesInfoRequest,
+        channel: ResponseChannel<ServicesResponse>,
+    ) -> Result<(), StryiNetworkError> {
+        trace!("ServicesInfo request {:?}, id {}", request, request_id);
+
+        // Behaviour instance only to gain `send_response`
+        let mut behaviour = ServicesInfoBehaviour::new(
+            [(StreamProtocol::new("/services"), ProtocolSupport::Full)],
+            request_response::Config::default(),
+        );
+
+        // Construct response
+        let response = match request {
+            ServicesInfoRequest::ListServices => {
+                let services = self.services_info.read().await.clone();
+                ServicesResponse { services }
+            }
+        };
+
+        // Try answer
+        behaviour
+            .send_response(channel, response)
+            .map_err(|_| CannotRespond(request_id))?;
+
+        Ok(())
+    }
+
+
 
     // handles mempool requests
     async fn handle_mempool_request(&self, request_id: InboundRequestId, request : MempoolRequest , response_channel: ResponseChannel<MempoolResponse>) -> Result<(), StryiNetworkError> {

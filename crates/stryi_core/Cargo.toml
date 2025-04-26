@@ -8,7 +8,7 @@ license = "BSD-3-Clause"
 [dependencies]
 thiserror = "2"
 hex = "0.4.3"
-blake3 = "1.5.5"
+blake3 = "1.8.2"
 k256 = {version = "0.13", features = ["serde", "ecdsa"]}
 rand = "0.9.0-beta"
 hashx = "0.2.1"

@@ -4,11 +4,12 @@ mod error;
 mod manager;
 mod model;
 mod mempool;
+mod services;
 
 pub use behaviour::*;
 pub use error::StryiNetworkError;
 pub use manager::*;
-
+pub use services::ServiceInfo;
 use libp2p::{Multiaddr};
 
 pub use libp2p::identity::{Keypair, ed25519, SigningError, DecodingError};

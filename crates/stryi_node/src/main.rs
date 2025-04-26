@@ -8,11 +8,15 @@ mod error;
 mod mining_manager;
 mod keys;
 
+/// Helper functions for generating x.509 certificates for node's services
+mod tls;
+
 use std::error::Error;
 use std::io::{ErrorKind, Read};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread;
 use clap::Parser;
 use std::time::Duration;
 use colored::Colorize;
@@ -25,11 +29,12 @@ use tokio_util::sync::CancellationToken;
 use stryi_core::mempool::{FeePolicy, MemPool, MemPoolConfig, RbfPolicy, UtxoLookup};
 use stryi_core::storage::UtxoStorage;
 use stryi_core::transactions::OutPoint;
-use stryi_network::{StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig, RendezvousMode};
+use stryi_network::{StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig, RendezvousMode, ServiceInfo};
 use stryi_storage::{GenesisInitConfig, StryiStorage};
 use crate::grpc::{StryiSyncServiceConfig};
 use crate::keys::PeerKey;
 use crate::node::StryiChainNode;
+use crate::tls::cert_and_key_from_peer;
 
 pub(crate) mod grpc_services {
     tonic::include_proto!("stryi.sync");
@@ -191,26 +196,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let keypair = peer_key.inner().clone(); // clone to hand over to NetworkManager
 
-    let behaviour_config = StryiBehaviourConfig::default();
-    
 
-    let network_manager_state = StryiNetworkManagerConfig {
+
+    // generate tls identity for services of node
+    let tls_identity = cert_and_key_from_peer(&keypair, &["localhost"])  // TODO: setup SANs somehow better
+        .expect("Cannot generate certificate based on this peer's keypair");
+
+    info!("Generated certificate for node services! This node certificate :");
+    println!("{}", tls_identity.cert_pem.as_str().purple());
+
+
+    let behaviour_config = StryiBehaviourConfig::default();
+    let network_manager_config = StryiNetworkManagerConfig {
         rendezvous_mode: RendezvousMode::Server,
         keypair: keypair.clone(),
         stryi_behaviour_config: behaviour_config,
         ..Default::default()
-
     };
 
     let network_manager_cancellation_token = CancellationToken::new();
-    let network_manager = StryiNetworkManager::new(&network_manager_state, mempool.clone(), network_manager_cancellation_token)?;
+
+    // An initially empty list – we'll fill it later when services start.
+    let services_info: Arc<RwLock<Vec<ServiceInfo>>> = Arc::new(RwLock::new(Vec::new()));
     
+    let network_manager = StryiNetworkManager::new(&network_manager_config, mempool.clone(), services_info.clone(), network_manager_cancellation_token)?;
 
     // Instantiate the StryiChainNode
     let node = StryiChainNode {
         mempool,
         storage,
         network_manager,
+        services_info,
+        tls_identity,
         sync_service_config,
         grpc_is_ready: Arc::new(RwLock::new(false)),
     };
