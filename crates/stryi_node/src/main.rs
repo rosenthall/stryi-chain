@@ -11,18 +11,24 @@ mod keys;
 /// Helper functions for generating x.509 certificates for node's services
 mod tls;
 
+/// Runtime configuration object for the node.
+mod config;
+
+/// Command-line overrides for node configuration.
+mod cli;
+
+
 use std::error::Error;
 use std::io::{ErrorKind, Read};
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::SocketAddrV4;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
-use clap::Parser;
 use std::time::Duration;
 use colored::Colorize;
 use tokio::io;
 use tokio::time::sleep;
-use tracing::{info, Level};
+use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -35,60 +41,29 @@ use crate::grpc::{StryiSyncServiceConfig};
 use crate::keys::PeerKey;
 use crate::node::StryiChainNode;
 use crate::tls::cert_and_key_from_peer;
+use crate::config::NodeConfig;
+use crate::error::StryiNodeError;
 
 pub(crate) mod grpc_services {
     tonic::include_proto!("stryi.sync");
 }
 
-/// Command-line arguments for the Stryi network node.
-#[derive(Parser, Debug)]
-#[command(author, version, about)]
-struct Args {
-    /// Run in server mode (if not set, runs in node mode)
-    #[arg(long)]
-    rendezvous: bool,
-
-    /// Multiaddr to listen on (e.g., "/ip4/0.0.0.0/tcp/1234")
-    #[arg(long, default_value = "/ip4/0.0.0.0/tcp/1234")]
-    listen_addr: String,
-
-    /// Path to the database
-    #[arg(long, default_value = "/var/lib/stryi_chain")]
-    database_dir_path : String,
-    
-    /// Path to .json file with wanted configuration for genesis block
-    #[arg(long, required = false)]
-    genesis_config_path: Option<String>,
-
-    /// Path to peer-key backup file
-    #[arg(long, default_value = "/var/lib/stryi_chain/peer.stryi_keys")]
-    peer_key_path: String,
-    
-    /// Rendezvous server multiaddr (used in node mode only)
-    #[arg(long)]
-    rendezvous_address: Option<String>,
-
-    /// Rendezvous namespace
-    #[arg(long, default_value = "stryi-rendezvous")]
-    rendezvous_namespace: String,
-}
 
 /// Reads and deserializes the config from provided path.
-fn try_genesis_config_from_path(path : PathBuf) ->  Result<GenesisInitConfig, Box<dyn Error>> {
-    
+fn try_genesis_config_from_path(path : PathBuf) ->  Result<GenesisInitConfig, StryiNodeError> {
     // Check if file exists and if it is a file.
     // .exists() method is redundant since is_file() already checks it
     if !path.is_file() { 
-        return Err(Box::new(io::Error::new(ErrorKind::NotFound, "Provided path with genesis configuration is not a file or doesn't exists.")))
+        return Err(StryiNodeError::Io(io::Error::new(ErrorKind::NotFound, "Provided path with genesis configuration is not a file or doesn't exists.")));
     }
     
     let mut file = std::fs::File::open(&path)?;
     let mut buf = String::new();
     file.read_to_string(&mut buf)?;
     
-    
     // Try to deserialize 
-   serde_json::from_str(&buf).map_err(|e| Box::new(e) as Box<dyn Error>)
+    serde_json::from_str(&buf)
+        .map_err(|e| StryiNodeError::other(format!("Cannot deserialize genesis configuration, error : {}", e.to_string())))
     
 }
 
@@ -108,13 +83,14 @@ fn print_essentials() {
     r#"
                 █▄ █ █▀█ █▀▄ █▀▀
                 █ ▀█ █▄█ █▄▀ ██▄
-    "#.green().on_black())
+    "#.green().on_black());
+
+    println!("{}", "Starting..".blink().green());
+    thread::sleep(Duration::from_secs(3));
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-
-    print_essentials();
 
     // Initialize the tracing subscriber. TODO: Make logging better, filter useless stuff like h2, handshakes, etc.. `env-filter` feature for tracing-subscriber would be helpful
     let subscriber = FmtSubscriber::builder()
@@ -124,33 +100,47 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");
 
-    // Parse command-line arguments.
-    let args = Args::parse();
-    
+    // Initialize cfg, we use both .toml file and cli parameters for configuration
+    // CLI parameters have higher priority than stryichain.toml so user may overlap values.
+    let cfg = NodeConfig::load()
+        .map_err(|e| {
+            error!("Got error while trying to setup configuration : {e}");
+            e
+        })?;
 
-    // TODO: make configuration of sync service actually configurable from CLI
+
+
+    print_essentials();
+
+
     let sync_service_config = StryiSyncServiceConfig {
-        address: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0,0,0,0), 5555)),
-        chain_name : "dev".to_string(),
-        protocol_version : 1,
-        max_blocks_range_per_request: 100,
+        address: cfg.grpc_sync_address.parse()?,
+        chain_name:  cfg.chain_name,
+        protocol_version: cfg.sync_protocol_version as usize,
+        max_blocks_range_per_request: cfg.sync_max_blocks_per_request,
     };
 
-    let genesis_config = if args.genesis_config_path.is_some() {
-        info!("Genesis config path is provided, trying to deserialize config.");
-        Some(try_genesis_config_from_path(PathBuf::from(args.genesis_config_path.unwrap()))?)
-    } else {
-        None
-    };
+    // Try to get genesis config by path
+    let genesis_config = cfg.genesis_config_path
+        .as_deref()
+        .map(PathBuf::from)
+        .map(try_genesis_config_from_path)
+        .transpose()?;  
+
     
-    // Initializing storage in provided path
-    let storage = StryiStorage::initialize_in_path(PathBuf::from(args.database_dir_path), genesis_config).await?;
+    // Initializing storage in configured provided path
+    let storage = StryiStorage::initialize_in_path(PathBuf::from(cfg.storage_path), genesis_config).await?;
     let storage = Arc::new(RwLock::new(storage));
 
 
 
-    // TODO: Make mempool configurable as well
-    let mempool_config = MemPoolConfig::new(100, FeePolicy::default(), RbfPolicy::default(), 36000);
+    // TODO: Improve mempool configurability, make possible configure FeePolicy, RbfPolicy
+    let mempool_config = MemPoolConfig::new(
+        cfg.mempool_max_transactions,
+        FeePolicy::default(),
+        RbfPolicy::default(), 
+        36000
+    );
 
     // Create utxo_lookup for mempool that reads UTXO by outpoint from storage
     let utxo_lookup: UtxoLookup = {
@@ -180,16 +170,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     
     // Backup peer key
-    let peer_key = match PeerKey::restore(&args.peer_key_path) {
+    let peer_key = match PeerKey::restore(&cfg.peer_key_path) {
         Ok(k) => {
-            info!("Restored peer key from {}", &args.peer_key_path);
+            info!("Restored peer key from {}", &cfg.peer_key_path);
             k
         }
         Err(_) => {
             info!("No existing peer key, generating a fresh one");
             let fresh = PeerKey::generate_random();
             // Ignore I/O error on first run; report only if backup fails later.
-            let _ = fresh.backup(&args.peer_key_path);
+            let _ = fresh.backup(&cfg.peer_key_path);
             fresh
         }
     };
@@ -199,15 +189,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 
     // generate tls identity for services of node
-    let tls_identity = cert_and_key_from_peer(&keypair, &["localhost"])  // TODO: setup SANs somehow better
+    let sans_vec: Vec<&str> = cfg.tls_sans.iter().map(String::as_str).collect();
+    let tls_identity = cert_and_key_from_peer(&keypair, &sans_vec)
         .expect("Cannot generate certificate based on this peer's keypair");
+
 
     info!("Generated certificate for node services! This node certificate :");
     println!("{}", tls_identity.cert_pem.as_str().purple());
 
 
-    let behaviour_config = StryiBehaviourConfig::default();
+    let behaviour_config = StryiBehaviourConfig {
+        ping_interval:  Duration::from_secs(cfg.network_ping_interval_secs),
+        ping_timeout:   Duration::from_secs(cfg.network_ping_timeout_secs),
+        gossipsub_heartbeat: Duration::from_secs(cfg.network_gossipsub_heartbeat_secs),
+        enable_rendezvous_server: cfg.network_rendezvous_mode == "server",
+        enable_rendezvous_client: cfg.network_rendezvous_mode == "client",
+    };
     let network_manager_config = StryiNetworkManagerConfig {
+        listen_addr: cfg.network_listen_addr,
         rendezvous_mode: RendezvousMode::Server,
         keypair: keypair.clone(),
         stryi_behaviour_config: behaviour_config,
