@@ -83,7 +83,7 @@ pub(crate) async fn put_genesis_utxo(
         value,
         owner,
     };
-    utxo_db.put_utxo(&genesis_op, utxo).await.unwrap();
+    utxo_db.put_utxo(genesis_op, utxo).await.unwrap();
     genesis_op
 }
 

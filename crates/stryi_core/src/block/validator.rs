@@ -179,7 +179,9 @@ impl BlockValidator {
 
         if !external_deps.is_empty() {
             // Fetch all external UTXOs in a single operation to minimize storage accesses
-            let utxos_result = utxo_storage.get_utxos(&external_deps).await;
+            let utxos_result = utxo_storage
+                .batch_get_utxos(external_deps.iter().map(|utxo| utxo.to_owned()))
+                .await;
 
             match utxos_result {
                 Ok(existing_utxos) => {
@@ -605,7 +607,7 @@ mod tests {
                     value: output.value,
                     owner: output.recipient.clone(),
                 };
-                utxo_storage.put_utxo(&out_point, utxo).await.unwrap();
+                utxo_storage.put_utxo(out_point, utxo).await.unwrap();
             }
         }
 
@@ -688,12 +690,12 @@ mod tests {
                     value: output.value,
                     owner: output.recipient.clone(),
                 };
-                utxo_storage.put_utxo(&out_point, utxo).await.unwrap();
+                utxo_storage.put_utxo(out_point, utxo).await.unwrap();
             }
             // Remove spent UTXOs for payment transactions
             if tx.data.kind == TransactionKind::Payment {
                 for input in &tx.data.inputs {
-                    utxo_storage.remove_utxo(&input.previous_output).await.unwrap();
+                    utxo_storage.remove_utxo(input.previous_output).await.unwrap();
                 }
             }
         }
