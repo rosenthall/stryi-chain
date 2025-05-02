@@ -48,8 +48,8 @@ pub trait UtxoStorage: Send + Sync {
     /// note: Helpful for calculating account balance and constructing new transactions.
     fn get_utxos_for_address<'a>(
         &'a self,
-        address: &AccountAddress
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<(OutPoint, UTXO)>, Self::StorageError>> + Send + 'a>>;
+        address: AccountAddress
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<OutPoint, UTXO>, Self::StorageError>> + Send + 'a>>;
 
 
     // Default wrappers
@@ -268,15 +268,8 @@ pub (crate) mod in_memory_utxo {
 
         fn get_utxos_for_address<'a>(
             &'a self,
-            address: &AccountAddress,
-        ) -> Pin<
-            Box<
-                dyn Future<
-                    Output = Result<Vec<(OutPoint, UTXO)>, Self::StorageError>,
-                > + Send
-                + 'a,
-            >,
-        > {
+            address: AccountAddress,
+        ) -> Pin<Box<(dyn Future<Output = Result<HashMap<OutPoint, UTXO>, InMemoryStorageError>> + Send + 'a)>> {
             let address = address.clone();
             Box::pin(async move {
                 let guard = self.inner.read().await;
@@ -323,18 +316,18 @@ pub (crate) mod in_memory_utxo {
 
             // query by owner
             let fetched = store
-                .get_utxos_for_address(&utxo.owner)
+                .get_utxos_for_address(utxo.owner)
                 .await
                 .expect("query");
             assert_eq!(fetched.len(), 1);
-            assert_eq!(fetched[0].1.value, 42);
+            assert_eq!(fetched.get(&outpoint).unwrap().value, 42);
 
             // remove
             store
                 .remove_utxo(outpoint.clone())
                 .await
                 .expect("remove");
-            let fetched_after = store.get_utxos_for_address(&utxo.owner).await.unwrap();
+            let fetched_after = store.get_utxos_for_address(utxo.owner).await.unwrap();
             assert!(fetched_after.is_empty());
         }
     }

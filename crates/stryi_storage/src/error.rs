@@ -10,14 +10,14 @@ pub enum StryiStorageError {
     #[error("Fjall returned an error : {0}")]
     FjallError(#[from] fjall::Error),
     
+    #[error("Database is not initialized and no configuration for setting up provided")]
+    NoInitializationConfigProvided,
     
     #[error("Bincode serialization error")]
     SerializationError(#[from] bincode::error::EncodeError),
     
-
     #[error("Bincode deserialization error")]
     DeserializationError(#[from] bincode::error::DecodeError),
-
     
     #[error("Error while trying construct typed hash object from bytes, message : {0}")]
     IncorrectHashValue(String),

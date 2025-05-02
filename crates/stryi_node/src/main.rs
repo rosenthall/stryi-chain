@@ -156,7 +156,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             // Return boxed async future that reads UTXO
             Box::pin(async move {
-                storage.read().await.get_utxo(&out_point).await.ok()
+                storage.read().await.get_utxo(out_point).await.unwrap_or(None)
             })
         })
     };

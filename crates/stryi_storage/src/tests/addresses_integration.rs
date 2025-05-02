@@ -65,23 +65,23 @@ async fn test_addresses_integration() -> Result<(), StryiStorageError> {
     // Step A: Single put for Alice
     // ------------------
     println!("Step A: Single put for Alice (alice_op1)");
-    storage.put_utxo(&alice_op1, create_test_utxo(&alice_op1, alice_addr)).await?;
-    let alice_uts = storage.get_utxos_for_address(&alice_addr).await?;
+    storage.put_utxo(alice_op1, create_test_utxo(&alice_op1, alice_addr)).await?;
+    let alice_uts = storage.get_utxos_for_address(alice_addr).await?;
     println!("After put, Alice has {} UTXOs", alice_uts.len());
     assert_eq!(alice_uts.len(), 1, "Alice should have 1 UTXO after first put");
-    assert!(storage.get_utxos_for_address(&bob_addr).await?.is_empty(), "Bob is empty initially");
-    assert!(storage.get_utxos_for_address(&charlie_addr).await?.is_empty(), "Charlie is empty initially");
+    assert!(storage.get_utxos_for_address(bob_addr).await?.is_empty(), "Bob is empty initially");
+    assert!(storage.get_utxos_for_address(charlie_addr).await?.is_empty(), "Charlie is empty initially");
 
     // ------------------
     // Step B: Single put for Bob
     // ------------------
     println!("Step B: Single put for Bob (bob_op1)");
-    storage.put_utxo(&bob_op1, create_test_utxo(&bob_op1, bob_addr)).await?;
-    let bob_uts = storage.get_utxos_for_address(&bob_addr).await?;
+    storage.put_utxo(bob_op1, create_test_utxo(&bob_op1, bob_addr)).await?;
+    let bob_uts = storage.get_utxos_for_address(bob_addr).await?;
     println!("After put, Bob has {} UTXOs", bob_uts.len());
     assert_eq!(bob_uts.len(), 1, "Bob should have 1 UTXO after first put");
     // Alice's set remains 1
-    assert_eq!(storage.get_utxos_for_address(&alice_addr).await?.len(), 1);
+    assert_eq!(storage.get_utxos_for_address(alice_addr).await?.len(), 1);
 
     // ------------------
     // Step C: Batch put for more UTXOs
@@ -96,15 +96,15 @@ async fn test_addresses_integration() -> Result<(), StryiStorageError> {
     storage.batch_put_utxos(batch_put).await?;
 
     // Verify
-    let alice_count = storage.get_utxos_for_address(&alice_addr).await?.len();
+    let alice_count = storage.get_utxos_for_address(alice_addr).await?.len();
     println!("After batch put, Alice has {} UTXOs", alice_count);
     assert_eq!(alice_count, 3, "Alice now has 3 UTXOs total");
 
-    let bob_count = storage.get_utxos_for_address(&bob_addr).await?.len();
+    let bob_count = storage.get_utxos_for_address(bob_addr).await?.len();
     println!("Bob has {} UTXOs now", bob_count);
     assert_eq!(bob_count, 2, "Bob now has 2 UTXOs total");
 
-    let charlie_count = storage.get_utxos_for_address(&charlie_addr).await?.len();
+    let charlie_count = storage.get_utxos_for_address(charlie_addr).await?.len();
     println!("Charlie has {} UTXOs now", charlie_count);
     assert_eq!(charlie_count, 1, "Charlie now has 1 UTXO total");
 
@@ -112,12 +112,12 @@ async fn test_addresses_integration() -> Result<(), StryiStorageError> {
     // Step D: Single remove for Bob (bob_op2)
     // ------------------
     println!("Step D: Removing bob_op2 singly");
-    storage.remove_utxo(&bob_op2).await?;
-    let bob_after = storage.get_utxos_for_address(&bob_addr).await?;
+    storage.remove_utxo(bob_op2).await?;
+    let bob_after = storage.get_utxos_for_address(bob_addr).await?;
     println!("Bob has {} UTXOs after removing bob_op2", bob_after.len());
     assert_eq!(bob_after.len(), 1, "Bob should have 1 left after removing bob_op2");
     // Confirm bob_op2 is gone
-    let bob_op2_check = storage.get_utxo(&bob_op2).await;
+    let bob_op2_check = storage.get_utxo(bob_op2).await;
     assert!(bob_op2_check.is_err(), "bob_op2 not found after removal");
 
     // ------------------
@@ -125,11 +125,11 @@ async fn test_addresses_integration() -> Result<(), StryiStorageError> {
     // ------------------
     println!("Step E: Batch removing alice_op2 and alice_op3");
     storage.batch_remove_utxos(vec![alice_op2.clone(), alice_op3.clone()]).await?;
-    let alice_after = storage.get_utxos_for_address(&alice_addr).await?;
+    let alice_after = storage.get_utxos_for_address(alice_addr).await?;
     println!("Alice has {} UTXOs after removing op2 and op3", alice_after.len());
     assert_eq!(alice_after.len(), 1, "Alice should be back to 1 UTXO");
     // The only remaining is alice_op1
-    let only_op = &alice_after[0].0;
+    let only_op = &alice_after.get(&alice_op1).expect("Alice's outpoint 1 must exist at this point");
     assert_eq!(only_op.vout, alice_op1.vout);
     assert_eq!(only_op.txid.data, alice_op1.txid.data);
 
@@ -138,24 +138,24 @@ async fn test_addresses_integration() -> Result<(), StryiStorageError> {
     // ------------------
     println!("Step F: Attempt removing a nonexistent outpoint");
     let fake_op = make_test_outpoint(99, 999);
-    let rem_result = storage.remove_utxo(&fake_op).await;
+    let rem_result = storage.remove_utxo(fake_op).await;
     assert!(rem_result.is_err(), "Removing nonexistent outpoint should fail");
 
     // Confirm no partial changes
-    assert_eq!(storage.get_utxos_for_address(&alice_addr).await?.len(), 1, "Alice remains stable");
-    assert_eq!(storage.get_utxos_for_address(&bob_addr).await?.len(), 1,   "Bob remains stable");
-    assert_eq!(storage.get_utxos_for_address(&charlie_addr).await?.len(), 1, "Charlie remains stable");
+    assert_eq!(storage.get_utxos_for_address(alice_addr).await?.len(), 1, "Alice remains stable");
+    assert_eq!(storage.get_utxos_for_address(bob_addr).await?.len(), 1, "Bob remains stable");
+    assert_eq!(storage.get_utxos_for_address(charlie_addr).await?.len(), 1, "Charlie remains stable");
 
     // ------------------
     // Step G: Final verification
     // ------------------
     println!("Step G: Final verification of all addresses");
     for op in [&alice_op1, &bob_op1, &charlie_op1] {
-        let res = storage.get_utxo(op).await;
+        let res = storage.get_utxo(*op).await;
         assert!(res.is_ok(), "Outpoint should remain in DB");
     }
     for removed_op in [&bob_op2, &alice_op2, &alice_op3] {
-        let res = storage.get_utxo(removed_op).await;
+        let res = storage.get_utxo(*removed_op).await;
         assert!(res.is_err(), "Removed outpoint should not be found");
     }
 

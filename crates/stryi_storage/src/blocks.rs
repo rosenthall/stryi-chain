@@ -5,6 +5,7 @@ use crate::error::StryiStorageError;
 use crate::StryiStorage;
 use fjall::{Slice, UserKey, UserValue};
 use std::convert::TryFrom;
+use crate::index::BlockIndexData;
 use crate::stats::StorageStateInformation;
 
 impl StryiStorage {
@@ -81,25 +82,44 @@ impl BlockStorage for StryiStorage {
 
         // Create BlockUndo data first - if this fails, we won't proceed with block storage
         let undo_data = self.construct_block_undo(block).await?;
-        let undo_bytes = bincode::serde::encode_to_vec(&undo_data, bincode::config::standard())?;
+        let undo_bytes = bincode::serde::encode_to_vec(&undo_data, standard())?;
 
 
+        // Serialize the block itself
         let serialized_block = Self::serialize_block(block)?;
-        let block_hash = block.block_hash();
         let height_key = Self::height_to_key(block.header.height as usize)?;
         
+        // Compute the block hash from the block
+        let computed_hash = block.block_hash();
 
-        // Get current state
+        // Override for genesis block
+        let block_hash = if block.header.is_genesis {
+            BlockHash::empty()
+        } else {
+            computed_hash
+        };
+
+
+        // Read current state so we can update chain stats
         let current_state = self.get_current_storage_state()?;
 
-        // Create new state
+        // Compute new chain difficulty, etc.
+        let new_chain_diff = current_state.chain_difficulty + (1 << block.header.difficulty_bits);
         let new_state = StorageStateInformation {
             latest_block: (block.header.height as usize, block_hash),
             last_update_time: block.header.timestamp as usize,
             blocks_count: current_state.blocks_count + 1,
-            chain_difficulty: current_state.chain_difficulty + (1 << block.header.difficulty_bits),
+            chain_difficulty: new_chain_diff,
         };
 
+        // Prepare BlockIndexData
+        let index_data = BlockIndexData {
+            parent_hash: block.header.previous_block_hash,
+            height: block.header.height,
+            chain_work: new_chain_diff as u128,
+        };
+        let index_bytes = bincode::serde::encode_to_vec(&index_data, standard())?;
+        
         // Create a write transaction. We will update blocks, heights, undo and state partitions by just one transaction
         let mut tx = self.keyspace.write_tx();
 
@@ -125,6 +145,13 @@ impl BlockStorage for StryiStorage {
             Slice::from(undo_bytes), 
         );
 
+        // Store block index entry in block_index partition
+        tx.insert(
+            &self.block_index_partition,
+            Slice::from(&block_hash.data[..]),
+            Slice::from(index_bytes),
+        );
+        
         // Update storage state value in stats_partition
         let state_key = UserKey::from([0u8; 32]);
         let state_value: UserValue = new_state.try_into()?;
@@ -249,6 +276,11 @@ pub(crate) mod tests {
             .expect("Failed to create undo partition");
 
 
+        let block_index_partition = keyspace
+            .open_partition("block_indexes", PartitionCreateOptions::default())
+            .expect("Failed to create undo partition");
+
+
         let mut storage = StryiStorage {
             keyspace,
             blocks_partition,
@@ -256,7 +288,8 @@ pub(crate) mod tests {
             utxo_partition,
             addresses_partition,
             stats_partition,
-            undo_partition
+            undo_partition,
+            block_index_partition
         };
 
 

@@ -6,33 +6,38 @@ use stryi_core::transactions::OutPoint;
 use crate::{StryiStorage, StryiStorageError};
 
 impl StryiStorage {
-    /// Constructs BlockUndo data for a given block by creating a UTXO lookup closure 
-    /// that queries this storage's UTXO partition
-    pub(crate) async fn construct_block_undo(&self, block: &Block) -> Result<BlockUndo, StryiStorageError> {
+
+    /// Build `BlockUndo` for `block`, querying our own storage for every input.
+    pub(crate) async fn construct_block_undo(
+        &self,
+        block: &Block,
+    ) -> Result<BlockUndo, StryiStorageError> {
 
         // Create lookup closure that uses our storage's get_utxo 
-        let lookup = |outpoint: &OutPoint| {
-            let outpoint = outpoint.clone();
-
+        // lookup : &OutPoint -> impl Future<Output = Option<UTXO>>
+        let lookup = |op: &OutPoint| {
+            let op = op.clone();          // move into async block
             async move {
-                match self.get_utxo(&outpoint).await {
-                    Ok(utxo) => Some(utxo),
+                match self.get_utxo(op).await {
+                    Ok(utxo) => Some(utxo), 
                     Err(StryiStorageError::NotFound(_)) => None,
                     Err(e) => {
-                        tracing::error!("Error looking up UTXO: {:?}", e);
-                        None
+                        tracing::error!("UTXO lookup error: {e:?}");
+                        None  
                     }
-                }
+                }?
             }
         };
 
-        // Create undo data using the lookup
-        block.create_undo(lookup)
+        block
+            .create_undo(lookup)
             .await
             .map_err(|e| StryiStorageError::UndoCreationError {
-                msg: format!("Failed to create undo data: {}", e)
+                msg: format!("Failed to create undo data: {e}"),
             })
     }
+
+
 
     /// Stores undo data for a block in the undo partition.
     /// The key is the block hash, and the value is the serialized BlockUndo data.

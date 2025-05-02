@@ -50,7 +50,7 @@
 //!     - Key : `stryi_core::block::BlockHash` (32 bytes of the block hash)
 //!     - Value : A `bincode`-serialized `stryi_storage::index::BlockIndexData` object 
 //! 
-//! By maintaining these six partitions, we get efficient lookups for blocks, block heights, UTXOs by
+//! By maintaining these 7 partitions, we get efficient lookups for blocks, block heights, UTXOs by
 //! outpoint, addresses to outpoint sets and will be able to correctly and safely reorganize chain for consensus purposes.
 
 #![allow(incomplete_features)]
@@ -93,13 +93,14 @@ use stryi_core::block::{Block, BlockHash};
 use stryi_core::storage::BlockStorage;
 use crate::stats::StorageStateInformation;
 
-/// `StryiStorage` manages six partitions within a single Fjall keyspace:
+/// `StryiStorage` manages seven partitions within a single Fjall keyspace:
 /// - `blocks_partition`: For storing blocks keyed by hash
 /// - `heights_partition`: For storing mappings from height → hash
 /// - `utxo_partition`: For storing actual UTXOs keyed by (txid+vout)
 /// - `addresses_partition`: For mapping addresses → set of outpoints
 /// - `stats_partition`: For storing the only value with current statistics for entire chain
 /// - `undo_partition` : For storing per-block restoration data to be able to restore any previous state
+/// - `block_index_partition`: For storing some metadata like parent_hash, height, current chain work, etc
 ///
 /// Each partition is opened once at initialization, and we keep a reference in this struct.
 pub struct StryiStorage {

@@ -55,7 +55,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
 
     // 1) Initialize storage in a temp directory
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let mut storage = StryiStorage::initialize_in_path(temp_dir.path().to_owned())?;
+    let mut storage = StryiStorage::initialize_in_path(temp_dir.path().to_owned(), None).await?;
     println!("Storage initialized at: {:?}", temp_dir.path());
 
     // 2) Define several addresses
@@ -87,7 +87,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     let (singles, batch_group) = all_pairs.split_at(half);
 
     for (op, ut) in singles {
-        storage.put_utxo(op, ut.clone()).await?;
+        storage.put_utxo(*op, ut.clone()).await?;
         truth_map.insert(op.clone(), ut.clone());
     }
 
@@ -99,7 +99,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
 
     // 5) Verify all outpoints are present, deep equality
     for (op, local) in &truth_map {
-        let db = storage.get_utxo(op).await?;
+        let db = storage.get_utxo(*op).await?.unwrap();
         assert_eq!(db.txid.data, local.txid.data);
         assert_eq!(db.vout, local.vout);
         assert_eq!(db.value, local.value);
@@ -113,7 +113,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     }
 
     for &addr in &addresses {
-        let from_db = storage.get_utxos_for_address(&addr).await?;
+        let from_db = storage.get_utxos_for_address(addr).await?;
         let local_ops = addr_map.get(&addr).cloned().unwrap_or_default();
         assert_eq!(from_db.len(), local_ops.len(), "Address mismatch: {:?}", addr);
 
@@ -141,7 +141,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     let mut removed2 = Vec::new();
 
     for op in &all_ops[..remove_single] {
-        let res = storage.remove_utxo(op).await;
+        let res = storage.remove_utxo(*op).await;
         if res.is_ok() {
             truth_map.remove(op);
             removed1.push(op.clone());
@@ -159,7 +159,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
 
     // 7) Check removed outpoints
     for op in removed1.iter().chain(removed2.iter()) {
-        let check = storage.get_utxo(op).await;
+        let check = storage.get_utxo(*op).await;
         assert!(check.is_err(), "Should be gone");
     }
 
@@ -170,7 +170,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     }
 
     for &addr in &addresses {
-        let from_db = storage.get_utxos_for_address(&addr).await?;
+        let from_db = storage.get_utxos_for_address(addr).await?;
         let local_list = final_addrs.remove(&addr).unwrap_or_default();
         assert_eq!(from_db.len(), local_list.len(), "Mismatch at final: {:?}", addr);
 
@@ -191,9 +191,9 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     // 9) Additional negative tests: duplicates, empty batches, nonexistent
     if let Some((some_op, some_ut)) = truth_map.iter().next() {
         // Duplicate
-        let res = storage.put_utxo(some_op, some_ut.clone()).await;
+        let res = storage.put_utxo(*some_op, some_ut.clone()).await;
         assert!(res.is_ok(), "duplicate insert should succeed or overwrite");
-        let check = storage.get_utxo(some_op).await?;
+        let check = storage.get_utxo(*some_op).await?.unwrap();
         assert_eq!(check.value, some_ut.value, "value match after duplicate");
     }
 
@@ -209,7 +209,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
 
     // Nonexistent outpoint
     let fake = random_outpoint(&mut rng);
-    let rem = storage.remove_utxo(&fake).await;
+    let rem = storage.remove_utxo(fake).await;
     assert!(rem.is_err(), "nonexistent outpoint remove must fail");
 
     println!("=== test_utxo_database_random_integration: All checks passed ===");
