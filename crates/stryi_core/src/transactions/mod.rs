@@ -1,24 +1,34 @@
+/// Definitions of basic primitives of transactions such as UTXO, OutPoint, etc.
 mod utxo;
+pub use crate::transactions::utxo::{
+    UTXO, OutPoint, TransactionIn, TransactionOut,
+};
+
+/// Definition of custom hash format for transactions based on Blake3.
+/// Note: Each transaction hash start with Tx... and contains 32 hex bytes. 
 mod hash;
+pub use crate::transactions::hash::{TransactionHash, TransactionHasher};
+
+/// Implementation of UtxoProcessor
 mod utxo_processor;
+pub use crate::transactions::utxo_processor::UtxoProcessor;
+
+/// high-level abstractions for k256-based signatures of transactions
 mod signature;
+pub use crate::transactions::signature::StryiSignature;
+
+/// Definition of FeePolicy and FeeCalculator for estimating required fee for any transaction.
+mod fee_policy;
+pub use fee_policy::*;
 
 use serde::{Deserialize, Serialize};
 
 use bincode::{self, config::standard};
-use k256::{
-    ecdsa::{SigningKey, VerifyingKey, signature::hazmat::PrehashVerifier},
-};
 use crate::address::AccountAddress;
 use crate::error::StryiCoreError;
 use crate::hash::HashKind;
-pub use crate::transactions::signature::StryiSignature;
-pub use crate::transactions::hash::{TransactionHasher, TransactionHash};
 use crate::transactions::TransactionKind::{Coinbase, Genesis};
-pub use crate::transactions::utxo::{
-    TransactionIn, TransactionOut, OutPoint, UTXO,
-};
-pub use crate::transactions::utxo_processor::UtxoProcessor;
+use k256::ecdsa::{signature::hazmat::PrehashVerifier, SigningKey, VerifyingKey};
 
 /// `TransactionKind` enum represents the exact kind of transaction.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -280,13 +290,13 @@ mod tests {
 
         // Verify the signature using the matching verifying key
         assert!(
-            transaction.verify_signature(&verifying_key).is_ok(),
+            transaction.verify_signature(verifying_key).is_ok(),
             "Signature should verify with the correct key"
         );
 
         // Should fail with a different key
         assert!(
-            transaction.verify_signature(&another_verifying_key).is_err(),
+            transaction.verify_signature(another_verifying_key).is_err(),
             "Signature should fail to verify with an incorrect key"
         );
     }

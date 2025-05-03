@@ -23,7 +23,7 @@ pub struct FeePolicy {
 }
 
 impl Default for FeePolicy {
-    /// Creates a default fee policy 
+    /// Creates a default fee policy
     fn default() -> Self {
         Self {
             fixed_fee: 1000,   // 1000 satoshi base fee

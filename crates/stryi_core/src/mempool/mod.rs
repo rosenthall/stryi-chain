@@ -2,8 +2,7 @@
 //! and provides features such as Replace-by-Fee (RBF), topological ordering,
 //! and ancestor scoring for transaction selection.
 
-mod fee_policy;
-pub use fee_policy::*;
+use crate::transactions::{FeeCalculator, FeePolicy};
 
 mod rbf_conflicts;
 pub use rbf_conflicts::*;
@@ -17,7 +16,7 @@ pub use types::{MemPoolConfig, MemPoolSyncData};
 mod storage;
 mod dependencies;
 
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
