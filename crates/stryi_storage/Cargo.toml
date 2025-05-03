@@ -6,14 +6,14 @@ authors = ["Rosenthall <rosenthall@riseup.net>"]
 license = "BSD-3-Clause"
 
 [dependencies]
-fjall = " 2.5.0"
+fjall = "2.10.0"
 stryi_core = { path = "../stryi_core" }
 thiserror = "2"
 tracing = "0.1.41"
 bincode = { version = "2.0.0-rc.3", features = ["serde"] }
 serde = { version = "1.0.217", features = ["derive"] }
-ractor = { version = "0.15.2", features = ["async-trait"] }
 tokio = { version = "1.44.0", features = ["sync"] }
+futures = "0.3.31"
 
 [dev-dependencies] # Need these to perform tests
 tempfile = "3.1.16"

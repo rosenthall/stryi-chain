@@ -17,10 +17,9 @@
 //!    `get_utxos_for_address` does not require scanning all UTXOs.
 
 use std::collections::{HashMap, HashSet};
-use std::pin::Pin;
 use bincode::config::standard;
 use fjall::{Slice, WriteTransaction, ReadTransaction};
-
+use futures::future::BoxFuture;
 use crate::error::StryiStorageError;
 use crate::StryiStorage;
 
@@ -122,10 +121,10 @@ fn store_address_set_write(
 impl UtxoStorage for StryiStorage {
     type StorageError = StryiStorageError;
 
-    fn batch_put_utxos<'a>(
-        &'a mut self,
+    fn batch_put_utxos(
+        &mut self,
         utxos: Vec<(OutPoint, UTXO)>
-    ) -> Pin<Box<dyn Future<Output = Result<(), Self::StorageError>> + Send + 'a>> {
+    ) -> BoxFuture<Result<(), Self::StorageError>> {
         // Do all the writes, map‐building, and commit in one synchronous block.
         let outcome: Result<(), Self::StorageError> = (|| {
             // Initialize write transaction and clone partitions we need.
@@ -165,7 +164,7 @@ impl UtxoStorage for StryiStorage {
         Box::pin(async move { outcome })
     }
 
-    fn batch_remove_utxos<'a>(&'a mut self, outpoints: Vec<OutPoint>) -> Pin<Box<dyn Future<Output=Result<(), Self::StorageError>> + Send + 'a>> {
+    fn batch_remove_utxos(&mut self, outpoints: Vec<OutPoint>) -> BoxFuture<Result<(), Self::StorageError>> {
 
         // 1) Perform all removal logic synchronously
         let result: Result<(), Self::StorageError> = (|| {
@@ -219,10 +218,10 @@ impl UtxoStorage for StryiStorage {
     }
 
 
-    fn batch_get_utxos<'a, I>(&'a self, outpoints: I) -> Pin<Box<dyn Future<Output=Result<HashMap<OutPoint, UTXO>, Self::StorageError>> + Send + 'a>>
+    fn batch_get_utxos<I>(&self, outpoints: I) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
     where
-        I: IntoIterator<Item=OutPoint> + Send + 'a,
-        I::IntoIter: Send + 'a
+        I: IntoIterator<Item=OutPoint> + Send,
+        I::IntoIter: Send
     {
         // start a single read‐only transaction
         let read_tx = self.keyspace.read_tx();
@@ -256,7 +255,7 @@ impl UtxoStorage for StryiStorage {
         })
     }
 
-    fn get_utxos_for_address<'a>(&'a self, address: AccountAddress) -> Pin<Box<(dyn Future<Output = Result<HashMap<OutPoint, UTXO>, StryiStorageError>> + Send + 'a)>> {
+    fn get_utxos_for_address(&self, address: AccountAddress) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>> {
 
         // Setup read transaction
         let read_tx = self.keyspace.read_tx();
