@@ -15,7 +15,7 @@ pub struct OutPoint {
 
 /// TransactionIn represents an input of the transaction,
 /// referencing an existing UTXO to be spent.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct TransactionIn {
     /// Which UTXO is being spent
     pub previous_output: OutPoint,
@@ -26,7 +26,7 @@ pub struct TransactionIn {
 
 /// TransactionOut represents an output of the transaction.
 /// It includes an amount (value) and a recipient address.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct TransactionOut {
     /// Amount of "coins" to send
     pub value: u64,

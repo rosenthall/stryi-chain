@@ -31,7 +31,7 @@ use crate::transactions::TransactionKind::{Coinbase, Genesis};
 use k256::ecdsa::{signature::hazmat::PrehashVerifier, SigningKey, VerifyingKey};
 
 /// `TransactionKind` enum represents the exact kind of transaction.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Hash)]
 #[repr(u8)]
 pub enum TransactionKind {
     /// Coinbase is a type of transaction that is used to reward the miner of the last block.
@@ -49,7 +49,7 @@ pub enum TransactionKind {
 
 
 /// `TransactionData` holds the *unsigned* transaction fields: version, inputs, outputs.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, Hash, PartialEq)]
 pub struct TransactionData {
     /// Transaction version (arbitrary field for potential future upgrades)
     pub version: u16,
@@ -67,7 +67,7 @@ pub struct TransactionData {
 /// `Transaction` is the fully signed transaction.
 /// It wraps `TransactionData` plus a single ECDSA recoverable signature
 /// (65 bytes) for the entire transaction.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, Hash, PartialEq)]
 pub struct Transaction {
     /// The actual transaction data (version, inputs, outputs)
     pub data: TransactionData,

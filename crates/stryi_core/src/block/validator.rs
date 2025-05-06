@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use crate::address::AccountAddress;
 use crate::block::{Block, BlockData, meets_difficulty};
 use crate::dependencies::DependencyGraph;
@@ -9,18 +10,19 @@ use crate::transactions::{
 use dashmap::{DashMap, DashSet};
 use std::sync::Arc;
 use tokio::task::JoinSet;
+use crate::consensus::ConsensusRules;
 
 /// BlockValidator is responsible for validating blocks against consensus rules.
 #[derive(Clone)]
 pub struct BlockValidator {
-    /// Current consensus difficulty bits.
-    pub current_difficulty: u8,
+    /// Instance of consensus parameters
+    pub consensus_rules: ConsensusRules,
 }
 
 impl BlockValidator {
-    /// Creates a new BlockValidator with the specified difficulty.
-    pub fn new(current_difficulty: u8) -> Self {
-        Self { current_difficulty }
+    /// Creates a new BlockValidator with the provided rules.
+    pub fn new(consensus_rules: ConsensusRules) -> Self {
+        Self { consensus_rules }
     }
 
     /// Validates an entire block by sequentially executing all validation steps.
@@ -39,26 +41,89 @@ impl BlockValidator {
         block: &Block,
         utxo_storage: &mut S,
     ) -> Result<(), StryiCoreError> {
-        
+
+
+        // -- static checks --
+
         // Verify if difficulty in header matches with current difficulty of `BlockValidator`
         self.verify_difficulty(block)?;
+
         // Verify if block actually can be hashed to get provided hash
         self.verify_proof_of_work(block)?;
-        // Check if coinbase transaction is first in the block. 
-        // TODO: Somehow make reward system actually work, maybe just define some formula that will count maximal reward based on: fixed value, block's transactions.
-        self.verify_coinbase_transaction(block)?;
+
+        // Check if there are any duplicated txs int the block
+        self.ensure_transactions_uniqueness(block)?;
+
+        // Check if coinbase transaction is first in the block.
+        self.ensure_coinbase_transaction_is_first(block)?;
+
+        // Check if all the tx inputs are unique
+        self.ensure_unique_inputs(&block.data)?;
+
         // Verify consistency of provided transaction and merkle root in header
         self.verify_merkle_root(block)?;
 
-        
+
+        // -- transactions and dependencies validation --
+
+
+
         // Construct dependency graph from all the required UTXO's in block, including current block's and references to older ones
         let (dep_graph, managed_utxos) = self
             .validate_dependencies(&block.data, utxo_storage)
             .await?;
 
-        
-        // Verify transactions
-        self.verify_transactions(&block.data, &dep_graph, &managed_utxos).await?;
+
+        // Verify transactions (double spend, order, signatures, etc.)
+        self.verify_transactions(&block.data, &dep_graph, Arc::clone(&managed_utxos)).await?;
+
+        // Construct a DashMap of all utxos in this block
+        let internal_utxos = DashMap::<OutPoint, UTXO>::new();
+        for tx in &block.data.transactions {
+            for (vout, out) in tx.data.outputs.iter().enumerate() {
+                internal_utxos.insert(
+                    OutPoint { txid: tx.data.hash(), vout: vout as u32 },
+                    UTXO {
+                        txid: tx.data.hash(),
+                        vout: vout as u32,
+                        value: out.value,
+                        owner: out.recipient,
+                    },
+                );
+            }
+        }
+
+
+        // -- coinbase reward validation --
+        // We don't really need this for genesis blocks, so early return
+
+        if block.header.is_genesis {
+            return Ok(());
+        }
+
+        // Calculate the block fees
+        let block_fees = self.calculate_total_fees(block, &managed_utxos, &internal_utxos)?;
+
+        // Calculate the block subsidy.
+        // The block subsidy is effectively the maximal value that miner can ask for mining this block as a reward.
+        let subsidy = self.consensus_rules.block_subsidy(block.header.height);
+        let expected_reward = subsidy.checked_add(block_fees).ok_or(
+            StryiCoreError::ConsensusValidationFailed {
+                details: "overflow while summing subsidy and fees".into(),
+            },
+        )?;
+
+        // We already checked if txs[0] is coinbase before so just take it
+        let coinbase_tx = &block.data.transactions[0];
+
+        // The only output (reward) must be equal or lower than the expected reward.
+        let actual_reward = coinbase_tx.data.outputs[0].value;
+        if actual_reward > expected_reward {
+            return Err(StryiCoreError::ConsensusInvalidCoinbaseAmount {
+                max_expected: expected_reward,
+                actual: actual_reward,
+            });
+        }
 
         Ok(())
     }
@@ -73,12 +138,13 @@ impl BlockValidator {
     ///
     /// - `Ok(())` if the difficulty matches.
     /// - `Err(StryiCoreError)` if the difficulty does not match.
+     #[inline]
     fn verify_difficulty(&self, block: &Block) -> Result<(), StryiCoreError> {
-        if block.header.difficulty_bits != self.current_difficulty {
+        if block.header.difficulty_bits != self.consensus_rules.current_difficulty {
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: format!(
                     "Block difficulty ({}) does not match current difficulty ({})",
-                    block.header.difficulty_bits, self.current_difficulty
+                    block.header.difficulty_bits, self.consensus_rules.current_difficulty
                 ),
             });
         }
@@ -95,6 +161,7 @@ impl BlockValidator {
     ///
     /// - `Ok(())` if the block meets the difficulty.
     /// - `Err(StryiCoreError)` if the block does not meet the difficulty.
+    #[inline]
     fn verify_proof_of_work(&self, block: &Block) -> Result<(), StryiCoreError> {
         // Genesis block does not require this check, so skip
         if block.header.is_genesis {
@@ -110,6 +177,37 @@ impl BlockValidator {
         Ok(())
     }
 
+
+
+    /// Verifies that the block contains no duplicate transactions.
+    ///
+    /// # Parameters
+    ///
+    /// - `block`: Reference to the block to be validated.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` if all the transactions are unique.
+    /// - `Err(StryiCoreError)` if there is any duplicates.
+    #[inline]
+    fn ensure_transactions_uniqueness(&self, block: &Block) -> Result<(), StryiCoreError> {
+        // Clone all transactions from the block
+        let txs = block.data.transactions.clone();
+
+        // Put the cloned transactions into a `HashSet`
+        // so duplicates (if any) collapse to one entry.
+        let unique_txs: HashSet<Transaction> = txs.iter().cloned().collect();
+
+        // If the counts differ, at least one transaction is duplicated.
+        if txs.len() != unique_txs.len() {
+            return Err(StryiCoreError::ConsensusValidationFailed {
+                details: "Block contains duplicated transactions".to_owned(),
+            });
+        }
+
+        Ok(())
+    }
+
     /// Ensures that the first transaction is a Coinbase transaction in non-genesis blocks.
     ///
     /// # Parameters
@@ -120,7 +218,7 @@ impl BlockValidator {
     ///
     /// - `Ok(())` if the Coinbase transaction is correctly placed.
     /// - `Err(StryiCoreError)` if the Coinbase transaction is missing or incorrectly placed.
-    fn verify_coinbase_transaction(&self, block: &Block) -> Result<(), StryiCoreError> {
+    fn ensure_coinbase_transaction_is_first(&self, block: &Block) -> Result<(), StryiCoreError> {
         if !block.header.is_genesis {
             if let Some(first_tx) = block.data.transactions.first() {
                 if first_tx.data.kind != TransactionKind::Coinbase {
@@ -134,6 +232,44 @@ impl BlockValidator {
                 });
             }
         }
+        Ok(())
+    }
+
+
+    /// Ensures that all the used transaction inputs are unique
+    ///
+    /// # Parameters
+    ///
+    /// - `block`: Reference to the block to be validated.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` if Ok
+    /// - `Err(StryiCoreError)` if any of inputs is used twice or more
+    fn ensure_unique_inputs(&self, block_data : &BlockData) -> Result<(), StryiCoreError> {
+        let mut seen_tx_ins = HashSet::<OutPoint>::with_capacity(256);
+
+        for tx in &block_data.transactions {
+
+            // Validate only payment transactions.
+            if tx.data.kind != TransactionKind::Payment {
+                return Ok(())
+            }
+
+            for input in tx.data.clone().inputs {
+                // note :
+                // HashSet::insert returns bool. If set didn't include this value before - true, otherwise false.
+                // any `false` in our case should be considered as non-unique output.
+                let is_inserted = seen_tx_ins.insert(input.previous_output);
+                if !is_inserted {
+                    return Err(StryiCoreError::TxDoubleSpend {
+                        txid: input.previous_output.txid,
+                        vout: input.previous_output.vout,
+                    });
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -186,14 +322,14 @@ impl BlockValidator {
             match utxos_result {
                 Ok(existing_utxos) => {
                     for (outpoint, utxo) in existing_utxos {
-                        managed_utxos.insert(outpoint.clone(), utxo);
+                        managed_utxos.insert(outpoint, utxo);
                     }
                 }
                 Err(_) => {
                     // Handle storage error by reporting the first missing UTXO
                     if let Some(first_missing) = external_deps.iter().next() {
                         return Err(StryiCoreError::TxMissingUtxo {
-                            txid: first_missing.txid.clone(),
+                            txid: first_missing.txid,
                             vout: first_missing.vout,
                         });
                     }
@@ -221,7 +357,7 @@ impl BlockValidator {
         &self,
         block_data: &BlockData,
         dep_graph: &DependencyGraph,
-        managed_utxos: &Arc<DashMap<OutPoint, UTXO>>,
+        managed_utxos: Arc<DashMap<OutPoint, UTXO>>,
     ) -> Result<(), StryiCoreError> {
         let parallel_groups = dep_graph.get_parallel_execution_groups();
 
@@ -234,7 +370,7 @@ impl BlockValidator {
             self.validate_group(
                 &group,
                 block_data,
-                managed_utxos,
+                Arc::clone(&managed_utxos),
                 Arc::clone(&internal_utxos),
                 Arc::clone(&spent_utxos),
             )
@@ -290,9 +426,9 @@ impl BlockValidator {
     /// - Returns `StryiCoreError::ConsensusValidationFailed` if a task panics during execution.
     async fn validate_group(
         &self,
-        group: &Vec<usize>,
+        group: &[usize],
         block_data: &BlockData,
-        managed_utxos: &Arc<DashMap<OutPoint, UTXO>>,
+        managed_utxos: Arc<DashMap<OutPoint, UTXO>>,
         internal_utxos: Arc<DashMap<OutPoint, UTXO>>,
         spent_utxos: Arc<DashSet<OutPoint>>,
     ) -> Result<(), StryiCoreError> {
@@ -303,7 +439,7 @@ impl BlockValidator {
         for &tx_idx in group {
             // Clone the necessary data for the spawned task
             let tx = block_data.transactions[tx_idx].clone();
-            let managed_utxos = Arc::clone(managed_utxos);
+            let managed_utxos = Arc::clone(&managed_utxos);
             let internal_utxos = Arc::clone(&internal_utxos);
             let spent_utxos = Arc::clone(&spent_utxos);
             let validator = self.clone();
@@ -321,7 +457,8 @@ impl BlockValidator {
         while let Some(res) = join_set.join_next().await {
             match res {
                 Ok(Ok(())) => {
-                    // Transaction validated successfully; continue
+                    // Transaction validated successfully;
+                    continue
                 }
                 Ok(Err(e)) => {
                     // Transaction validation failed; abort remaining tasks
@@ -352,7 +489,7 @@ impl BlockValidator {
     /// - `spent_utxos`: Shared reference to spent UTXOs.
     async fn update_state(
         &self,
-        group: &Vec<usize>,
+        group: &[usize],
         block_data: &BlockData,
         internal_utxos: &Arc<DashMap<OutPoint, UTXO>>,
         spent_utxos: &Arc<DashSet<OutPoint>>,
@@ -367,10 +504,10 @@ impl BlockValidator {
                     vout: vout as u32,
                 };
                 let utxo = UTXO {
-                    txid: out_point.txid.clone(),
+                    txid: out_point.txid,
                     vout: out_point.vout,
                     value: output.value,
-                    owner: output.recipient.clone(),
+                    owner: output.recipient,
                 };
                 internal_utxos.insert(out_point, utxo);
             }
@@ -378,7 +515,7 @@ impl BlockValidator {
             // Mark inputs as spent
             if tx.data.kind == TransactionKind::Payment {
                 for input in &tx.data.inputs {
-                    spent_utxos.insert(input.previous_output.clone());
+                    spent_utxos.insert(input.previous_output);
                 }
             }
         }
@@ -407,12 +544,10 @@ impl BlockValidator {
         match tx.data.kind {
             TransactionKind::Genesis => self.validate_genesis_transaction(tx),
             TransactionKind::Coinbase => self.validate_coinbase_transaction(tx),
-            TransactionKind::Payment => {
-                self.validate_payment_transaction(tx, managed_utxos, internal_utxos, spent_utxos)
-                    .await
-            }
+            TransactionKind::Payment => self.validate_payment_transaction(tx, managed_utxos, internal_utxos, spent_utxos).await
         }
     }
+
 
     /// Validates a Genesis transaction.
     ///
@@ -434,7 +569,8 @@ impl BlockValidator {
         }
     }
 
-    /// Validates a Coinbase transaction.
+    /// Validates a Coinbase transaction inputs and outputs :
+    /// Coinbase tx must have no inputs and only output
     ///
     /// # Parameters
     ///
@@ -454,19 +590,23 @@ impl BlockValidator {
         }
     }
 
-    /// Validates a Payment transaction's signatures, ownership, and input/output sums using aggregated UTXOs.
+
+
+    /// Validates a Payment transaction:
+    /// * Recovers the author's public key and checks the signature.
+    /// * Atomically *reserves* every referenced UTXO in `spent_utxos`
+    ///   to shut the double‑spend window inside a parallel group.
+    /// * Accepts UTXOs that were created earlier in the **same** block
+    ///   (`internal_utxos`) or that already exist on chain (`managed_utxos`).
+    /// * Ensures the author really owns every input and that
+    ///   Σ(inputs) == Σ(outputs) without overflow.
     ///
-    /// # Parameters
-    ///
-    /// - `tx`: Reference to the Payment transaction.
-    /// - `managed_utxos`: Reference to the managed UTXOs.
-    /// - `internal_utxos`: Reference to internal UTXOs.
-    /// - `spent_utxos`: Reference to spent UTXOs.
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(())` if the transaction is valid.
-    /// - `Err(StryiCoreError)` if the transaction is invalid.
+    /// # Errors
+    /// * `TxDoubleSpend`        – the input UTXO is already reserved in this block
+    /// * `TxMissingUtxo`        – referenced output not found anywhere
+    /// * `TxWrongOwner`         – UTXO does not belong to the signer
+    /// * `TxInsufficientInputValue` – inputs and outputs differ
+    /// * `ConsensusValidationFailed` – overflow or bad signature/recovery
     async fn validate_payment_transaction(
         &self,
         tx: &Transaction,
@@ -474,51 +614,48 @@ impl BlockValidator {
         internal_utxos: &DashMap<OutPoint, UTXO>,
         spent_utxos: &DashSet<OutPoint>,
     ) -> Result<(), StryiCoreError> {
-        // 1. Recover the public key from the transaction's signature
+        // 1. Recover public key and verify signature
         let author_key = tx.recover_public_key().map_err(|_| {
             StryiCoreError::ConsensusValidationFailed {
                 details: "Failed to recover public key from transaction signature".to_string(),
             }
         })?;
-
-        // 2. Verify the transaction's signature
         tx.verify_signature(&author_key).map_err(|_| {
             StryiCoreError::ConsensusValidationFailed {
                 details: "Invalid transaction signature".to_string(),
             }
         })?;
-
-        // 3. Derive the author's address from the public key
         let author_address = AccountAddress::from_public_key(&author_key);
 
-        // 4. Calculate the sum of input values and verify ownership with explicit overflow handling
+        // 2. Walk through inputs: reserve UTXO, verify ownership, sum values
         let mut input_sum: u64 = 0;
         for input in &tx.data.inputs {
-            // Check if the UTXO is already spent in the current block
-            if spent_utxos.contains(&input.previous_output) {
+            // Reserve the UTXO atomically; if it was already reserved we hit a double spend
+            if !spent_utxos.insert(input.previous_output) {
                 return Err(StryiCoreError::TxDoubleSpend {
-                    txid: input.previous_output.txid.clone(),
+                    txid: input.previous_output.txid,
                     vout: input.previous_output.vout,
                 });
             }
 
-            // Retrieve UTXO from managed_utxos
-            let utxo = managed_utxos.get(&input.previous_output).ok_or(
-                StryiCoreError::TxMissingUtxo {
-                    txid: input.previous_output.txid.clone(),
+            // Look up the UTXO: prefer in‑block outputs, fall back to chain
+            let utxo = internal_utxos
+                .get(&input.previous_output)
+                .or_else(|| managed_utxos.get(&input.previous_output))
+                .ok_or(StryiCoreError::TxMissingUtxo {
+                    txid: input.previous_output.txid,
                     vout: input.previous_output.vout,
-                },
-            )?;
+                })?;
 
-            // Verify that the UTXO belongs to the transaction's author
+            // Verify ownership
             if utxo.owner != author_address {
                 return Err(StryiCoreError::TxWrongOwner {
-                    expected: utxo.owner.clone(),
-                    actual: author_address.clone(),
+                    expected: utxo.owner,
+                    actual: author_address,
                 });
             }
 
-            // Accumulate the input sums with explicit overflow handling
+            // Accumulate input value with overflow check
             input_sum = input_sum.checked_add(utxo.value).ok_or(
                 StryiCoreError::ConsensusValidationFailed {
                     details: "Overflow occurred while summing transaction inputs".to_string(),
@@ -526,7 +663,7 @@ impl BlockValidator {
             )?;
         }
 
-        // 5. Calculate the sum of output values with explicit overflow handling
+        // 3. Sum outputs with overflow check
         let output_sum: u64 = tx
             .data
             .outputs
@@ -536,8 +673,8 @@ impl BlockValidator {
                 details: "Overflow occurred while summing transaction outputs".to_string(),
             })?;
 
-        // 6. Ensure that the sum of outputs exactly equals the sum of inputs
-        if output_sum != input_sum {
+        // 4. Outputs must be equal or lower than inputs.
+        if output_sum > input_sum {
             return Err(StryiCoreError::TxInsufficientInputValue {
                 input_sum,
                 output_sum,
@@ -546,6 +683,84 @@ impl BlockValidator {
 
         Ok(())
     }
+
+
+    /// Computes **total fees of all `Payment` transactions** in a block.
+    /// Fee is basically Σ(input values) - Σ(output values)
+    ///
+    /// * Inputs that spend UTXOs created **earlier in the same block** are
+    ///   looked‑up in `internal_utxos`;
+    ///   otherwise the method consults `managed_utxos` (UTXOs from the chain).
+    /// * Fails if any referenced UTXO is missing or if arithmetic overflows.
+    /// * Returns the aggregate fee that later gets added to the block subsidy
+    ///   when validating the coinbase reward.
+    fn calculate_total_fees(
+        &self,
+        block: &Block,
+        managed_utxos: &DashMap<OutPoint, UTXO>,
+        internal_utxos: &DashMap<OutPoint, UTXO>,
+    ) -> Result<u64, StryiCoreError> {
+        let mut total: u64 = 0;
+
+        // Genesis block's fees are always 0
+        if block.header.is_genesis {
+            return Ok(0u64)
+        }
+
+        // iterate over all transactions inside the block
+        for tx in &block.data.transactions {
+            // process only payment transactions
+            if tx.data.kind != TransactionKind::Payment {
+                continue;
+            }
+
+            // 1. sum all inputs
+            let mut in_sum: u64 = 0;
+            for inp in &tx.data.inputs {
+                // look up the UTXO either in‑block or in the global set
+                let utxo = internal_utxos
+                    .get(&inp.previous_output)
+                    .or_else(|| managed_utxos.get(&inp.previous_output))
+                    .ok_or(StryiCoreError::TxMissingUtxo {
+                        txid: inp.previous_output.txid,
+                        vout: inp.previous_output.vout,
+                    })?;
+
+                in_sum = in_sum.checked_add(utxo.value).ok_or(
+                    StryiCoreError::ConsensusValidationFailed {
+                        details: "Overflow while summing input values".into(),
+                    },
+                )?;
+            }
+
+            // 2. sum all outputs
+            let out_sum = tx
+                .data
+                .outputs
+                .iter()
+                .try_fold(0u64, |acc, o| acc.checked_add(o.value))
+                .ok_or(StryiCoreError::ConsensusValidationFailed {
+                    details: "Overflow while summing output values".into(),
+                })?;
+
+            // 3. fee = inputs - outputs  (must be non‑negative)
+            let fee = in_sum.checked_sub(out_sum).ok_or(
+                StryiCoreError::ConsensusValidationFailed {
+                    details: "Outputs exceed inputs in transaction".into(),
+                },
+            )?;
+
+            // 4. add to running total
+            total = total.checked_add(fee).ok_or(
+                StryiCoreError::ConsensusValidationFailed {
+                    details: "Overflow while accumulating total fees".into(),
+                },
+            )?;
+        }
+
+        Ok(total)
+    }
+
 }
 
 
@@ -567,7 +782,13 @@ mod tests {
     async fn test_block_validator() {
         // 1. Initialize consensus difficulty
         let current_difficulty = 2; // require 2 leading zero bits
-        let block_validator = BlockValidator::new(current_difficulty);
+        let block_validator = BlockValidator::new(ConsensusRules {
+            current_difficulty,
+            difficulty_adjustment_interval_blocks: 0,
+            initial_subsidy: 0,
+            decay_interval: 0,
+            decay_step: 0,
+        });
 
         // 2. Initialize UTXO storage
         let mut utxo_storage = InMemoryUtxoStorage::new();
@@ -575,15 +796,15 @@ mod tests {
         // 3. Create signing keys for two accounts
         let sk_genesis = SigningKey::random(&mut OsRng);
         let vk_genesis = sk_genesis.verifying_key();
-        let addr_genesis = AccountAddress::from_public_key(&vk_genesis);
+        let addr_genesis = AccountAddress::from_public_key(vk_genesis);
 
         let sk_alice = SigningKey::random(&mut OsRng);
         let vk_alice = sk_alice.verifying_key();
-        let addr_alice = AccountAddress::from_public_key(&vk_alice);
+        let addr_alice = AccountAddress::from_public_key(vk_alice);
 
         // 4. Create a genesis block with addr_genesis having 1000 coins
         let mut balances = HashMap::new();
-        balances.insert(addr_genesis.clone(), 1000);
+        balances.insert(addr_genesis, 1000);
 
         let genesis_block = Block::new_genesis(1, current_difficulty, balances);
 
@@ -602,10 +823,10 @@ mod tests {
                     vout: vout as u32,
                 };
                 let utxo = UTXO {
-                    txid: out_point.txid.clone(),
+                    txid: out_point.txid,
                     vout: out_point.vout,
                     value: output.value,
-                    owner: output.recipient.clone(),
+                    owner: output.recipient,
                 };
                 utxo_storage.put_utxo(out_point, utxo).await.unwrap();
             }
@@ -624,17 +845,17 @@ mod tests {
             version: 1,
             kind: TransactionKind::Payment,
             inputs: vec![TransactionIn {
-                previous_output: genesis_out_point.clone(),
+                previous_output: genesis_out_point,
                 sequence: 0xFFFFFFFF,
             }],
             outputs: vec![
                 TransactionOut {
                     value: 600,
-                    recipient: addr_alice.clone(),
+                    recipient: addr_alice,
                 },
                 TransactionOut {
                     value: 400,
-                    recipient: addr_genesis.clone(),
+                    recipient: addr_genesis,
                 },
             ],
         };
@@ -648,8 +869,8 @@ mod tests {
             kind: TransactionKind::Coinbase,
             inputs: vec![],
             outputs: vec![TransactionOut {
-                value: 50, // Miner reward
-                recipient: addr_genesis.clone(),
+                value: 0, // Miner reward must be ZERO for this test
+                recipient: addr_genesis,
             }],
         };
 
@@ -685,10 +906,10 @@ mod tests {
                     vout: vout as u32,
                 };
                 let utxo = UTXO {
-                    txid: out_point.txid.clone(),
+                    txid: out_point.txid,
                     vout: out_point.vout,
                     value: output.value,
-                    owner: output.recipient.clone(),
+                    owner: output.recipient,
                 };
                 utxo_storage.put_utxo(out_point, utxo).await.unwrap();
             }

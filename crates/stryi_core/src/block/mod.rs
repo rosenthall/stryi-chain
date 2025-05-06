@@ -12,7 +12,7 @@ use crate::address::AccountAddress;
 use crate::merkletree::{MerkleHash, MerkleTree};
 use crate::transactions::{StryiSignature, Transaction, TransactionData, TransactionKind, TransactionOut};
 
-/// BlockData holds a list of transactions and any extra data if needed.
+/// BlockData holds a list of transactions of block
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BlockData {
     /// List of transactions included in this block

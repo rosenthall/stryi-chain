@@ -8,15 +8,16 @@ use k256::ecdsa::SigningKey;
 use k256::elliptic_curve::rand_core::OsRng;
 use crate::address::AccountAddress;
 use crate::block::{BlockHash, BlockValidator};
+use crate::consensus::ConsensusRules;
 use crate::transactions::TransactionIn;
 
 #[tokio::test]
 async fn test_complex_dependency_chain() {
     // Initialize test environment
     let sk_alice = SigningKey::random(&mut OsRng);
-    let addr_alice = AccountAddress::from_public_key(&sk_alice.verifying_key());
+    let addr_alice = AccountAddress::from_public_key(sk_alice.verifying_key());
     let mut utxo_storage = InMemoryUtxoStorage::new();
-    let block_validator = BlockValidator::new(0); // Zero difficulty for testing
+    let block_validator = BlockValidator::new(ConsensusRules::new_test(0)); // Zero difficulty for testing
 
     // Create transaction chain
     let mut txs = Vec::new();
@@ -29,7 +30,7 @@ async fn test_complex_dependency_chain() {
         inputs: vec![],
         outputs: vec![TransactionOut {
             value: 1000,
-            recipient: addr_alice.clone(),
+            recipient: addr_alice,
         }],
     }.sign(&sk_alice);
 
@@ -43,14 +44,14 @@ async fn test_complex_dependency_chain() {
             kind: TransactionKind::Payment,
             inputs: vec![TransactionIn {
                 previous_output: OutPoint {
-                    txid: tx_hashes[i].clone(),
+                    txid: tx_hashes[i],
                     vout: 0,
                 },
                 sequence: 0,
             }],
             outputs: vec![TransactionOut {
                 value: 100 * (5 - i as u64),
-                recipient: addr_alice.clone(),
+                recipient: addr_alice,
             }],
         }.sign(&sk_alice);
 
@@ -103,7 +104,7 @@ async fn test_complex_dependency_chain() {
 #[tokio::test]
 async fn test_double_spend_prevention() {
     let sk_alice = SigningKey::random(&mut OsRng);
-    let addr_alice = AccountAddress::from_public_key(&sk_alice.verifying_key());
+    let addr_alice = AccountAddress::from_public_key(sk_alice.verifying_key());
 
     // Create a coinbase transaction
     let coinbase = TransactionData {
@@ -112,7 +113,7 @@ async fn test_double_spend_prevention() {
         inputs: vec![],
         outputs: vec![TransactionOut {
             value: 1000,
-            recipient: addr_alice.clone(),
+            recipient: addr_alice,
         }],
     }.sign(&sk_alice);
 
@@ -124,14 +125,14 @@ async fn test_double_spend_prevention() {
         kind: TransactionKind::Payment,
         inputs: vec![TransactionIn {
             previous_output: OutPoint {
-                txid: coinbase_hash.clone(),
+                txid: coinbase_hash,
                 vout: 0,
             },
             sequence: 0,
         }],
         outputs: vec![TransactionOut {
             value: 500,
-            recipient: addr_alice.clone(),
+            recipient: addr_alice,
         }],
     }.sign(&sk_alice);
 
@@ -140,14 +141,14 @@ async fn test_double_spend_prevention() {
         kind: TransactionKind::Payment,
         inputs: vec![TransactionIn {
             previous_output: OutPoint {
-                txid: coinbase_hash.clone(),
+                txid: coinbase_hash,
                 vout: 0,
             },
             sequence: 0,
         }],
         outputs: vec![TransactionOut {
             value: 400,
-            recipient: addr_alice.clone(),
+            recipient: addr_alice,
         }],
     }.sign(&sk_alice);
 

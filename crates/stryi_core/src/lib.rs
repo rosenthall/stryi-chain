@@ -31,7 +31,7 @@ pub mod storage;
 
 /// Abstraction for consensus model of StryiChain. 
 /// Provides a convenient way for all the nodes to follow the same, strict rules of consensus
-mod consensus;
+pub mod consensus;
 
 /// Transaction's dependencies handling primitives
 /// dependencies among transactions within a block. It utilizes a Directed
@@ -46,6 +46,9 @@ pub use undo::BlockUndo;
 /// Implementation of the transactions [mempool](https://www.geeksforgeeks.org/what-is-a-memory-pool/).
 pub mod mempool;
 
+
+// public export of common libraries across the project
+pub use blake3;
 
 // Contains tests for some matter functionality.
 // Some of the tests are present in the concrete modules, but this module contains larger ones with more complex cases like integration tests

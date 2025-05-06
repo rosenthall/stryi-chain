@@ -19,18 +19,19 @@ mod tests {
     /// Test various negative scenarios to ensure that invalid blocks are correctly rejected.
     #[tokio::test]
     async fn test_consensus_negative_scenarios() {
-        // 1. Initialize Consensus Rules with difficulty=0 (disables real PoW checks) and adjustment interval=1000
-        let rules = ConsensusRules::new(0, 1000);
-        let engine = StryiConsensusEngine::<InMemoryUtxoStorage>::new_with_inmemory_storage(rules);        let mut utxo_db = InMemoryUtxoStorage::default();
+        // 1. Initialize Consensus Rules with difficulty=0 (disables real PoW checks)
+        let rules = ConsensusRules::new_test(0);
+        let engine = StryiConsensusEngine::<InMemoryUtxoStorage>::new_with_inmemory_storage(rules);
+        let mut utxo_db = InMemoryUtxoStorage::default();
 
         // 2. Generate keypairs for Alice and Bob.
         let sk_alice = SigningKey::random(&mut OsRng);
         let vk_alice = sk_alice.verifying_key();
-        let addr_alice = AccountAddress::from_public_key(&vk_alice);
+        let addr_alice = AccountAddress::from_public_key(vk_alice);
 
         let sk_bob = SigningKey::random(&mut OsRng);
         let vk_bob = sk_bob.verifying_key();
-        let addr_bob = AccountAddress::from_public_key(&vk_bob);
+        let addr_bob = AccountAddress::from_public_key(vk_bob);
 
         // 3. Create a genesis outpoint for Alice.
         let genesis_op = put_genesis_utxo(&mut utxo_db, addr_alice, 1000).await;
@@ -41,7 +42,7 @@ mod tests {
         // ----- SCENARIO A: Overspend -----
         // Input = 1000 coins, Output = 1200 => Overspending (invalid)
         let overspend_tx = sign_single_input_tx(
-            genesis_op.clone(),
+            genesis_op,
             &sk_alice,
             vec![(1200, addr_alice)],
         );
@@ -71,7 +72,7 @@ mod tests {
         let gen2 = put_genesis_utxo(&mut utxo_db, addr_alice, 1000).await;
 
         let tx_wrong_owner = sign_single_input_tx(
-            gen2.clone(),
+            gen2,
             &sk_bob, // Signed by Bob instead of Alice
             vec![(500, addr_bob), (500, addr_alice)],
         );
@@ -101,7 +102,7 @@ mod tests {
             txid: TransactionHash::new(&[99u8; 32]),
             vout: 9,
         };
-        let tx_missing_utxo = sign_single_input_tx(missing_op.clone(), &sk_alice, vec![(500, addr_alice)]);
+        let tx_missing_utxo = sign_single_input_tx(missing_op, &sk_alice, vec![(500, addr_alice)]);
         let block_missing = make_block(
             vec![coinbase_tx.clone(), tx_missing_utxo],
             0,
@@ -125,7 +126,7 @@ mod tests {
         // ----- SCENARIO D: Invalid Signature -----
         // Create a valid transaction and then tamper the signature => ConsensusValidationFailed
         let gen4 = put_genesis_utxo(&mut utxo_db, addr_alice, 1000).await;
-        let tx_good = sign_single_input_tx(gen4.clone(), &sk_alice, vec![(1000, addr_alice)]);
+        let tx_good = sign_single_input_tx(gen4, &sk_alice, vec![(1000, addr_alice)]);
 
         // Tamper with the signature
         let mut tampered = tx_good.clone();
@@ -160,7 +161,7 @@ mod tests {
 
         // 2. Create Transaction A: spends gen5 and creates a new UTXO for Bob.
         let tx_a = sign_single_input_tx(
-            gen5.clone(),
+            gen5,
             &sk_alice,
             vec![(600, addr_bob), (400, addr_alice)],
         );
@@ -205,16 +206,16 @@ mod tests {
 
         // 2. Create Transaction C: spends gen6 and creates a new UTXO for Bob.
         let tx_c = sign_single_input_tx(
-            gen6.clone(),
+            gen6,
             &sk_alice,
             vec![(600, addr_bob), (400, addr_alice)],
         );
 
         // 3. Create Transaction D: also spends gen6 and creates a new UTXO for Bob.
         let tx_d = sign_single_input_tx(
-            gen6.clone(),
+            gen6,
             &sk_alice,
-            vec![(600, addr_bob), (400, addr_alice)],
+            vec![(600, addr_bob), (399, addr_alice)], // note : we can't set second output amount 400 here, it will cause "Block contains duplicated transactions", which is not what we're testing here
         );
 
         // 4. Create a block with both Transaction C and D spending the same UTXO
@@ -239,6 +240,45 @@ mod tests {
             _ => panic!("Expected TransactionDependencyError due to double spend, got {:?}", err),
         }
 
+        // ----- SCENARIO G: Duplicate transaction Within the Same Block -----
+        // The block includes two absolutely identical transactions
+
+        let gen7 = put_genesis_utxo(&mut utxo_db, addr_alice, 1000).await;
+
+
+        // Create Transaction C: spends gen7 and creates a new UTXO for Bob.
+        let tx_7 = sign_single_input_tx(
+            gen7,
+            &sk_alice,
+            vec![(600, addr_bob), (400, addr_alice)],
+        );
+
+        let block_duplicated_txs = make_block(
+            vec![coinbase_tx.clone(), tx_7.clone(), tx_7.clone()], // Double tx_7
+            0,
+            6,
+            false,
+            BlockHash::empty(), // Assuming no previous block
+        );
+
+        // Apply the block and expect a reasonable error
+        let err = apply_block(&engine, &block_duplicated_txs, &mut utxo_db)
+            .await
+            .unwrap_err();
+
+        match err {
+            StryiCoreError::ConsensusValidationFailed { details } => {
+                if details.as_str() == "Block contains duplicated transactions" {
+                    println!("Duplicate transactions test OK");
+                } else {
+                    panic!("Got (unexpected) ConsensusValidationFailed details when testing duplicated blocks : {}", details);
+                }
+            },
+
+            _ => panic!("Expected ConsensusValidationFailed because duplicated txs, got {:?}", err),
+
+        }
+
         println!("All negative scenario tests PASSED");
     }    
     
@@ -246,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn test_complex_multi_chain_scenario() {
         // Initialize Consensus Rules with difficulty=0 (disables real PoW checks) and adjustment interval=1000
-        let rules = ConsensusRules::new(0, 1000);
+        let rules = ConsensusRules::new_test(0);
         let engine = StryiConsensusEngine::<InMemoryUtxoStorage>::new_with_inmemory_storage(rules);        let mut utxo_db_ok1 = InMemoryUtxoStorage::default();
         let mut utxo_db_ok2 = InMemoryUtxoStorage::default();
         let mut utxo_db_err1 = InMemoryUtxoStorage::default();
@@ -256,7 +296,7 @@ mod tests {
         // Generate a single keypair for simplicity
         let sk_user = SigningKey::random(&mut OsRng);
         let vk_user = sk_user.verifying_key();
-        let addr_user = AccountAddress::from_public_key(&vk_user);
+        let addr_user = AccountAddress::from_public_key(vk_user);
 
         // Insert genesis UTXOs in each UTXO storage
         let gen_ok1 = put_genesis_utxo(&mut utxo_db_ok1, addr_user, 1000).await;
@@ -273,11 +313,11 @@ mod tests {
         let mut chain_err_3 = Vec::new();
 
         // Track the outpoint to spend next in each chain
-        let mut current_op_ok1 = gen_ok1.clone();
-        let mut current_op_ok2 = gen_ok2.clone();
-        let mut current_op_err1 = gen_err1.clone();
-        let mut current_op_err2 = gen_err2.clone();
-        let mut current_op_err3 = gen_err3.clone();
+        let mut current_op_ok1 = gen_ok1;
+        let mut current_op_ok2 = gen_ok2;
+        let mut current_op_err1 = gen_err1;
+        let mut current_op_err2 = gen_err2;
+        let mut current_op_err3 = gen_err3;
 
         // Helper to create and apply blocks
         async fn create_and_apply_block(
@@ -304,7 +344,7 @@ mod tests {
 
             // Create Payment transaction
             let tx = sign_single_input_tx(
-                current_op_ok1.clone(),
+                current_op_ok1,
                 &sk_user,
                 vec![(1000, addr_user)],
             );
@@ -338,7 +378,7 @@ mod tests {
 
             // Create Payment transaction
             let tx = sign_single_input_tx(
-                current_op_ok2.clone(),
+                current_op_ok2,
                 &sk_user,
                 vec![(1000, addr_user)],
             );
@@ -376,13 +416,13 @@ mod tests {
             let tx = if height == 3 {
                 // Overspend: input=1000, output=1200
                 sign_single_input_tx(
-                    current_op_err1.clone(),
+                    current_op_err1,
                     &sk_user,
                     vec![(1200, addr_user)],
                 )
             } else {
                 sign_single_input_tx(
-                    current_op_err1.clone(),
+                    current_op_err1,
                     &sk_user,
                     vec![(1000, addr_user)],
                 )
@@ -450,7 +490,7 @@ mod tests {
                 sign_single_input_tx(missing_op, &sk_user, vec![(1000, addr_user)])
             } else {
                 sign_single_input_tx(
-                    current_op_err2.clone(),
+                    current_op_err2,
                     &sk_user,
                     vec![(1000, addr_user)],
                 )
@@ -513,7 +553,7 @@ mod tests {
             }
             // Create Payment transaction
             let tx = sign_single_input_tx(
-                current_op_err3.clone(),
+                current_op_err3,
                 &sk_user,
                 vec![(1000, addr_user)],
             );

@@ -42,7 +42,7 @@ impl<DB: UtxoStorage> StryiConsensusEngine<DB> {
     pub fn new(rules: ConsensusRules) -> Self {
         Self {
             rules: rules.clone(),
-            block_validator: BlockValidator::new(rules.current_difficulty),
+            block_validator: BlockValidator::new(rules),
             utxo_processor: UtxoProcessor::new(),
             _phantom: PhantomData,
         }
@@ -68,7 +68,7 @@ impl<DB: UtxoStorage> StryiConsensusEngine<DB> {
 impl<DB: UtxoStorage> ConsensusEngine for StryiConsensusEngine<DB> {
     type Error = StryiCoreError;
     type UtxoDatabase = DB;
-    
+
     /// Adjusts difficulty by incrementing once every N blocks.
     async fn adjust_difficulty(
         &mut self,
@@ -182,7 +182,7 @@ mod tests {
     #[tokio::test]
     async fn test_select_chain_by_cumulative_difficulty() {
         // This test remains as is, from your code, no changes, verifying chain selection logic
-        let rules = ConsensusRules::new(4, 1000);
+        let rules = ConsensusRules::new_test(4);
         let engine = StryiConsensusEngine::<InMemoryUtxoStorage>::new_with_inmemory_storage(rules);
         // chainA => bits=4,4 => total ~ 2^4 + 2^4 = 32
         let chain_a = vec![make_block(4,0), make_block(4,0)];
@@ -207,7 +207,7 @@ mod tests {
     #[tokio::test]
     async fn test_genesis_block() {
         // 1) Set up an engine with difficulty=0 so we skip real PoW.
-        let rules = ConsensusRules::new(0, 1000);
+        let rules = ConsensusRules::new_test(0);
         let engine = StryiConsensusEngine::<InMemoryUtxoStorage>::new_with_inmemory_storage(rules);
         // 2) In-memory DB
         let mut store = InMemoryUtxoStorage::default();

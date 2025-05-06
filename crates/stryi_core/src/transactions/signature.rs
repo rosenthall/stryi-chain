@@ -4,7 +4,7 @@ use std::fmt;
 use k256::ecdsa::{RecoveryId, Signature};
 use crate::error::StryiCoreError;
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 /// Represents 65 bytes recoverable signature, implements serde's traits so can be easily serialized and deserialized
 pub struct StryiSignature(pub Box<[u8; 65]>);
 

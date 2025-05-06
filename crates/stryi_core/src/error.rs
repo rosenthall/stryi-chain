@@ -64,9 +64,14 @@ pub enum StryiCoreError {
     ConsensusChainSelectionFailed {
         details: String,
     },
-    
-    
-    #[error("Invalid difficulty value : {details}")]
+
+    #[error("Invalid coinbase reward amount: maximal expected was: {max_expected}, got: {actual}")]
+    ConsensusInvalidCoinbaseAmount {
+        max_expected : u64,
+        actual : u64
+    },
+
+     #[error("Invalid difficulty value : {details}")]
     InvalidDifficultyValue {
         details: String
     },
