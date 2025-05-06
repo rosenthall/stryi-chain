@@ -20,7 +20,6 @@ mod cli;
 
 use std::error::Error;
 use std::io::{ErrorKind, Read};
-use std::net::SocketAddrV4;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
@@ -28,7 +27,7 @@ use std::time::Duration;
 use colored::Colorize;
 use tokio::io;
 use tokio::time::sleep;
-use tracing::{error, info, Level};
+use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -186,10 +185,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let keypair = peer_key.inner().clone(); // clone to hand over to NetworkManager
 
+    
+    // Generate TLS identity for node services.
+    let mut sans_vec: Vec<&str> = cfg.tls_sans.iter().map(String::as_str).collect();
 
+    // If the provided SAN list is empty, default to "localhost".
+    if sans_vec.is_empty() {
+        warn!("A custom SAN list was provided, but it was empty; defaulting to `localhost`.");
+        sans_vec.push("localhost");
+    }
 
-    // generate tls identity for services of node
-    let sans_vec: Vec<&str> = cfg.tls_sans.iter().map(String::as_str).collect();
     let tls_identity = cert_and_key_from_peer(&keypair, &sans_vec)
         .expect("Cannot generate certificate based on this peer's keypair");
 
