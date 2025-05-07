@@ -27,7 +27,7 @@ const ARGON2_SALT : [u8; 16] = [9u8; 16];
 ///    layer, making the hash more resistant to parallelized hardware attacks.
 ///    We use [9u8; 16] as salt. Salt is not actually that required in the blockchain PoW scenario.
 /// 6) The final output is a 32-byte array from Argon2.
-#[derive(Default, Clone, Copy, PartialEq, Debug)]
+#[derive(Default, Clone, Copy, PartialEq, Debug, Eq, Hash)]
 pub struct BlockHashKind;
 
 impl HashKind for BlockHashKind {

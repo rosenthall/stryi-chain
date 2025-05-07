@@ -15,15 +15,15 @@ use crate::transactions::{OutPoint, UTXO};
 pub trait UtxoStorage: Send + Sync {
     type StorageError: Debug + Error + Send;
 
-    /// Insert **zero or more** UTXOs in a single atomic operation.
+    /// Insert **one or more** UTXOs in a single atomic operation.
     ///
     /// *Each entry is given as `(OutPoint, Utxo)`.*
-        fn batch_put_utxos(
+    fn batch_put_utxos(
         &mut self,
         utxos: Vec<(OutPoint, UTXO)>,
     ) -> BoxFuture<Result<(), Self::StorageError>>;
 
-    /// Remove (mark as spent) **zero or more** UTXOs in one call.
+    /// Remove (mark as spent) **one or more** UTXOs in one call.
     ///
     /// If any outpoint is not present, implementation must return specific error.
     fn batch_remove_utxos(
@@ -91,31 +91,96 @@ pub trait UtxoStorage: Send + Sync {
 
 
 
-/// Trait representing storage backend for Blocks.
+/// Thread‑safe backend for persistent block storage.
+/// Implementers must provide `put_block`, `batch_get_by_hashes`, `batch_get_by_heights`, `range` and `exists`.
+/// The single-item helpers `get_by_hash` and `get_by_height` have default implementations that simply wrap their batch counterparts
 pub trait BlockStorage: Send + Sync {
     type StorageError: Debug + Error + Send;
 
-    /// Retrieves a block by its hash.
-    async fn get_block_by_hash(&self, hash: BlockHash) -> Result<Block, Self::StorageError>;
+    /// Atomically inserts or overwrites a single block.
+    /// If insertion succeeded returns height of new block
+    fn put_block(
+        &mut self,
+        block: &Block,
+    ) -> BoxFuture<Result<u64, Self::StorageError>>;
 
-    /// Retrieves a block by its height (index).
-    async fn get_block_by_height(&self, height: usize) -> Result<Block, Self::StorageError>;
 
-    /// Retrieves the latest (most recent) block in the chain.
-    async fn get_latest_block(&self) -> Result<Block, Self::StorageError>;
+    /// Fetches **one or more** blocks by hash.
+    ///
+    /// * Each entry of the returned `HashMap` is guaranteed to exist;
+    ///   all requested hashes **must** be present, otherwise the
+    ///   implementation must return an error.
+    ///  * Returned map is keyed by BlockHash
+    fn batch_get_by_hashes(
+        &self,
+        hashes: Vec<BlockHash>,
+    ) -> BoxFuture<Result<HashMap<BlockHash, Block>, Self::StorageError>>;
 
-    /// Inserts a new block or updates an existing one in the storage 
-    async fn put_block(&mut self, block: &Block) -> Result<(), Self::StorageError>;
+
+
+    /// Fetches **one or more** blocks by height.
+    ///
+    /// Heights that lie beyond the current tip must trigger an error.
+    /// * Each entry of the returned `HashMap` is guaranteed to exist;
+    ///   all requested hashes **must** be present, otherwise the
+    ///   implementation must return an error.
+    ///  * Returned map is keyed by height
+    fn batch_get_by_heights<I>(
+        &self,
+        heights: I,
+    ) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>>
+    where
+        I: IntoIterator<Item = u64> + Send,
+        I::IntoIter: Send;
+
+    /// Returns all blocks whose heights lie in the **inclusive** interval `[start, end]`, keyed by their height.
+    /// Returns error if any of block in this range is unavailable.
+    fn range(
+        &self,
+        start: u64,
+        end: u64,
+    ) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>>;
+
 
     /// Checks whether a block with the given hash exists.
-    async fn block_exists(&self, hash: BlockHash) -> Result<bool, Self::StorageError>;
-    
-    /// Retrieves the entire chain of blocks.
-    async fn get_chain(&self) -> Result<Vec<Block>, Self::StorageError>;
+    /// Returns Ok(false) the block is absent.
+    /// May return Err(_) if it can't get value for any reason.
+    fn exists(&self, hash: BlockHash) -> BoxFuture<Result<bool, Self::StorageError>>;
 
-    /// Retrieves a range of blocks from `start_height` to `end_height` inclusive.
-    async fn get_range(&self, start_height: usize, end_height: usize)
-                       -> Result<Vec<Block>, Self::StorageError>;
+
+    // -- default impls for singular operations--
+
+
+    /// Retrieves a block by its hash.
+    /// Returns `Ok(None)` if not found.
+    /// By default, this just forwards to [`batch_get_by_hashes`]. Override if you need
+    fn get_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> BoxFuture<Result<Option<Block>, Self::StorageError>> {
+        Box::pin(async move {
+            match self.batch_get_by_hashes(vec![hash]).await {
+                Ok(mut map) => Ok(map.remove(&hash)),
+                Err(e) => Err(e),
+            }
+        })
+    }
+
+
+    /// Retrieves a block by its height.
+    /// Returns `Ok(None)` if not found.
+    /// By default, this just forwards to [`batch_get_by_heights`]. Override if you need
+    fn get_by_height(
+        &self,
+        height: u64,
+    ) -> BoxFuture<Result<Option<Block>, Self::StorageError>> {
+        Box::pin(async move {
+            match self.batch_get_by_heights([height]).await {
+                Ok(map) => Ok(map.get(&height).map(|b| b.to_owned())),
+                Err(e) => Err(e),
+            }
+        })
+    }
 }
 
 
@@ -125,20 +190,22 @@ pub trait BlockStorage: Send + Sync {
 pub trait StorageStats : Sync + Sync {
     type StorageError: Debug + Error + Send;
 
-    /// Returns the latest block's height and its hash.
-    async fn get_latest_block(&self) -> Result<(usize, BlockHash), Self::StorageError>;
+    /// Tip height and its block hash.
+    fn tip(&self) -> BoxFuture<Result<(u64, BlockHash), Self::StorageError>>;
 
 
-    /// Retrieves last storage update timestamp in unix.
-    async fn get_last_update_time(&self) -> Result<usize, Self::StorageError>;
+
+    /// Unix timestamp of the most recent successful write
+    /// (`put_block` / `put_blocks`).
+    fn last_updated(&self) -> BoxFuture<Result<u64, Self::StorageError>>;
 
 
-    /// Retrieves entire amount of blocks in this chain.
-    async fn get_blocks_count(&self) -> Result<usize, Self::StorageError>;
+    /// Total number of blocks (equal to `tip.height + 1`).
+    fn block_count(&self) -> BoxFuture<Result<u64, Self::StorageError>>;
 
-    
-    /// Gets current chain entire difficulty from zero up to current.
-    async fn get_chain_difficulty(&self) -> Result<usize, Self::StorageError>;
+
+    /// Cumulative chain difficulty.
+    fn chain_difficulty(&self) -> BoxFuture<Result<u128, Self::StorageError>>;
 }
 
 
@@ -150,7 +217,6 @@ pub (crate) mod in_memory_utxo {
         collections::HashMap,
         error::Error,
         fmt::{Display, Formatter, Result as FmtResult},
-        pin::Pin,
     };
     use futures::future::BoxFuture;
     use tokio::sync::RwLock;
