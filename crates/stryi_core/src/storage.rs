@@ -1,10 +1,11 @@
-use std::collections::HashMap;
-use std::error::Error;
-use std::fmt::Debug;
-use futures::future::BoxFuture;
 use crate::address::AccountAddress;
 use crate::block::{Block, BlockHash};
 use crate::transactions::{OutPoint, UTXO};
+use futures::future::BoxFuture;
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt::Debug;
+use std::range::RangeInclusive;
 
 /// Trait representing a storage backend for UTXOs.
 ///
@@ -31,7 +32,6 @@ pub trait UtxoStorage: Send + Sync {
         outpoints: Vec<OutPoint>,
     ) -> BoxFuture<Result<(), Self::StorageError>>;
 
-
     /// Batch-fetches a heterogeneous set of outpoints.
     /// Missing or already-spent entries must result in an error.
     fn batch_get_utxos<I>(
@@ -41,16 +41,15 @@ pub trait UtxoStorage: Send + Sync {
     where
         I: IntoIterator<Item = OutPoint> + Send,
         I::IntoIter: Send;
-    
+
     /// Gets all the UTXOs for the provided AccountAddress.
     /// note: Helpful for calculating account balance and constructing new transactions.
     fn get_utxos_for_address(
         &self,
-        address: AccountAddress
+        address: AccountAddress,
     ) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>>;
 
     // Default wrappers
-    
 
     /// Insert or update **exactly one** UTXO.
     ///
@@ -63,33 +62,31 @@ pub trait UtxoStorage: Send + Sync {
         Box::pin(async move { self.batch_put_utxos(vec![(outpoint, utxo)]).await })
     }
 
-
     /// Fetches **exactly one** UTXO. `None` means “not found or already spent”.
     /// By default, this just forwards to [`batch_get_utxos`]. Override if you need
-    fn get_utxo(
-        &self,
-        outpoint: OutPoint,
-    ) -> BoxFuture<Result<Option<UTXO>, Self::StorageError>> {
+    fn get_utxo(&self, outpoint: OutPoint) -> BoxFuture<Result<Option<UTXO>, Self::StorageError>> {
         Box::pin(async move {
             self.batch_get_utxos(std::iter::once(outpoint))
                 .await
                 .map(|mut m| m.remove(&outpoint))
         })
     }
-    
+
     /// Remove (mark spent) **exactly one** UTXO.
     ///
     /// By default, this just forwards to [`batch_remove_utxos`]. Override if you need
-    fn remove_utxo(
-        &mut self,
-        outpoint: OutPoint,
-    ) -> BoxFuture<Result<(), Self::StorageError>> {
+    fn remove_utxo(&mut self, outpoint: OutPoint) -> BoxFuture<Result<(), Self::StorageError>> {
         Box::pin(async move { self.batch_remove_utxos(vec![outpoint]).await })
     }
 }
 
 
 
+/// Common type for incorrect ranges
+#[derive(Debug)]
+pub enum RangeError {
+    InvalidRange { start: i32, end: i32 },
+}
 
 /// Thread‑safe backend for persistent block storage.
 /// Implementers must provide `put_block`, `batch_get_by_hashes`, `batch_get_by_heights`, `range` and `exists`.
@@ -98,12 +95,7 @@ pub trait BlockStorage: Send + Sync {
     type StorageError: Debug + Error + Send;
 
     /// Atomically inserts or overwrites a single block.
-    /// If insertion succeeded returns height of new block
-    fn put_block(
-        &mut self,
-        block: &Block,
-    ) -> BoxFuture<Result<u64, Self::StorageError>>;
-
+    fn put_block(&mut self, block: &Block) -> BoxFuture<Result<(), Self::StorageError>>;
 
     /// Fetches **one or more** blocks by hash.
     ///
@@ -111,12 +103,10 @@ pub trait BlockStorage: Send + Sync {
     ///   all requested hashes **must** be present, otherwise the
     ///   implementation must return an error.
     ///  * Returned map is keyed by BlockHash
-    fn batch_get_by_hashes(
+    fn batch_get_blocks_by_hashes(
         &self,
         hashes: Vec<BlockHash>,
     ) -> BoxFuture<Result<HashMap<BlockHash, Block>, Self::StorageError>>;
-
-
 
     /// Fetches **one or more** blocks by height.
     ///
@@ -125,100 +115,94 @@ pub trait BlockStorage: Send + Sync {
     ///   all requested hashes **must** be present, otherwise the
     ///   implementation must return an error.
     ///  * Returned map is keyed by height
-    fn batch_get_by_heights<I>(
+    fn batch_get_blocks_by_heights<I>(
         &self,
         heights: I,
     ) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>>
     where
-        I: IntoIterator<Item = u64> + Send,
+        I: IntoIterator<Item = u64> + Send + Clone,
         I::IntoIter: Send;
 
-    /// Returns all blocks whose heights lie in the **inclusive** interval `[start, end]`, keyed by their height.
-    /// Returns error if any of block in this range is unavailable.
-    fn range(
-        &self,
-        start: u64,
-        end: u64,
-    ) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>>;
-
+    /// Returns all blocks whose heights lie in the **inclusive** range, keyed by their height.
+    /// Must be `range.start < range.end` and both values must be positive integers.
+    /// Shall return error if any of block in this range is unavailable or if range is incorrect.
+    fn blocks_range(&self, range: RangeInclusive<i32>) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>>;
 
     /// Checks whether a block with the given hash exists.
     /// Returns Ok(false) the block is absent.
     /// May return Err(_) if it can't get value for any reason.
-    fn exists(&self, hash: BlockHash) -> BoxFuture<Result<bool, Self::StorageError>>;
-
+    fn block_exists(&self, hash: BlockHash) -> BoxFuture<Result<bool, Self::StorageError>>;
 
     // -- default impls for singular operations--
-
 
     /// Retrieves a block by its hash.
     /// Returns `Ok(None)` if not found.
     /// By default, this just forwards to [`batch_get_by_hashes`]. Override if you need
-    fn get_by_hash(
-        &self,
-        hash: BlockHash,
-    ) -> BoxFuture<Result<Option<Block>, Self::StorageError>> {
+    fn get_block_by_hash(&self, hash: BlockHash) -> BoxFuture<Result<Option<Block>, Self::StorageError>> {
         Box::pin(async move {
-            match self.batch_get_by_hashes(vec![hash]).await {
+            match self.batch_get_blocks_by_hashes(vec![hash]).await {
                 Ok(mut map) => Ok(map.remove(&hash)),
                 Err(e) => Err(e),
             }
         })
     }
 
-
     /// Retrieves a block by its height.
     /// Returns `Ok(None)` if not found.
     /// By default, this just forwards to [`batch_get_by_heights`]. Override if you need
-    fn get_by_height(
-        &self,
-        height: u64,
-    ) -> BoxFuture<Result<Option<Block>, Self::StorageError>> {
+    fn get_block_by_height(&self, height: u64) -> BoxFuture<Result<Option<Block>, Self::StorageError>> {
         Box::pin(async move {
-            match self.batch_get_by_heights([height]).await {
+            match self.batch_get_blocks_by_heights([height]).await {
                 Ok(map) => Ok(map.get(&height).map(|b| b.to_owned())),
                 Err(e) => Err(e),
             }
         })
     }
+
+    /// Default ranges validation method. 
+    /// Returns common Err(Self::StorageError::RangeError) error if any of values is negative or if `start` is bigger then `end`
+    fn validate_range(range: RangeInclusive<i32>) -> Result<(), Self::StorageError>
+    where
+        Self::StorageError: From<RangeError>,
+    {
+        let (start, end) = (range.start, range.end);
+
+        if start < 0 || end < 0 || start > end {
+            Err(RangeError::InvalidRange { start, end }.into())
+        } else {
+            Ok(())
+        }
+    }
 }
 
-
-
-
 /// StorageStats defines high-level api to retrieve some statistics from current blockchain state.
-pub trait StorageStats : Sync + Sync {
+pub trait StorageStats: Sync + Sync {
     type StorageError: Debug + Error + Send;
 
     /// Tip height and its block hash.
     fn tip(&self) -> BoxFuture<Result<(u64, BlockHash), Self::StorageError>>;
 
-
-
     /// Unix timestamp of the most recent successful write
     /// (`put_block` / `put_blocks`).
     fn last_updated(&self) -> BoxFuture<Result<u64, Self::StorageError>>;
 
-
     /// Total number of blocks (equal to `tip.height + 1`).
     fn block_count(&self) -> BoxFuture<Result<u64, Self::StorageError>>;
-
 
     /// Cumulative chain difficulty.
     fn chain_difficulty(&self) -> BoxFuture<Result<u128, Self::StorageError>>;
 }
 
-
 /// Simple implementation of UtxoStorage trait. Uses HashMap + RwLock inside
-/// Created to simplify some steps in development. 
+/// Created to simplify some steps in development.
 /// The implementation should not be used in the real node, but during development and for testing other functionality
-pub (crate) mod in_memory_utxo {
+pub(crate) mod in_memory_utxo {
+    use futures::future::BoxFuture;
     use std::{
         collections::HashMap,
         error::Error,
         fmt::{Display, Formatter, Result as FmtResult},
     };
-    use futures::future::BoxFuture;
     use tokio::sync::RwLock;
 
     use crate::{
@@ -273,7 +257,6 @@ pub (crate) mod in_memory_utxo {
 
         // ---------- required methods ---------- //
 
-
         fn batch_put_utxos(
             &mut self,
             utxos: Vec<(OutPoint, UTXO)>,
@@ -286,7 +269,6 @@ pub (crate) mod in_memory_utxo {
                 Ok(())
             })
         }
-
 
         fn batch_get_utxos<I>(
             &self,
@@ -312,7 +294,6 @@ pub (crate) mod in_memory_utxo {
                 Ok(map)
             })
         }
-
 
         fn batch_remove_utxos(
             &mut self,
@@ -342,11 +323,7 @@ pub (crate) mod in_memory_utxo {
                     .collect())
             })
         }
-
     }
-
-
-
 
     #[cfg(test)]
     mod tests {
@@ -370,12 +347,9 @@ pub (crate) mod in_memory_utxo {
                 value: 42,
                 owner: AccountAddress::new(&[9; 20]),
             };
-
+            
             // insert
-            store
-                .put_utxo(outpoint, utxo)
-                .await
-                .expect("insert");
+            store.put_utxo(outpoint, utxo).await.expect("insert");
 
             // query by owner
             let fetched = store
@@ -386,10 +360,7 @@ pub (crate) mod in_memory_utxo {
             assert_eq!(fetched.get(&outpoint).unwrap().value, 42);
 
             // remove
-            store
-                .remove_utxo(outpoint)
-                .await
-                .expect("remove");
+            store.remove_utxo(outpoint).await.expect("remove");
             let fetched_after = store.get_utxos_for_address(utxo.owner).await.unwrap();
             assert!(fetched_after.is_empty());
         }
