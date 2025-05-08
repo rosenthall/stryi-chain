@@ -44,7 +44,8 @@ pub struct BlockHeader {
     /// Nonce (in Bitcoin it's 32 bits so it's enough much for StryiChain)
     pub nonce: u32,
     
-    /// Boolean value proves that block is the genesis in the chain 
+    /// Boolean value proves that block is the genesis in the chain
+    // TODO: Maybe replace is_genesis field by something like genesis_consensus_config : Option<GenesisConsensusConfig> for better flexibility? And add method is_genesis() for compatibility with an old field. 
     pub is_genesis : bool,
 }
 
@@ -118,7 +119,7 @@ impl Block {
         
         
         // Compute the Merkle root from the transactions
-        let merkle_hash = Self::compute_merkle_root(&vec![transaction.clone()]);
+        let merkle_hash = Self::compute_merkle_root(&[transaction.clone()]);
         
         let empty_block_hash = BlockHash::empty();
         let header = BlockHeader { 
@@ -165,11 +166,15 @@ impl Block {
             .unwrap_or([0u8; 32]) // handle empty block or error case
     }
 
-    /// Returns the block hash by passing BlockHeader (serialized) to BlockHashKind.
-    /// Typically, we might hash only part of the header or the entire header depending on protocol rules.
+    /// Calculates the block hash.
+    /// Returns hardcoded BlockHash::empty value if self.header.is_genesis
     pub fn block_hash(&self) -> BlockHash {
-        // Example: encode the header and then pass it to the hashing function
-        let header_bytes = bincode::serde::encode_to_vec(&self.header, bincode::config::standard())
+
+        if self.header.is_genesis {
+            return BlockHash::empty();
+        };
+
+        let header_bytes = bincode::serde::encode_to_vec(self.header, bincode::config::standard())
             .expect("Failed to serialize block header");
 
         // Create the final block hash
