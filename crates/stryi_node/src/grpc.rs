@@ -10,7 +10,7 @@ use tonic::codegen::tokio_stream::Stream;
 use tower::{Layer, Service};
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::storage::{BlockStorage, UtxoStorage};
-use stryi_storage::StryiStorage;
+use stryi_storage::{StryiStorage, StryiStorageError};
 use http::{Request as HttpRequest, Response as HttpResponse, StatusCode};
 use tonic::body::Body;
 use crate::grpc_services::{
@@ -172,7 +172,7 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync for StryiSyncS
             latest_block_hash: chain_info.latest_block.1.to_string(),
             total_difficulty: chain_info.chain_difficulty as u64,
             last_update_time: chain_info.last_update_time as u64,
-            protocol_version: self.config.protocol_version.clone() as u32,
+            protocol_version: self.config.protocol_version as u32,
             chain_name: self.config.chain_name.clone(),
         };
 
@@ -208,18 +208,28 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync for StryiSyncS
 
                 // Attempt to fetch the block
                 let db = storage.read().await;
-                let block_result = db.get_block_by_height(current_height as usize).await;
+                let block_result = db.get_block_by_height(current_height).await;
+
 
                 match block_result {
-                    Ok(block) => {
-                        // Convert the header to PbBlockHeader
-                        let pb_header: PbBlockHeader = PbBlock::from(block).header.unwrap(); // safe unwrap
+                    Ok(Some(block)) => {
+                        let pb_header: PbBlockHeader = PbBlock::from(block).header.unwrap();
                         let next_state = current_height + 1;
                         Some((Ok(pb_header), next_state))
                     }
-                    Err(e) => {
-                        // Return a single error item and end the stream
-                        let status = if matches!(e, stryi_storage::StryiStorageError::NotFound(_)) {
+
+                    // Both “failed to load” cases in one arm
+                    other => {
+                        // Turn the match‐arm payload into a concrete error
+                        let e: StryiStorageError = match other {
+                            Err(e) => e,
+                            Ok(None) => StryiStorageError::NotFound(format!("Block at height {} missing", current_height)),
+                            
+                            // We’ve covered Ok(Some) above, so it should be impossible
+                            _ => unreachable!(),
+                        };
+
+                        let status = if matches!(e, StryiStorageError::NotFound(_)) {
                             Status::not_found(e.to_string())
                         } else {
                             Status::internal(e.to_string())
@@ -227,6 +237,7 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync for StryiSyncS
                         Some((Err(status), actual_end + 1))
                     }
                 }
+
             }
         });
 
@@ -266,30 +277,38 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync for StryiSyncS
                 
                 // Lock DB and fetch the block
                 let db = storage.read().await;
-                let block_res = db.get_block_by_height(current_height as usize).await;
+                let block_res = db.get_block_by_height(current_height).await;
+
 
                 match block_res {
-                    Ok(block) => {
-                        // Convert to protobuf type
+                    // Only match when we actually got a `Block`
+                    Ok(Some(block)) => {
+                        // Now `block: Block` matches your `From<Block>` impl
                         let pb_block: PbBlock = block.into();
-                        
-                        // update acc
                         let next_state = current_height + 1;
-                        
-                        // (Item, NextState)
                         Some((Ok(pb_block), next_state))
                     }
+
+                    // Block was not found in storage → translate to a gRPC NotFound error
+                    Ok(None) => {
+                        let status = Status::not_found(
+                            format!("Block at height {} not found", current_height)
+                        );
+                        Some((Err(status), actual_end + 1))
+                    }
+
+                    // Storage API returned some other error
                     Err(e) => {
                         // If a block is missing or any error occurred, 
                         // produce an error item. Once Tonic sees an error,
                         // the stream ends and the client receives that error.
-                        let status = if matches!(e, stryi_storage::StryiStorageError::NotFound(_)) {
+
+                        let status = if matches!(e, StryiStorageError::NotFound(_)) {
                             Status::not_found(e.to_string())
                         } else {
                             Status::internal(e.to_string())
                         };
-                        
-                        
+
                         // We yield Some((Err(status), <dummy next state>)) 
                         // to produce exactly one error item, then effectively end 
                         // by jumping past 'actual_end'
@@ -331,23 +350,28 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync for StryiSyncS
                 let storage = storage.clone();
                 async move {
 
-
                     // Convert string hash to BlockHash
                     let block_hash = BlockHash::from_hash_string(&block_hash)
                         .map_err(|e| Status::invalid_argument(format!("Invalid hash: {e:?}")))?;
 
                     // 2) Read from storage
                     let store = storage.read().await;
-                    let block = match store.get_block_by_hash(block_hash).await {
-                        Ok(b) => b,
-                        Err(e) => {
-                            if matches!(e, stryi_storage::StryiStorageError::NotFound(_)) {
-                                Err(Status::not_found("Block not found in storage"))?
+                    
+                    // 2) fetch Option<Block> from storage
+                    let opt_block = store
+                        .get_block_by_hash(block_hash)
+                        .await
+                        .map_err(|e| {
+                            if matches!(e, StryiStorageError::NotFound(_)) {
+                                Status::not_found("Block not found in storage")
                             } else {
-                                Err(Status::internal(e.to_string()))?
+                                Status::internal(e.to_string())
                             }
-                        }
-                    };
+                        })?;
+
+                    let block = opt_block.ok_or_else(|| {
+                        Status::not_found("Block not found in storage")
+                    })?;
 
                     // 3) Convert to PbBlock
                     let pb_block: PbBlock = block.into();
