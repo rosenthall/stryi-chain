@@ -37,14 +37,14 @@
 //!     - Value : A `bincode`-serialized `StorageStateInformation`.
 //!
 //!     The only goal of this partition is to hold current information about storage state. We will 
-//!     update stats after each new block. This allows us to perform some consensus-related logic of comparing different chains.
+//!    update stats after each new block. This allows us to perform some consensus-related logic of comparing different chains.
 //! 6. **Undo**
 //!     - Key : `stryi_core::block::BlockHash` (32 bytes of the block hash)
 //!     - Value : A `bincode`-serialized `stryi_core::BlockUndo` object
 //!     
 //!     This partition is our per-block backup data. The thing allows us easily restore pre-block state, by just keeping 
-//!     `BlockUndo` in base. Restoration is just simple as deleting all the new outputs and restoring all the existing ones. 
-//!     High-level struct for implementing this functionality is `ChainReorganizer`
+//!    `BlockUndo` in base. Restoration is just simple as deleting all the new outputs and restoring all the existing ones. 
+//!    High-level struct for implementing this functionality is `ChainReorganizer`
 //!
 //! 7. **Block Indexes**
 //!     - Key : `stryi_core::block::BlockHash` (32 bytes of the block hash)
@@ -54,7 +54,9 @@
 //! outpoint, addresses to outpoint sets and will be able to correctly and safely reorganize chain for consensus purposes.
 
 #![allow(incomplete_features)]
-#![feature(generic_const_exprs)] // This feature was added to avoid a known bug: https://github.com/rust-lang/rust/issues/133199
+// This feature was added to avoid a known bug: https://github.com/rust-lang/rust/issues/133199
+#![feature(generic_const_exprs)]
+#![feature(new_range_api)]
 
 mod error;
 mod blocks;

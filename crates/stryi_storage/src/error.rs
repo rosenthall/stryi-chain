@@ -1,5 +1,6 @@
 use std::string::FromUtf8Error;
 use thiserror::Error;
+use stryi_core::storage::RangeError;
 
 #[derive(Debug, Error)]
 pub enum StryiStorageError {
@@ -30,7 +31,10 @@ pub enum StryiStorageError {
     
     #[error("Cannot get storage stats from `stats_partition` : {0}")]
     NoStorageStatsFound(String),
-    
+
+    #[error("Incorrect blocks range provided: start={0}, end={1}")]
+    IncorrectBlocksRange(i32, i32),
+
     #[error("Cannot find value with such key in data base: {0}")]
     NotFound(String),
     
@@ -38,3 +42,14 @@ pub enum StryiStorageError {
     UndoCreationError { msg: String },
 }
 
+
+
+
+impl From<RangeError> for StryiStorageError {
+    fn from(e: RangeError) -> Self {
+        match e {   
+            RangeError::InvalidRange { start, end } => 
+                StryiStorageError::IncorrectBlocksRange(start, end),
+        }
+    }
+}

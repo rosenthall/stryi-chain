@@ -48,8 +48,7 @@ pub struct StryiNetworkManager {
     /// Wrapped in an `RwLock` to allow concurrent reads and real-time updates
     /// (e.g. when a service starts, stops, or changes its listening port).
     pub services_info: Arc<RwLock<Vec<ServiceInfo>>>,
-
-
+    
     /// Connected peers tracking TODO : Actually track peers
     pub(crate) connected_peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
 

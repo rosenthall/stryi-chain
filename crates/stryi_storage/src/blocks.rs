@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use bincode::config::standard;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::storage::BlockStorage;
@@ -5,6 +6,8 @@ use crate::error::StryiStorageError;
 use crate::StryiStorage;
 use fjall::{Slice, UserKey, UserValue};
 use std::convert::TryFrom;
+use std::range::RangeInclusive;
+use futures::future::BoxFuture;
 use crate::index::BlockIndexData;
 use crate::stats::StorageStateInformation;
 
@@ -38,184 +41,203 @@ impl StryiStorage {
     }
 }
 
-impl BlockStorage for StryiStorage {
-    type StorageError = StryiStorageError;
-
-    /// Retrieves a block by its hash.
-    async fn get_block_by_hash(&self, hash: BlockHash) -> Result<Block, Self::StorageError> {
-        let raw = self.blocks_partition
-            .get(Slice::from(&hash.data[..]))
-            .map_err(StryiStorageError::FjallError)?
-            .ok_or_else(|| StryiStorageError::NotFound(format!("Block with hash {}", hash)))?;
-
-        Self::deserialize_block(&raw)
-    }
-
-    /// Retrieves a block by its height.
-    async fn get_block_by_height(&self, height: usize) -> Result<Block, Self::StorageError> {
-        let height_key = Self::height_to_key(height)?;
-
-        // First get the block hash from the height
-        let block_hash_bytes = self.heights_partition
-            .get(Slice::from(&height_key[..]))
-            .map_err(StryiStorageError::FjallError)?
-            .ok_or_else(|| StryiStorageError::NotFound(format!("Block at height {}", height)))?;
-
-        // Convert bytes to BlockHash and get the block
-        let block_hash = Self::bytes_to_block_hash(&block_hash_bytes)?;
-        self.get_block_by_hash(block_hash).await
-    }
-
-    /// Retrieves the latest block in the chain.
-    async fn get_latest_block(&self) -> Result<Block, Self::StorageError> {
-        let result = self.heights_partition
-            .last_key_value()
-            .map_err(StryiStorageError::FjallError)?
-            .ok_or_else(|| StryiStorageError::NotFound("Blockchain is empty".to_string()))?;
-
-        let block_hash = Self::bytes_to_block_hash(&result.1)?;
-        self.get_block_by_hash(block_hash).await
-    }
-
-    /// Inserts a new block or updates an existing one in the storage.
-    async fn put_block(&mut self, block: &Block) -> Result<(), Self::StorageError> {
-
-        // Create BlockUndo data first - if this fails, we won't proceed with block storage
-        let undo_data = self.construct_block_undo(block).await?;
-        let undo_bytes = bincode::serde::encode_to_vec(&undo_data, standard())?;
 
 
-        // Serialize the block itself
-        let serialized_block = Self::serialize_block(block)?;
-        let height_key = Self::height_to_key(block.header.height as usize)?;
-        
-        // Compute the block hash from the block
-        let computed_hash = block.block_hash();
 
-        // Override for genesis block
-        let block_hash = if block.header.is_genesis {
-            BlockHash::empty()
-        } else {
-            computed_hash
-        };
+ impl BlockStorage for StryiStorage  {
+     type StorageError = StryiStorageError;
 
 
-        // Read current state so we can update chain stats
-        let current_state = self.get_current_storage_state()?;
+     fn put_block(&mut self, block: &Block) -> BoxFuture<Result<(), Self::StorageError>> {
+         let block = block.clone();
 
-        // Compute new chain difficulty, etc.
-        let new_chain_diff = current_state.chain_difficulty + (1 << block.header.difficulty_bits);
-        let new_state = StorageStateInformation {
-            latest_block: (block.header.height as usize, block_hash),
-            last_update_time: block.header.timestamp as usize,
-            blocks_count: current_state.blocks_count + 1,
-            chain_difficulty: new_chain_diff,
-        };
+         Box::pin(
+             async move {
+                 // Inserts a new block or updates an existing one in the storage.
+                 let undo_data = self.construct_block_undo(&block).await?;
+                 let undo_bytes = bincode::serde::encode_to_vec(&undo_data, standard())?;
 
-        // Prepare BlockIndexData
-        let index_data = BlockIndexData {
-            parent_hash: block.header.previous_block_hash,
-            height: block.header.height,
-            chain_work: new_chain_diff as u128,
-        };
-        let index_bytes = bincode::serde::encode_to_vec(&index_data, standard())?;
-        
-        // Create a write transaction. We will update blocks, heights, undo and state partitions by just one transaction
-        let mut tx = self.keyspace.write_tx();
+                 // Serialize the block itself
+                 let serialized_block = Self::serialize_block(&block)?;
+                 let height_key = Self::height_to_key(block.header.height as usize)?;
 
-        // Store block data in blocks partition
-        tx.insert(
-            &self.blocks_partition,
-            Slice::from(&block_hash.data[..]),
-            Slice::from(serialized_block),
-        );
+                 // Compute the block hash from the block
+                 let block_hash = block.block_hash();
+                 
+                 // Read current state so we can update chain stats
+                 let current_state = self.get_current_storage_state()?;
 
-        // Store height mapping in heights partition
-        tx.insert(
-            &self.heights_partition,
-            Slice::from(&height_key[..]),
-            Slice::from(&block_hash.data[..]),
-        );
+                 // Compute new chain difficulty, etc.
+                 let new_chain_diff = current_state.chain_difficulty + (1 << block.header.difficulty_bits);
+                 let new_state = StorageStateInformation {
+                     latest_block: (block.header.height as usize, block_hash),
+                     last_update_time: block.header.timestamp as usize,
+                     blocks_count: current_state.blocks_count + 1,
+                     chain_difficulty: new_chain_diff,
+                 };
 
+                 // Prepare BlockIndexData
+                 let index_data = BlockIndexData {
+                     parent_hash: block.header.previous_block_hash,
+                     height: block.header.height,
+                     chain_work: new_chain_diff as u128,
+                 };
 
-        // Store undo data in undo partition
-        tx.insert(
-            &self.undo_partition,
-            Slice::from(&block_hash.data[..]),
-            Slice::from(undo_bytes), 
-        );
+                 let index_bytes = bincode::serde::encode_to_vec(&index_data, standard())?;
+                 // Create a write transaction. We will update blocks, heights, undo and state partitions by just one transaction
+                 let mut tx = self.keyspace.write_tx();
 
-        // Store block index entry in block_index partition
-        tx.insert(
-            &self.block_index_partition,
-            Slice::from(&block_hash.data[..]),
-            Slice::from(index_bytes),
-        );
-        
-        // Update storage state value in stats_partition
-        let state_key = UserKey::from([0u8; 32]);
-        let state_value: UserValue = new_state.try_into()?;
-        tx.insert(&self.stats_partition, state_key, state_value);
+                 // Store block data in blocks partition
+                 tx.insert(
+                     &self.blocks_partition,
+                     Slice::from(&block_hash.data[..]),
+                     Slice::from(serialized_block),
+                 );
+
+                 // Store height mapping in heights partition
+                 tx.insert(
+                     &self.heights_partition,
+                     Slice::from(&height_key[..]),
+                     Slice::from(&block_hash.data[..]),
+                 );
 
 
-        // Commit the transaction
-        tx.commit().map_err(StryiStorageError::FjallError)?;
-        Ok(())
-    }
+                 // Store undo data in undo partition
+                 tx.insert(
+                     &self.undo_partition,
+                     Slice::from(&block_hash.data[..]),
+                     Slice::from(undo_bytes),
+                 );
 
-    /// Checks whether a block with the given hash exists.
-    async fn block_exists(&self, hash: BlockHash) -> Result<bool, Self::StorageError> {
-        Ok(self.blocks_partition
-            .get(Slice::from(&hash.data[..]))
-            .map_err(StryiStorageError::FjallError)?
-            .is_some())
-    }
+                 // Store block index entry in block_index partition
+                 tx.insert(
+                     &self.block_index_partition,
+                     Slice::from(&block_hash.data[..]),
+                     Slice::from(index_bytes),
+                 );
 
-    /// Retrieves the entire chain of blocks.
-    async fn get_chain(&self) -> Result<Vec<Block>, Self::StorageError> {
-        let state = self.get_current_storage_state()?;
-        let total_blocks = state.blocks_count;
+                 // Update storage state value in stats_partition
+                 let state_key = UserKey::from([0u8; 32]);
+                 let state_value: UserValue = new_state.try_into()?;
+                 tx.insert(&self.stats_partition, state_key, state_value);
 
-        let mut blocks = Vec::with_capacity(total_blocks);
-        let mut current_height = 0usize;
 
-        while current_height < total_blocks {
-            match self.get_block_by_height(current_height).await {
-                Ok(block) => {
-                    blocks.push(block);
-                    current_height += 1;
-                },
-                Err(StryiStorageError::NotFound(_)) => break,
-                Err(e) => return Err(e),
-            }
-        }
+                 // Commit the transaction
+                 tx.commit().map_err(StryiStorageError::FjallError)?;
 
-        Ok(blocks)
-    }
+                 // Exit
+                 Ok(())
+             }
+         )
+     }
+     
+     fn batch_get_blocks_by_hashes(&self, hashes: Vec<BlockHash>) -> BoxFuture<Result<HashMap<BlockHash, Block>, Self::StorageError>> {
+         // in fact this method is not performing *real* batch-read but just reading blocks ony-by-one, so batching is only api-level thing.
+         Box::pin(async move {
+             let mut result_map = HashMap::new();
+             for hash in hashes {
+                 let raw = self.blocks_partition
+                     .get(Slice::from(&hash.data[..]))
+                     .map_err(StryiStorageError::FjallError)?;
+                 if let Some(bytes) = raw {
+                     let block = StryiStorage::deserialize_block(&bytes)?;
+                     result_map.insert(hash, block);
+                 }
+             }
+             Ok(result_map)
+         })
+     }
 
-    /// Retrieves a range of blocks from `start_height` to `end_height` inclusive.
-    /// Note: This performs sequential reads for the specified range
-    async fn get_range(&self, start_height: usize, end_height: usize) -> Result<Vec<Block>, Self::StorageError> {
-        if start_height > end_height {
-            return Ok(Vec::new());
-        }
 
-        let mut blocks = Vec::with_capacity(end_height - start_height + 1);
-        let mut current_height = start_height;
 
-        while current_height <= end_height {
-            match self.get_block_by_height(current_height).await {
-                Ok(block) => blocks.push(block),
-                Err(StryiStorageError::NotFound(_)) => break, // Stop at first gap
-                Err(e) => return Err(e),
-            }
-            current_height += 1;
-        }
+     fn batch_get_blocks_by_heights<I>(&self, heights: I) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>>
+     where
+         I: IntoIterator<Item = u64> + Send,
+         I::IntoIter: Send,
+     {
 
-        Ok(blocks)
-    }
-}
+         let heights_partition = self.heights_partition.clone();
+         let blocks_partition = self.blocks_partition.clone();
+         let heights_vec: Vec<u64> = heights.into_iter().collect();
 
+
+         Box::pin(async move {
+             let mut result_map = HashMap::new();
+             for height in heights_vec {
+                 let key = StryiStorage::height_to_key(height as usize)?;
+                 if let Some(hash_bytes) = heights_partition.get(Slice::from(&key[..]))
+                     .map_err(StryiStorageError::FjallError)?
+                 {
+                     let hash = StryiStorage::bytes_to_block_hash(&hash_bytes)?;
+                     if let Some(bytes) = blocks_partition.get(Slice::from(&hash.data[..]))
+                         .map_err(StryiStorageError::FjallError)?
+                     {
+                         let block = StryiStorage::deserialize_block(&bytes)?;
+                         result_map.insert(height, block);
+                     }
+                 }
+             }
+             Ok(result_map)
+         })
+     }
+
+     fn blocks_range(&self, range: RangeInclusive<i32>) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>> {
+
+         let blocks_partition = self.blocks_partition.clone();
+         let heights_partition = self.heights_partition.clone();
+
+         Box::pin(async move {
+             // Early return if range is invalid
+             StryiStorage::validate_range(range)?;
+
+             // Setup result map
+             let len = range.into_iter().count();
+             let mut result_map = HashMap::with_capacity(len);
+
+             // Convert i32 to u64 in range for compatibility with return type
+             for height in range.iter().map(|n| n as u64) {
+
+                 // Get BlockHash by height
+                 let key = StryiStorage::height_to_key(height as usize)?;
+                 match heights_partition.get(Slice::from(&key[..])).map_err(StryiStorageError::FjallError)? {
+
+                     // Return error if unable to find a BlockHash by height.
+                     None => return Err(StryiStorageError::NotFound(format!("BlockHash of block with height: {height}"))),
+
+
+                     Some(hash_bytes) => {
+
+                         //  Try to get entire Block by hash we got.
+                         let hash = StryiStorage::bytes_to_block_hash(&hash_bytes)?;
+                         match blocks_partition.get(Slice::from(&hash.data[..])).map_err(StryiStorageError::FjallError)? {
+
+                             // Return error if unable to find a Block by hash.
+                             None => return Err(StryiStorageError::NotFound(format!("block with hash: {hash}"))),
+
+                             Some(block_bytes) => {
+                                 let block = StryiStorage::deserialize_block(&block_bytes)?;
+                                 result_map.insert(height, block);
+                             },
+                         }
+                     }
+                 }
+             }
+             // Return map
+             Ok(result_map)
+         })
+
+     }
+
+     fn block_exists(&self, hash: BlockHash) -> BoxFuture<Result<bool, Self::StorageError>> {
+         Box::pin(async move {
+             let present = self.blocks_partition
+                 .get(Slice::from(&hash.data[..]))
+                 .map_err(StryiStorageError::FjallError)?
+                 .is_some();
+             Ok(present)
+         })
+     }
+ }
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -320,10 +342,9 @@ pub(crate) mod tests {
         let genesis = create_test_block(0);
         storage.put_block(&genesis).await?;
 
-        assert!(storage.block_exists(genesis.block_hash()).await?);
-        let retrieved = storage.get_block_by_hash(genesis.block_hash()).await?;
+        let retrieved = storage.get_block_by_hash(genesis.block_hash()).await?.expect("Must return `Some(block)`");
         assert_eq!(retrieved.header.height, 0);
-        assert_eq!(retrieved.header.is_genesis, true);
+        assert!(retrieved.header.is_genesis);
 
         // Test 2: Store more blocks
         for i in 1..=5 {
@@ -331,30 +352,22 @@ pub(crate) mod tests {
         }
 
         // Test 3: Get by height
-        let block3 = storage.get_block_by_height(3).await?;
+        let block3 = storage.get_block_by_height(3).await?.expect("Must return `Some(block)`");
         assert_eq!(block3.header.height, 3);
 
-        // Test 4: Latest block
-        let latest = storage.get_latest_block().await?;
-        assert_eq!(latest.header.height, 5);
+        // Test 4: Latest block TODO: refactor get_latest_block as well
+        // let latest = storage.get_latest_block().await?;
+        // assert_eq!(latest.header.height, 5);
 
-        // Test 5: Get chain
-        let chain = storage.get_chain().await?;
-        assert_eq!(chain.len(), 6); // 0 through 5
-        assert_eq!(chain[0].header.height, 0);
-        assert_eq!(chain[5].header.height, 5);
-
-        // Test 6: Get range
-        let range = storage.get_range(2, 4).await?;
+        // Test 5: Get valid range 
+        let range = storage.blocks_range(RangeInclusive::from(2..=4)).await?;
         assert_eq!(range.len(), 3);
-        assert_eq!(range[0].header.height, 2);
-        assert_eq!(range[2].header.height, 4);
-
-        // Test 7: Empty range
-        let empty_range = storage.get_range(4, 2).await?;
-        assert!(empty_range.is_empty());
-
-
+        
+        assert_eq!(range[&2].header.height, 2);
+        assert_eq!(range[&3].header.height, 3);
+        assert_eq!(range[&4].header.height, 4);
+        
+        
         // Check that storage state exists
         assert!(
             storage.get_current_storage_state().is_ok(),
@@ -366,7 +379,6 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_stryi_storage_gaps() -> Result<(), StryiStorageError> {
-        // setup_state_storage argument is true since .get_chain() method utilizes storage_state api to get blocks_count
         let (mut storage, _temp_dir) = create_test_storage(true); 
 
 
@@ -376,21 +388,9 @@ pub(crate) mod tests {
         }
         storage.put_block(&create_test_block(5)).await?;
 
-        // Test: Range stops at gap
-        let range = storage.get_range(2, 5).await?;
-        assert_eq!(range.len(), 2); // Should contain only blocks 2 and 3
-        assert_eq!(range[0].header.height, 2);
-        assert_eq!(range[1].header.height, 3);
-
-        // Test: Range after gap
-        let empty_range = storage.get_range(4, 5).await?;
-        assert!(empty_range.is_empty()); // Should be empty as it starts at a gap
-
-        // Test: Get chain stops at first gap
-        let chain = storage.get_chain().await?;
-        assert_eq!(chain.len(), 4); // Should contain 0,1,2,3
-        assert_eq!(chain[0].header.height, 0);
-        assert_eq!(chain[3].header.height, 3);
+        // Test: Range that includes gap
+        let empty_range = storage.blocks_range(RangeInclusive::from(3..=5)).await;
+        assert!(empty_range.is_err()); // should return error because of a gap
 
         Ok(())
     }
