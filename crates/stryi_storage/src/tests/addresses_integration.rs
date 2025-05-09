@@ -7,7 +7,7 @@ use stryi_core::{
     storage::UtxoStorage,
 };
 
-use crate::{StryiStorage, StryiStorageError};
+use crate::{GenesisInitConfig, StryiStorage, StryiStorageError};
 
 /// Creates an `OutPoint` by combining a specific first byte in its txid plus
 /// the provided `vout`. This ensures each outpoint is unique for testing.
@@ -24,7 +24,7 @@ fn make_test_outpoint(txid_first_byte: u8, vout: u32) -> OutPoint {
 /// Creates a `UTXO` with a fixed value, owned by `owner`.
 fn create_test_utxo(op: &OutPoint, owner: AccountAddress) -> UTXO {
     UTXO {
-        txid: op.txid.clone(),
+        txid: op.txid,
         vout: op.vout,
         value: 123_456,  // Arbitrary test value
         owner,
@@ -37,9 +37,11 @@ fn create_test_utxo(op: &OutPoint, owner: AccountAddress) -> UTXO {
 async fn test_addresses_integration() -> Result<(), StryiStorageError> {
     println!("=== Starting addresses integration test ===");
 
-    // 1) Create a temp directory and initialize StryiStorage
+    // 1) Create a temp directory and initialize StryiStorage with default genesis config
+    
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let mut storage = StryiStorage::initialize_in_path(temp_dir.path().to_owned(), None).await?;
+    let genesis_config = GenesisInitConfig::new_test();
+    let mut storage = StryiStorage::initialize_in_path(temp_dir.path().to_owned(), Some(genesis_config)).await?;
     println!("Initialized StryiStorage at: {:?}", temp_dir.path());
 
     // 2) Create distinct addresses
@@ -88,10 +90,10 @@ async fn test_addresses_integration() -> Result<(), StryiStorageError> {
     // ------------------
     println!("Step C: Batch put for Alice (op2, op3), Bob (op2), Charlie (op1)");
     let batch_put = vec![
-        (alice_op2.clone(), create_test_utxo(&alice_op2, alice_addr)),
-        (alice_op3.clone(), create_test_utxo(&alice_op3, alice_addr)),
-        (bob_op2.clone(),   create_test_utxo(&bob_op2,   bob_addr)),
-        (charlie_op1.clone(), create_test_utxo(&charlie_op1, charlie_addr)),
+        (alice_op2, create_test_utxo(&alice_op2, alice_addr)),
+        (alice_op3, create_test_utxo(&alice_op3, alice_addr)),
+        (bob_op2,   create_test_utxo(&bob_op2,   bob_addr)),
+        (charlie_op1, create_test_utxo(&charlie_op1, charlie_addr)),
     ];
     storage.batch_put_utxos(batch_put).await?;
 
@@ -124,7 +126,7 @@ async fn test_addresses_integration() -> Result<(), StryiStorageError> {
     // Step E: Batch remove for Alice (alice_op2, alice_op3)
     // ------------------
     println!("Step E: Batch removing alice_op2 and alice_op3");
-    storage.batch_remove_utxos(vec![alice_op2.clone(), alice_op3.clone()]).await?;
+    storage.batch_remove_utxos(vec![alice_op2, alice_op3]).await?;
     let alice_after = storage.get_utxos_for_address(alice_addr).await?;
     println!("Alice has {} UTXOs after removing op2 and op3", alice_after.len());
     assert_eq!(alice_after.len(), 1, "Alice should be back to 1 UTXO");

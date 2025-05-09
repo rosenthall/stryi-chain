@@ -66,16 +66,8 @@ mod utxo;
 #[cfg(test)]
 mod tests;
 
-/// Reorganizer module provides a convenient interface for performing chain reorganization:
-///
-/// * It defines a `ChainReorganizer` structure that locates the common ancestor between two tips
-///   and rolls back the old chain, then applies and validates blocks for the new chain.
-/// * This process ensures atomic reorg under a single storage write lock.
-/// * Used primarily when a fork becomes heavier than the current best chain.
-mod reorganizer;
 
-use std::collections::{HashMap, HashSet};
-pub use reorganizer::*;
+use std::collections::HashMap;
 
 mod stats;
 mod undo;
@@ -139,6 +131,18 @@ pub struct GenesisInitConfig {
     pub wanted_balances: HashMap<AccountAddress, u64>,
     pub difficulty_bits: u8,
     pub version: u16,
+}
+
+#[cfg(test)]
+impl GenesisInitConfig {
+    /// Creates new GenesisBlockConfig with some reasonable parameters for tests
+    pub fn new_test() -> Self {
+        Self {
+            wanted_balances : HashMap::new(),
+            difficulty_bits : 0, // disabled difficulty checking
+            version: 0
+        }
+    }
 }
 
 

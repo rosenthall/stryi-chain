@@ -11,7 +11,7 @@ use stryi_core::{
     storage::UtxoStorage,
 };
 
-use crate::{StryiStorage, StryiStorageError};
+use crate::{StryiStorage, StryiStorageError, GenesisInitConfig};
 
 /// Generates a random 32-byte TransactionHash.
 fn random_txhash(rng: &mut impl Rng) -> TransactionHash {
@@ -53,9 +53,14 @@ fn shuffle<T>(slice: &mut [T], rng: &mut StdRng) {
 async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError> {
     println!("=== test_utxo_database_random_integration ===");
 
-    // 1) Initialize storage in a temp directory
+    // 1) Create a temp directory and initialize StryiStorage with default genesis config    
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
-    let mut storage = StryiStorage::initialize_in_path(temp_dir.path().to_owned(), None).await?;
+    let genesis_config = GenesisInitConfig::new_test();
+    let mut storage = StryiStorage::initialize_in_path(temp_dir.path().to_owned(), Some(genesis_config)).await?;
+    println!("Initialized StryiStorage at: {:?}", temp_dir.path());
+
+    
+
     println!("Storage initialized at: {:?}", temp_dir.path());
 
     // 2) Define several addresses
@@ -87,14 +92,14 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     let (singles, batch_group) = all_pairs.split_at(half);
 
     for (op, ut) in singles {
-        storage.put_utxo(*op, ut.clone()).await?;
-        truth_map.insert(op.clone(), ut.clone());
+        storage.put_utxo(*op, *ut).await?;
+        truth_map.insert(*op, *ut);
     }
 
-    let batch_vec: Vec<_> = batch_group.iter().map(|(op, ut)| (op.clone(), ut.clone())).collect();
+    let batch_vec: Vec<_> = batch_group.iter().map(|(op, ut)| (*op, ut.clone())).collect();
     storage.batch_put_utxos(batch_vec).await?;
     for (op, ut) in batch_group {
-        truth_map.insert(op.clone(), ut.clone());
+        truth_map.insert(*op, *ut);
     }
 
     // 5) Verify all outpoints are present, deep equality
@@ -109,7 +114,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     // 5b) Check addresses partition
     let mut addr_map: HashMap<AccountAddress, Vec<OutPoint>> = HashMap::new();
     for (op, ut) in &truth_map {
-        addr_map.entry(ut.owner).or_insert_with(Vec::new).push(op.clone());
+        addr_map.entry(ut.owner).or_default().push(*op);
     }
 
     for &addr in &addresses {
@@ -144,7 +149,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
         let res = storage.remove_utxo(*op).await;
         if res.is_ok() {
             truth_map.remove(op);
-            removed1.push(op.clone());
+            removed1.push(*op);
         }
     }
 
@@ -153,7 +158,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     if result_batch.is_ok() {
         for op in batch_ops {
             truth_map.remove(op);
-            removed2.push(op.clone());
+            removed2.push(*op);
         }
     }
 
@@ -166,7 +171,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     // 8) Final address partition check
     let mut final_addrs = HashMap::new();
     for (op, ut) in &truth_map {
-        final_addrs.entry(ut.owner).or_insert_with(Vec::new).push((op.clone(), ut.clone()));
+        final_addrs.entry(ut.owner).or_insert_with(Vec::new).push((*op, *ut));
     }
 
     for &addr in &addresses {
@@ -191,7 +196,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     // 9) Additional negative tests: duplicates, empty batches, nonexistent
     if let Some((some_op, some_ut)) = truth_map.iter().next() {
         // Duplicate
-        let res = storage.put_utxo(*some_op, some_ut.clone()).await;
+        let res = storage.put_utxo(*some_op, *some_ut).await;
         assert!(res.is_ok(), "duplicate insert should succeed or overwrite");
         let check = storage.get_utxo(*some_op).await?.unwrap();
         assert_eq!(check.value, some_ut.value, "value match after duplicate");
