@@ -27,10 +27,12 @@ use std::time::Duration;
 use colored::Colorize;
 use tokio::io;
 use tokio::time::sleep;
-use tracing::{error, info, warn, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing::{error, info, warn};
+use tracing_subscriber::{fmt, EnvFilter};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use stryi_core::mempool::{MemPool, MemPoolConfig, RbfPolicy, UtxoLookup};
 use stryi_core::storage::UtxoStorage;
 use stryi_core::transactions::{FeePolicy, OutPoint};
@@ -91,13 +93,26 @@ fn print_essentials() {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
 
-    // Initialize the tracing subscriber. TODO: Make logging better, filter useless stuff like h2, handshakes, etc.. `env-filter` feature for tracing-subscriber would be helpful
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::TRACE)
-        .finish();
-    
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("setting default subscriber failed");
+    // Initialize the tracing subscriber.
+
+    // Tracing subscriber for normal log output (filtering via env vars)
+    let fmt_layer = fmt::layer()
+        .with_target(true)
+        .with_level(true);
+
+    // Use EnvFilter to filter out some of unnecessary logs (like h2, handshakes, etc.)
+    let filter_layer = EnvFilter::from_default_env()
+        .add_directive("hyper=info".parse().unwrap())
+        .add_directive("h2=info".parse().unwrap());
+
+    // Initialize tokio-console subscriber layer
+    let console_layer = console_subscriber::spawn();
+
+    tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(fmt_layer)
+        .with(console_layer)
+        .init();
 
     // Initialize cfg, we use both .toml file and cli parameters for configuration
     // CLI parameters have higher priority than stryichain.toml so user may overlap values.
@@ -106,8 +121,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             error!("Got error while trying to setup configuration : {e}");
             e
         })?;
-
-
 
     print_essentials();
 
