@@ -39,13 +39,18 @@ pub mod consensus;
 /// transactions are processed in an order that respects their interdependencies.
 mod dependencies;
 
-/// Definitions of BlockUndo and related logic for the snapshots system.
+/// Definitions of BlockUndo and related logic for the reorganization system.
 mod undo;
 pub use undo::BlockUndo;
 
 /// Implementation of the transactions [mempool](https://www.geeksforgeeks.org/what-is-a-memory-pool/).
 pub mod mempool;
 
+/// A tree‐based structure for managing blockchain forks:
+/// keeps orphaned blocks indexed by hash and height,
+/// tracks each fork’s cumulative difficulty and divergence point,
+/// and provides efficient ancestor discovery, chain reconstruction
+mod forktree;
 
 // public export of common libraries across the project
 pub use blake3;
