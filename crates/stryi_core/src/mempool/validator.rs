@@ -56,8 +56,6 @@ impl MempoolTxValidator {
     /// Validates a transaction inputs.
     /// Returns error if transaction kind is not payment, signature is invalid,
     /// inputs are insufficient, or if double-spends are detected.
-    // In validator.rs, modify the validate method
-
     pub async fn validate(
         &self,
         tx: &Transaction,

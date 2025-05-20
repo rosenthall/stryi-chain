@@ -4,63 +4,59 @@
 
 mod rules;
 mod engine;
+mod validator;
+mod fork_overlay;
+mod error;
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
-use crate::block::Block;
-use crate::storage::UtxoStorage;
-
+use futures::future::BoxFuture;
+use crate::block::{Block, BlockHash};
 pub use rules::ConsensusRules;
 pub use engine::StryiConsensusEngine;
+use crate::error::StryiCoreError;
+
+/// Reply message type for ConsensusEngine.
+/// See ConsensusEngine::on_block method for more details.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConsensusOnBlockVerdict  {
+    /// Block belongs to some fork of the chain, but this fork's cumulative complexity is lower than local one.
+    BufferedIntoForkTree {
+        /// Common's ancestor block's hash and height
+        common_ancestor_height : (BlockHash, u64),
+    },
+
+    /// Block was successfully applied to local chain
+    Applied {
+        /// New complexity of the chain including this new block.
+        new_chain_complexity: u64,
+    },
+
+    /// Block is already in local chain.
+    AlreadyIncludedInChain,
+    
+    /// Block is already buffered in fork tree.
+    AlreadyKnownInForkTree,
+    
+    /// Block was rejected for any reason like failed validation, ConsensusRules, etc.
+    Rejected(StryiCoreError),
+
+    /// Block caused reorganization in local chain.
+    /// It either was included by itself or with some fork it belongs to.
+    CausedReorganization {
+        /// HashMap with deleted block's hashes keyed by its pre-reorganization height.
+        deleted_blocks : HashMap<u8, BlockHash>
+    }
+}
+
 
 /// The `ConsensusEngine` trait defines the interface for consensus mechanisms.
-/// It provides methods for validating blocks, adjusting difficulty, and selecting the best chain among forks.
+/// It provides the only method `on_block`
 pub trait ConsensusEngine {
     type Error: Debug + Send + Error + Clone;
-    type UtxoDatabase: UtxoStorage + Send + Sync;
-
-    /// Validates a given block according to consensus rules.
-    ///
-    /// # Parameters
-    /// - `block`: Reference to the block to be validated.
-    /// - `utxo_storage`: Some UtxoDatabase implementation that allows check current chain's state.
-    ///
-    /// # Returns
-    /// - `Ok(())` if the block is valid according to consensus rules.
-    /// - `Err(Self::Error)` if the block fails validation.
-    async fn validate_block(&self, block: &Block, utxo_storage: &mut Self::UtxoDatabase) -> Result<(), Self::Error>;
-
-
-
-    /// Validates and applies a block to the blockchain atomically.
-    ///
-    /// This method first validates the block. If validation succeeds, it applies the block to the UTXO set.
-    /// The entire operation is atomic; if application fails, no changes are made to the UTXO set.
-    /// 
-    /// # Parameters
-    /// - `block` Reference to the block to be validated.
-    /// - `utxo_storage`: Some UtxoDatabase implementation that allows check current chain's state.
-    async fn validate_and_apply_block(&self, block: &Block, utxo_storage: &mut Self::UtxoDatabase) -> Result<(), Self::Error>;
     
-    
-    
-    /// Adjusts the difficulty based on the current chain state.
-    ///
-    /// # Parameters
-    /// - `chain`: A slice of blocks representing the current chain state.
-    ///
-    /// # Returns
-    /// - `Ok(new_difficulty)` with the adjusted difficulty if successful.
-    /// - `Err(Self::Error)` if the adjustment process fails.
-    async fn adjust_difficulty(&mut self, chain: &[Block]) -> Result<u8, Self::Error>;
+    /// Method called for each new block
+    fn on_block(&mut self, block: Block) -> BoxFuture<Result<ConsensusOnBlockVerdict, Self::Error>>;
 
-    /// Chooses the best chain among multiple forks based on cumulative difficulty or other criteria.
-    ///
-    /// # Parameters
-    /// - `chains`: A vector of possible chains, where each chain is represented as a vector of blocks.
-    ///
-    /// # Returns
-    /// - `Ok(best_chain)` containing the selected best chain.
-    /// - `Err(Self::Error)` if chain selection fails.
-    async fn select_chain(&self, chains: Vec<Vec<Block>>) -> Result<Vec<Block>, Self::Error>;
 }

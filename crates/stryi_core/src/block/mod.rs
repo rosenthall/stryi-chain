@@ -1,11 +1,9 @@
 mod block_hash;
 mod mining;
-mod validator;
 
 use std::collections::HashMap;
-pub use block_hash::{BlockHash};
-pub use mining::meets_difficulty;
-pub use validator::BlockValidator;
+pub use block_hash::BlockHash;
+pub use mining::{meets_difficulty, mine_block_in_parallel};
 
 use serde::{Deserialize, Serialize};
 use crate::address::AccountAddress;
@@ -154,7 +152,7 @@ impl Block {
     }
 
     /// Computes the Merkle root from a list of transactions using MerkleTree.
-    pub fn compute_merkle_root(transactions: &Vec<Transaction>) -> MerkleHash {
+    pub fn compute_merkle_root(transactions: &[Transaction]) -> MerkleHash {
         // Convert each transaction into a byte vector, e.g., by serializing it
         let leaves_data: Vec<Vec<u8>> = transactions
             .iter()
@@ -185,12 +183,18 @@ impl Block {
     ///
     /// This method computes the hash of the block using the block's header
     /// and then checks if it meets the difficulty target specified in the header's `bits` field.
-    ///
+    /// If block kind is genesis - returns `true` immediately. 
+    /// 
     /// # Returns
     ///
     /// * `true` if the block hash satisfies the required difficulty.
     /// * `false` otherwise.
     pub fn validate_proof_of_work(&self) -> bool {
+        // Genesis blocks can go without PoW checks
+        if self.header.is_genesis {
+            return true;
+        }
+
         let hash = self.block_hash();
 
         meets_difficulty(&hash, self.header.difficulty_bits)

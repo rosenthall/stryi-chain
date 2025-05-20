@@ -35,7 +35,7 @@ pub fn meets_difficulty(block_hash: &BlockHash, bits: u8) -> bool {
     true
 }
 
-/// Mines the given block in parallel by generating random 32-bit nonces. 
+/// Mines the given block in parallel by generating random 32-bit nonce's. 
 ///
 /// - `block` is mutable, so if a solution is found, the block's header.nonce is updated.
 /// - `max_attempts` is the maximum number of random trials across all threads.
@@ -43,7 +43,6 @@ pub fn meets_difficulty(block_hash: &BlockHash, bits: u8) -> bool {
 ///   otherwise returns `false`.
 pub fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bool {
     let bits = block.header.difficulty_bits;
-
     // We use `find_any` over a parallel iterator so that if ANY thread finds a valid nonce,
     // the search stops.
     let found_nonce = (0..max_attempts)
@@ -59,7 +58,7 @@ pub fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bool {
 
             // Serialize the header
             let header_bytes = bincode::serde::encode_to_vec(
-                &local_header,
+                local_header,
                 bincode::config::standard(),
             ).expect("Failed to serialize block header");
 
@@ -146,7 +145,7 @@ mod tests {
 
             // 6) Verify difficulty on the final block
             let header_bytes = bincode::serde::encode_to_vec(
-                &block.header,
+                block.header,
                 bincode::config::standard(),
             )
                 .unwrap();

@@ -68,6 +68,18 @@ struct StryiInMemoryStorageState {
     pub chain_difficulty:  u128,
  }
 
+impl Default for StryiInMemoryStorageState {
+    fn default() -> Self {
+        Self {
+            latest_block: (0, BlockHash::empty()),
+            last_update_time: 0,
+            blocks_count: 1,
+            chain_difficulty: 0,
+        }
+    }
+}
+
+
 impl StryiInMemoryStorageState {
 
     /// Setups new StryiInMemoryStorageStats based on provided genesis block
@@ -88,6 +100,7 @@ impl StryiInMemoryStorageState {
 ///
 /// **Never use in a real node**
 /// It is purely for local development and unit-testing.
+#[derive(Default)]
 pub struct StryiInMemoryStorage {
     utxos: RwLock<HashMap<OutPoint, UTXO>>,
     blocks : RwLock<HashMap<BlockHash, Block>>,
@@ -104,6 +117,9 @@ impl StryiInMemoryStorage {
     /// Requires providing genesis_block to properly setup state
     /// Panics if provided block isn't proper genesis (see is_genesis flag)
     pub fn new(genesis_block: Block) -> Self {
+        
+        assert!(genesis_block.header.is_genesis, "Non-genesis block was provided for initialization of StryiInMemoryStorage");
+        
         let hash = genesis_block.block_hash();
 
         let state = StryiInMemoryStorageState::new_from_genesis(&genesis_block);
