@@ -33,7 +33,7 @@ pub enum StryiStorageError {
     NoStorageStatsFound(String),
 
     #[error("Incorrect blocks range provided: start={0}, end={1}")]
-    IncorrectBlocksRange(i32, i32),
+    IncorrectBlocksRange(usize, usize),
 
     #[error("Cannot find value with such key in data base: {0}")]
     NotFound(String),
@@ -48,8 +48,7 @@ pub enum StryiStorageError {
 impl From<RangeError> for StryiStorageError {
     fn from(e: RangeError) -> Self {
         match e {   
-            RangeError::InvalidRange { start, end } => 
-                StryiStorageError::IncorrectBlocksRange(start, end),
+            RangeError::InvalidRange { start, end } => StryiStorageError::IncorrectBlocksRange(start, end),
         }
     }
 }

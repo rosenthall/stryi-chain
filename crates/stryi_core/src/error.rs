@@ -3,10 +3,8 @@ use thiserror::Error;
 use crate::address::AccountAddress;
 use crate::transactions::TransactionHash;
 
-#[derive(Debug, Clone, Error)]
+#[derive(Debug, Clone, Error, PartialEq)]
 pub enum StryiCoreError {
-
-    
     #[error("Unexpected prefix while trying decode hash. Actual : {actual:?}, expected : {expected:?}")]
     InvalidPrefix { expected: String, actual: String },
 

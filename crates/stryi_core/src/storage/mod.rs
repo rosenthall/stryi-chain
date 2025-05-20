@@ -1,3 +1,9 @@
+
+#[cfg(test)]
+mod in_memory;
+#[cfg(test)]
+pub use in_memory::{StryiInMemoryStorage, InMemoryStorageError};
+
 use crate::address::AccountAddress;
 use crate::block::{Block, BlockHash};
 use crate::transactions::{OutPoint, UTXO};
@@ -85,7 +91,7 @@ pub trait UtxoStorage: Send + Sync {
 /// Common type for incorrect ranges
 #[derive(Debug)]
 pub enum RangeError {
-    InvalidRange { start: i32, end: i32 },
+    InvalidRange { start: usize, end: usize },
 }
 
 /// Thread‑safe backend for persistent block storage.
@@ -124,9 +130,9 @@ pub trait BlockStorage: Send + Sync {
         I::IntoIter: Send;
 
     /// Returns all blocks whose heights lie in the **inclusive** range, keyed by their height.
-    /// Must be `range.start < range.end` and both values must be positive integers.
+    /// Must be `range.start < range.end`.
     /// Shall return error if any of block in this range is unavailable or if range is incorrect.
-    fn blocks_range(&self, range: RangeInclusive<i32>) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>>;
+    fn blocks_range(&self, range: RangeInclusive<usize>) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>>;
 
     /// Checks whether a block with the given hash exists.
     /// Returns Ok(false) the block is absent.
@@ -160,14 +166,14 @@ pub trait BlockStorage: Send + Sync {
     }
 
     /// Default ranges validation method. 
-    /// Returns common Err(Self::StorageError::RangeError) error if any of values is negative or if `start` is bigger then `end`
-    fn validate_range(range: RangeInclusive<i32>) -> Result<(), Self::StorageError>
+    /// Returns common Err(Self::StorageError::RangeError) error if `start` is bigger then `end`
+    fn validate_range(range: RangeInclusive<usize>) -> Result<(), Self::StorageError>
     where
         Self::StorageError: From<RangeError>,
     {
         let (start, end) = (range.start, range.end);
 
-        if start < 0 || end < 0 || start > end {
+        if start > end {
             Err(RangeError::InvalidRange { start, end }.into())
         } else {
             Ok(())
@@ -191,213 +197,4 @@ pub trait StorageStats: Sync + Sync {
 
     /// Cumulative chain difficulty.
     fn chain_difficulty(&self) -> BoxFuture<Result<u128, Self::StorageError>>;
-}
-
-/// Simple implementation of UtxoStorage trait. Uses HashMap + RwLock inside
-/// Created to simplify some steps in development.
-/// The implementation should not be used in the real node, but during development and for testing other functionality
-pub(crate) mod in_memory_utxo {
-    use futures::future::BoxFuture;
-    use std::{
-        collections::HashMap,
-        error::Error,
-        fmt::{Display, Formatter, Result as FmtResult},
-    };
-    use tokio::sync::RwLock;
-
-    use crate::{
-        address::AccountAddress,
-        storage::UtxoStorage,
-        transactions::{OutPoint, UTXO},
-    };
-    use crate::transactions::TransactionHash;
-
-    /// Error type for the in-memory store.
-    #[derive(Debug, Clone)]
-    pub enum InMemoryStorageError {
-        NotFound(OutPoint),
-        Other(String),
-    }
-
-    impl Display for InMemoryStorageError {
-        fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-            match self {
-                Self::NotFound(op) => write!(f, "UTXO not found for outpoint: {op:?}"),
-                Self::Other(msg) => write!(f, "{msg}"),
-            }
-        }
-    }
-
-    impl Error for InMemoryStorageError {}
-
-    /// A very simple UTXO store backed by `RwLock<HashMap<OutPoint, UTXO>>`.
-    ///
-    /// **Never ship this to production!**
-    /// It is purely for local development and unit-testing.
-    pub struct InMemoryUtxoStorage {
-        inner: RwLock<HashMap<OutPoint, UTXO>>,
-    }
-
-    impl InMemoryUtxoStorage {
-        pub fn new() -> Self {
-            Self {
-                inner: RwLock::new(HashMap::new()),
-            }
-        }
-    }
-
-    impl Default for InMemoryUtxoStorage {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    impl UtxoStorage for InMemoryUtxoStorage {
-        type StorageError = InMemoryStorageError;
-
-        // ---------- required methods ---------- //
-
-        fn batch_put_utxos(
-            &mut self,
-            utxos: Vec<(OutPoint, UTXO)>,
-        ) -> BoxFuture<Result<(), Self::StorageError>> {
-            Box::pin(async move {
-                let mut guard = self.inner.write().await;
-                for (op, u) in utxos {
-                    guard.insert(op, u);
-                }
-                Ok(())
-            })
-        }
-
-        fn batch_get_utxos<I>(
-            &self,
-            outpoints: I,
-        ) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
-        where
-            I: IntoIterator<Item = OutPoint> + Send,
-            I::IntoIter: Send,
-        {
-            // Collect iterator into a Vec so it can be moved into the async block
-            let it: Vec<OutPoint> = outpoints.into_iter().collect();
-            Box::pin(async move {
-                let guard = self.inner.read().await;
-                let mut map = HashMap::with_capacity(it.len());
-                for op in it {
-                    match guard.get(&op) {
-                        Some(u) => {
-                            map.insert(op, *u);
-                        }
-                        None => return Err(InMemoryStorageError::NotFound(op)),
-                    }
-                }
-                Ok(map)
-            })
-        }
-
-        fn batch_remove_utxos(
-            &mut self,
-            outpoints: Vec<OutPoint>,
-        ) -> BoxFuture<Result<(), Self::StorageError>> {
-            Box::pin(async move {
-                let mut guard = self.inner.write().await;
-                for op in outpoints {
-                    if guard.remove(&op).is_none() {
-                        return Err(InMemoryStorageError::NotFound(op));
-                    }
-                }
-                Ok(())
-            })
-        }
-
-        fn get_utxos_for_address(
-            &self,
-            address: AccountAddress,
-        ) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>> {
-            Box::pin(async move {
-                let guard = self.inner.read().await;
-                Ok(guard
-                    .iter()
-                    .filter(|(_, utxo)| utxo.owner == address)
-                    .map(|(op, utxo)| (*op, *utxo))
-                    .collect())
-            })
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use crate::{
-            address::AccountAddress,
-            transactions::{OutPoint, TransactionHash},
-        };
-
-        #[tokio::test]
-        async fn in_memory_utxo_round_trip() {
-            let mut store = InMemoryUtxoStorage::default();
-
-            let outpoint = OutPoint {
-                txid: TransactionHash::new(&[1; 32]),
-                vout: 0,
-            };
-            let utxo = UTXO {
-                txid: outpoint.txid,
-                vout: outpoint.vout,
-                value: 42,
-                owner: AccountAddress::new(&[9; 20]),
-            };
-            
-            // insert
-            store.put_utxo(outpoint, utxo).await.expect("insert");
-
-            // query by owner
-            let fetched = store
-                .get_utxos_for_address(utxo.owner)
-                .await
-                .expect("query");
-            assert_eq!(fetched.len(), 1);
-            assert_eq!(fetched.get(&outpoint).unwrap().value, 42);
-
-            // remove
-            store.remove_utxo(outpoint).await.expect("remove");
-            let fetched_after = store.get_utxos_for_address(utxo.owner).await.unwrap();
-            assert!(fetched_after.is_empty());
-        }
-    }
-
-    /// Verifies that the *default* single-item helpers (`put_utxo` / `remove_utxo`)
-    /// work correctly. We insert two UTXOs one-by-one, remove one, and check that:
-    /// 1. the remaining entry is still there,
-    /// 2. trying to remove a non-existent outpoint yields the expected error.
-    #[tokio::test]
-    async fn test_utxo_storage_default_methods_impls() {
-        let mut store = InMemoryUtxoStorage::default();
-
-        let op1 = OutPoint {
-            txid: TransactionHash::new(&[0xAA; 32]),
-            vout: 0,
-        };
-        let utxo1 = UTXO {
-            txid: op1.txid,
-            vout: op1.vout,
-            value: 10,
-            owner: AccountAddress::new(&[0x01; 20]),
-        };
-
-        // --- insert via default `put_utxo` ---
-        store.put_utxo(op1, utxo1).await.unwrap();
-
-        // --- fetch via default `get_utxo` ---
-        let fetched = store.get_utxo(op1).await.unwrap();
-        assert_eq!(fetched.unwrap().value, 10);
-
-        // --- remove via default `remove_utxo` ---
-        store.remove_utxo(op1).await.unwrap();
-
-        // now `get_utxo` should error (batch_get_utxos returns NotFound) OR return Ok(None)
-        // depending on semantics – we chose to propagate NotFound in this backend
-        let err = store.get_utxo(op1).await.unwrap_err();
-        matches!(err, InMemoryStorageError::NotFound(op) if op == op1);
-    }
 }

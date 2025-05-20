@@ -63,7 +63,7 @@ impl StryiStorage {
 
                  // Compute the block hash from the block
                  let block_hash = block.block_hash();
-                 
+
                  // Read current state so we can update chain stats
                  let current_state = self.get_current_storage_state()?;
 
@@ -181,7 +181,7 @@ impl StryiStorage {
          })
      }
 
-     fn blocks_range(&self, range: RangeInclusive<i32>) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>> {
+     fn blocks_range(&self, range: RangeInclusive<usize>) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>> {
 
          let blocks_partition = self.blocks_partition.clone();
          let heights_partition = self.heights_partition.clone();
