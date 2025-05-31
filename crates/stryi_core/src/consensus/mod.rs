@@ -6,7 +6,7 @@ mod rules;
 mod engine;
 mod validator;
 mod fork_overlay;
-mod error;
+mod index;
 
 use std::collections::HashMap;
 use std::error::Error;

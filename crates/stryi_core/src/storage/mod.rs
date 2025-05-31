@@ -20,7 +20,7 @@ use std::range::RangeInclusive;
 /// wrap their batch counterparts. Back-ends may override these helpers with specialized
 /// single-item versions for performance or any other reason, but that is never required.
 pub trait UtxoStorage: Send + Sync {
-    type StorageError: Debug + Error + Send;
+    type StorageError: Debug + Error + Send + Error;
 
     /// Insert **one or more** UTXOs in a single atomic operation.
     ///
@@ -98,7 +98,7 @@ pub enum RangeError {
 /// Implementers must provide `put_block`, `batch_get_by_hashes`, `batch_get_by_heights`, `range` and `exists`.
 /// The single-item helpers `get_by_hash` and `get_by_height` have default implementations that simply wrap their batch counterparts
 pub trait BlockStorage: Send + Sync {
-    type StorageError: Debug + Error + Send;
+    type StorageError: Debug + Error + Send + Error;
 
     /// Atomically inserts or overwrites a single block.
     fn put_block(&mut self, block: &Block) -> BoxFuture<Result<(), Self::StorageError>>;
@@ -183,7 +183,7 @@ pub trait BlockStorage: Send + Sync {
 
 /// StorageStats defines high-level api to retrieve some statistics from current blockchain state.
 pub trait StorageStats: Sync + Sync {
-    type StorageError: Debug + Error + Send;
+    type StorageError: Debug + Error + Send + Error;
 
     /// Tip height and its block hash.
     fn tip(&self) -> BoxFuture<Result<(u64, BlockHash), Self::StorageError>>;

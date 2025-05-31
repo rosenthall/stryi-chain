@@ -3,6 +3,25 @@ use thiserror::Error;
 use crate::address::AccountAddress;
 use crate::transactions::TransactionHash;
 
+/// Definition of hypothetical storage layers which are likely to exist in any implementation of blockchain-storage.
+/// Its division is similar to UtxoStorage, BlockStorage, UtxoStats traits.
+/// It also provides "Other" value for some possible extra cases
+#[non_exhaustive]
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+pub enum StorageLayer {
+    #[error("UTXO layer")]
+    Utxo,
+    #[error("Block layer")]
+    Block,
+    #[error("Stats layer")]
+    Stats,
+
+    #[error("Unknown layer")]
+    Other
+}
+
+
+/// Common, unified error type for `stryi_core` crate.
 #[derive(Debug, Clone, Error, PartialEq)]
 pub enum StryiCoreError {
     #[error("Unexpected prefix while trying decode hash. Actual : {actual:?}, expected : {expected:?}")]
@@ -13,7 +32,6 @@ pub enum StryiCoreError {
 
     #[error("Unexpected buffer length trying decode hash. Actual : {actual:?}, expected : {expected:?}")]
     InvalidLength { expected: usize, actual: usize },
-
 
     #[error("Invalid transaction-level signature")]
     TxInvalidSignature,
@@ -69,7 +87,7 @@ pub enum StryiCoreError {
         actual : u64
     },
 
-     #[error("Invalid difficulty value : {details}")]
+    #[error("Invalid difficulty value : {details}")]
     InvalidDifficultyValue {
         details: String
     },
@@ -81,6 +99,18 @@ pub enum StryiCoreError {
     
     #[error("Detected transaction tries to perform double spend : {txid}:{vout}")]
     TxDoubleSpend { txid: TransactionHash, vout: u32 },
+
+    #[error("Cannot build chain index: {0}")]
+    CannotBuildChainIndex(String),
+
+
+
+    #[error("Storage error in {layer}: {err}")]
+    StorageError {
+        layer: StorageLayer,
+        err : String,
+    },
+
 
     #[error("Got unknown error : {msg:?}")]
     Other {
@@ -96,5 +126,13 @@ impl StryiCoreError {
         StryiCoreError::Other {
             msg : msg.to_string()
         } 
+    }
+
+    /// Constructs instance of `StryiCoreError::Storage` with provided layer kind and exact err.
+    pub fn storage(layer : StorageLayer, err : String) -> Self {
+        StryiCoreError::StorageError { 
+            layer, 
+            err
+        }
     }
 }
