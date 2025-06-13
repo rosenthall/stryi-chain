@@ -4,14 +4,11 @@
 //! Should not be used in the real node, but during development and for testing other functionality
 
 use futures::future::BoxFuture;
-use std::{
-    collections::HashMap,
-    fmt::Display,
-};
+use std::collections::HashMap;
 use std::future::ready;
 use std::range::RangeInclusive;
 use tokio::sync::RwLock;
-use crate::storage::{BlockStorage, RangeError, StorageStats, UtxoStorage};
+use crate::storage::{BlockStorage, RangeError, StorageStats, UndoStorage, UtxoStorage};
 use crate::transactions::TransactionKind;
 use crate::{address::AccountAddress, transactions::{OutPoint, UTXO}, BlockUndo};
 use crate::block::{Block, BlockHash};
@@ -110,16 +107,15 @@ pub struct StryiInMemoryStorage {
 }
 
 
-
 impl StryiInMemoryStorage {
 
     /// Initialize StryiInMemoryStorage
     /// Requires providing genesis_block to properly setup state
     /// Panics if provided block isn't proper genesis (see is_genesis flag)
     pub fn new(genesis_block: Block) -> Self {
-        
+
         assert!(genesis_block.header.is_genesis, "Non-genesis block was provided for initialization of StryiInMemoryStorage");
-        
+
         let hash = genesis_block.block_hash();
 
         let state = StryiInMemoryStorageState::new_from_genesis(&genesis_block);
@@ -254,48 +250,24 @@ impl BlockStorage for StryiInMemoryStorage {
     fn put_block(&mut self, block: &Block) -> BoxFuture<Result<(), Self::StorageError>> {
         let block = block.clone();
 
-
         // Compute the block hash from the block
-        let block_hash = block.block_hash();
+        let block_hash   = block.block_hash();
         let block_height = block.header.height;
-
         let block_bits   = block.header.difficulty_bits;
 
         Box::pin(async move {
-            let mut blocks_map = self.blocks.write().await;
-            let mut heights_map = self.blocks_heights.write().await;
-            let mut undo_map = self.blocks_undo.write().await;
-
+            // hash->block map
+            let mut blocks_map   = self.blocks.write().await;
+            // height->hash map
+            let mut heights_map  = self.blocks_heights.write().await;
 
             // Map hash -> block
             blocks_map.insert(block_hash, block.to_owned());
-            println!("[test-storage] Mapped block to {} ", block_hash);
+            println!("[test-storage] Mapped block to {}", block_hash);
 
             // height -> hash
             heights_map.insert(block_height, block_hash);
             println!("[test-storage] Mapped height {} to block {}", block_height, block_hash);
-
-
-            // generate and insert block Undo data
-            let utxos_table = self.utxos.read().await;
-            // build lookup for create_undo
-            let utxo_lookup = move |out_point: &OutPoint| {
-                // ready(...) is a Future<Output = T> that’s already immediately available,
-                // it is really reasonable since hashmaps are sync but .create_undo requires a Future
-                ready(utxos_table.get(out_point).copied())
-            };
-
-
-            let undo = {
-                block.create_undo(utxo_lookup)
-                    .await
-                    .map_err(InMemoryStorageError::from)?
-            };
-            undo_map.insert(block_hash, undo);
-
-
-            println!("[test-storage] Successfully generated and insert Undo-data for {}", block_hash);
-
 
             {
                 let mut st = self.current_state.write().await;
@@ -303,7 +275,6 @@ impl BlockStorage for StryiInMemoryStorage {
                 st.last_update_time = block.header.timestamp;
                 st.blocks_count    += 1;
                 st.chain_difficulty = st.chain_difficulty.wrapping_add(1u128 << block_bits);
-
 
                 // diagnostic log
                 println!(
@@ -315,10 +286,10 @@ impl BlockStorage for StryiInMemoryStorage {
                 );
             }
 
-
             Ok(())
         })
     }
+
 
     fn batch_get_blocks_by_hashes(
         &self,
@@ -422,6 +393,7 @@ impl BlockStorage for StryiInMemoryStorage {
     }
 }
 
+// ---- STORAGE STATS IMPLEMENTATION ----
 impl StorageStats for StryiInMemoryStorage {
     type StorageError = InMemoryStorageError;
 
@@ -454,6 +426,44 @@ impl StorageStats for StryiInMemoryStorage {
     }
 }
 
+
+// ---- UNDO STORAGE IMPLEMENTATION ----
+impl UndoStorage for StryiInMemoryStorage {
+    type StorageError = InMemoryStorageError;
+
+    fn put_block_undo(
+        &self,
+        hash: BlockHash,
+        undo: BlockUndo,
+    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
+        Box::pin(async move {
+            let mut guard = self.blocks_undo.write().await;
+            guard.insert(hash, undo);
+            Ok(())
+        })
+    }
+
+    fn get_block_undo(
+        &self,
+        hash: BlockHash,
+    ) -> BoxFuture<'_, Result<Option<BlockUndo>, Self::StorageError>> {
+        Box::pin(async move {
+            let guard = self.blocks_undo.read().await;
+            Ok(guard.get(&hash).cloned())
+        })
+    }
+
+    fn delete_block_undo(
+        &self,
+        hash: BlockHash,
+    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
+        Box::pin(async move {
+            let mut guard = self.blocks_undo.write().await;
+            guard.remove(&hash);
+            Ok(())
+        })
+    }
+}
 
 
 

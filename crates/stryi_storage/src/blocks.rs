@@ -53,10 +53,6 @@ impl StryiStorage {
 
          Box::pin(
              async move {
-                 // Inserts a new block or updates an existing one in the storage.
-                 let undo_data = self.construct_block_undo(&block).await?;
-                 let undo_bytes = bincode::serde::encode_to_vec(&undo_data, standard())?;
-
                  // Serialize the block itself
                  let serialized_block = Self::serialize_block(&block)?;
                  let height_key = Self::height_to_key(block.header.height as usize)?;
@@ -84,7 +80,7 @@ impl StryiStorage {
                  };
 
                  let index_bytes = bincode::serde::encode_to_vec(&index_data, standard())?;
-                 // Create a write transaction. We will update blocks, heights, undo and state partitions by just one transaction
+                 // Create a write transaction. We will update blocks, heights, and state partitions by just one transaction
                  let mut tx = self.keyspace.write_tx();
 
                  // Store block data in blocks partition
@@ -100,15 +96,7 @@ impl StryiStorage {
                      Slice::from(&height_key[..]),
                      Slice::from(&block_hash.data[..]),
                  );
-
-
-                 // Store undo data in undo partition
-                 tx.insert(
-                     &self.undo_partition,
-                     Slice::from(&block_hash.data[..]),
-                     Slice::from(undo_bytes),
-                 );
-
+                 
                  // Store block index entry in block_index partition
                  tx.insert(
                      &self.block_index_partition,

@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
 use std::range::RangeInclusive;
+use crate::BlockUndo;
 
 /// Trait representing a storage backend for UTXOs.
 ///
@@ -197,4 +198,34 @@ pub trait StorageStats: Sync + Sync {
 
     /// Cumulative chain difficulty.
     fn chain_difficulty(&self) -> BoxFuture<Result<u128, Self::StorageError>>;
+}
+
+
+/// Storage contract for persisting and retrieving `BlockUndo`.
+///
+/// *The consensus engine relies on these methods when it calls
+/// `UtxoProcessor::rewind_block` during a reorganisation.*
+pub trait UndoStorage {
+    type StorageError: Error + Send + Sync + 'static;
+
+    /// Saves undo data for the block identified by `hash`.
+    /// Implementations **should** overwrite an existing record if present.
+    fn put_block_undo(
+        &self,
+        hash: BlockHash,
+        undo: BlockUndo,
+    ) -> BoxFuture<'_, Result<(), Self::StorageError>>;
+
+    /// Fetches undo data.  
+    /// Returns `Ok(None)` if the storage has no record for `hash`.
+    fn get_block_undo(
+        &self,
+        hash: BlockHash,
+    ) -> BoxFuture<'_, Result<Option<BlockUndo>, Self::StorageError>>;
+
+    /// Deletes undo data once a block becomes *final* (optional).
+    fn delete_block_undo(
+        &self,
+        hash: BlockHash,
+    ) -> BoxFuture<'_, Result<(), Self::StorageError>>;
 }
