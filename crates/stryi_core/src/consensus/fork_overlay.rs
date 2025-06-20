@@ -6,8 +6,9 @@ use dashmap::{DashMap, DashSet};
 use futures::future::BoxFuture;
 use crate::address::AccountAddress;
 use crate::block::{Block, BlockHash};
-use crate::error::StryiCoreError;
-use crate::storage::{BlockStorage, StorageStats, UtxoStorage};
+use crate::BlockUndo;
+use crate::error::{StorageLayer, StryiCoreError};
+use crate::storage::{BlockStorage, StorageStats, UndoStorage, UtxoStorage};
 use crate::transactions::{OutPoint, UTXO};
 
 /// An overlay database for a specific fork.
@@ -15,7 +16,7 @@ use crate::transactions::{OutPoint, UTXO};
 /// to the base database when no fork-local entry exists.
 pub struct ForkDbOverlay<DB>
 where
-    DB: UtxoStorage + BlockStorage + StorageStats + Send + Sync + 'static {
+    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static {
     // canonical state
     base: Arc<DB>,
 
@@ -29,11 +30,14 @@ where
 
     // blocks produced on this fork (keyed by hash)
     block_delta: DashMap<BlockHash, Block>,
+
+    // per-block undo diff created by UtxoProcessor::apply_block
+    undo_delta: DashMap<BlockHash, BlockUndo>,
 }
 
 impl<DB> ForkDbOverlay<DB>
 where
-    DB: UtxoStorage + BlockStorage + StorageStats + Send + Sync + 'static {
+    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static {
     pub fn new(base: Arc<DB>, work : u128) -> Self {
         Self {
             base,
@@ -41,9 +45,69 @@ where
             utxo_delta: DashMap::new(),
             spent_from_base: DashSet::new(),
             block_delta: DashMap::new(),
+            undo_delta: DashMap::new()
 
         }
     }
+
+
+
+    /// Applies **all** buffered changes to the canonical storage.
+    ///
+    /// The sequence is atomic from the caller’s point of view,
+    /// because a write‑lock on the underlying `DB` is held by the
+    /// consensus engine while this function runs.
+    // TODO: Add some tests for the `ForkDbOverlay::commit` method
+    pub async fn commit(self, db: &mut DB) -> Result<(), StryiCoreError> {
+        // write blocks first so that UTXO batch refers to known hashes
+        for blk in self.block_delta.into_iter().map(|kv| kv.1) {
+            db.put_block(&blk).await.map_err(|e|
+                StryiCoreError::storage(
+                    StorageLayer::Block,
+                    format!("failed put_block during commit: {e:?}"),
+                ))?;
+        }
+
+        // write undo data
+        for kv in self.undo_delta.into_iter() {
+            let (hash, undo) = kv;
+            db.put_block_undo(hash, undo).await.map_err(|e| {
+                StryiCoreError::storage(
+                    StorageLayer::Undo,
+                    format!("failed put_block_undo during commit: {e:?}")
+                )
+            })?
+        }
+
+
+        // batch‑insert newly created / overridden UTXOs
+        if !self.utxo_delta.is_empty() {
+            let puts: Vec<_> = self.utxo_delta
+                .into_iter()
+                .collect();
+            db.batch_put_utxos(puts).await.map_err(|e|
+                StryiCoreError::storage(
+                    StorageLayer::Utxo,
+                    format!("failed put_utxos during commit: {e:?}"),
+                ))?;
+        }
+
+        // batch‑remove UTXO that were spent from the base chain
+        if !self.spent_from_base.is_empty() {
+            let spent: Vec<_> = self.spent_from_base.into_iter().collect();
+            db.batch_remove_utxos(spent).await.map_err(|e|
+                StryiCoreError::storage(
+                    StorageLayer::Utxo,
+                    format!("failed remove_utxos during commit: {e:?}"),
+                ))?;
+        }
+        Ok(())
+    }
+
+
+    /// Drops the overlay without touching the canonical storage.
+    pub fn abort(self) { /* nothing — `self` drops and DashMap memory is freed */ }
+
 
     /// Returns overlay status of the outpoint:
     /// - Some(Some(utxo))  : present in utxo_delta (created/overridden by this fork)
@@ -52,7 +116,7 @@ where
     fn overlay_get_utxo(&self, op: &OutPoint) -> Option<Option<UTXO>> {
         // If there is such an utxo in delta - return as is
         if let Some(u) = self.utxo_delta.get(op) {
-            return Some(Some(u.clone()));
+            return Some(Some(*u));
         }
         // If this utxo exists in base but spent in *this* fork's state - Some(None)
         if self.spent_from_base.contains(op) {
@@ -67,7 +131,7 @@ where
 
 impl<DB> UtxoStorage for ForkDbOverlay<DB>
 where
-    DB: UtxoStorage + BlockStorage + StorageStats + Send + Sync + 'static,
+    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
 {
     type StorageError = StryiCoreError;
 
@@ -119,7 +183,7 @@ where
 
                     // Some(Some(_)) means UTXO really here
                     Some(Some(utxo)) => {
-                        hit.insert(outpoint.clone(), utxo);
+                        hit.insert(outpoint, utxo);
                     }
                     // Some(None) means that UTXO is spent in this fork
                     Some(None) => {
@@ -164,7 +228,7 @@ where
             let mut result: HashMap<OutPoint, UTXO> = HashMap::new();
             for entry in overlay_map.iter() {
                 if entry.value().owner == address {
-                    result.insert(entry.key().clone(), entry.value().clone());
+                    result.insert(*entry.key(), *entry.value());
                 }
             }
 
@@ -191,7 +255,7 @@ where
 
 impl<DB> BlockStorage for ForkDbOverlay<DB>
 where
-    DB: UtxoStorage + BlockStorage + StorageStats + Send + Sync + 'static,
+    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage +  Send + Sync + 'static,
 {
     type StorageError = StryiCoreError;
 
@@ -284,7 +348,7 @@ where
         let delta = self.block_delta.clone();
         let base  = Arc::clone(&self.base);
 
-        let heights : Vec<u64> = range.clone().into_iter().map(|k| k as u64).collect();
+        let heights : Vec<u64> = range.into_iter().map(|k| k as u64).collect();
 
         Box::pin(async move {
             // reuse batch_get_blocks_by_heights on the base,
@@ -335,7 +399,7 @@ where
 
 impl<DB> StorageStats for ForkDbOverlay<DB>
 where
-    DB: UtxoStorage + BlockStorage + StorageStats + Send + Sync + 'static,
+    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
 {
     type StorageError = StryiCoreError;
 
@@ -413,4 +477,41 @@ where
         })
     }
 }
-    
+
+
+
+impl<DB> UndoStorage for ForkDbOverlay<DB>
+where
+    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
+{
+    type StorageError = StryiCoreError;
+
+    /// Inserts or overwrites the undo-record in the in-memory map.
+    fn put_block_undo(
+        &self,
+        hash: BlockHash,
+        undo: BlockUndo,
+    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
+        self.undo_delta.insert(hash, undo);
+        Box::pin(ready(Ok(())))
+    }
+
+    /// Reads undo-data from the overlay. Does **not** fall through to the base
+    /// storage – caller must query the base separately if needed.
+    fn get_block_undo(
+        &self,
+        hash: BlockHash,
+    ) -> BoxFuture<'_, Result<Option<BlockUndo>, Self::StorageError>> {
+        let res = self.undo_delta.get(&hash).map(|u| u.clone());
+        Box::pin(ready(Ok(res)))
+    }
+
+    /// Removes the undo-record from the overlay (no-op if absent).
+    fn delete_block_undo(
+        &self,
+        hash: BlockHash,
+    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
+        self.undo_delta.remove(&hash);
+        Box::pin(ready(Ok(())))
+    }
+}

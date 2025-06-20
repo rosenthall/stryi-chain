@@ -4,7 +4,7 @@ use crate::address::AccountAddress;
 use crate::transactions::TransactionHash;
 
 /// Definition of hypothetical storage layers which are likely to exist in any implementation of blockchain-storage.
-/// Its division is similar to UtxoStorage, BlockStorage, UtxoStats traits.
+/// Its division is similar to UtxoStorage, BlockStorage, UndoStorage, StorageStats traits.
 /// It also provides "Other" value for some possible extra cases
 #[non_exhaustive]
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
@@ -15,7 +15,8 @@ pub enum StorageLayer {
     Block,
     #[error("Stats layer")]
     Stats,
-
+    #[error("Undo layer")]
+    Undo,
     #[error("Unknown layer")]
     Other
 }
@@ -53,13 +54,13 @@ pub enum StryiCoreError {
         input_sum: u64,
         output_sum: u64,
     },
-    
-    
+
+
     #[error("Invalid signature : {msg}")]
-    InvalidSignature { 
+    InvalidSignature {
         msg : String
     },
-    
+
     #[error("Block validation failed: {details}")]
     ConsensusValidationFailed {
         details: String,
@@ -75,7 +76,7 @@ pub enum StryiCoreError {
     ConsensusDifficultyAdjustmentFailed {
         details: String,
     },
-    
+
     #[error("Chain selection failed: {details}")]
     ConsensusChainSelectionFailed {
         details: String,
@@ -92,7 +93,7 @@ pub enum StryiCoreError {
         details: String
     },
 
-    
+
     #[error("Error while processing transactions' dependency tree : {msg}")]
     TransactionDependencyError { msg: String },
 
@@ -102,8 +103,6 @@ pub enum StryiCoreError {
 
     #[error("Cannot build chain index: {0}")]
     CannotBuildChainIndex(String),
-
-
 
     #[error("Storage error in {layer}: {err}")]
     StorageError {

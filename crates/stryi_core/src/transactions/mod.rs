@@ -73,7 +73,7 @@ pub struct Transaction {
     pub data: TransactionData,
 
     /// The single signature over the hash of `TransactionData`.
-    pub signature: StryiSignature,
+    pub(crate) signature: StryiSignature,
 }
 
 impl TransactionData {
@@ -114,6 +114,11 @@ impl TransactionData {
 }
 
 impl Transaction {
+    /// Getter for the `signature` field.
+    pub fn signature(&self) -> StryiSignature {
+        self.signature.to_owned()
+    }
+    
     /// Verifies the transaction's signature using the provided `VerifyingKey`.
     /// Returns `Ok(())` if the transaction has [`Genesis`] or [`Coinbase`] kind, because these two do not require such checking
     /// Returns `Ok(())` if the signature is valid, otherwise returns an error.

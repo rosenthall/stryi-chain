@@ -35,10 +35,10 @@ pub enum ConsensusOnBlockVerdict  {
 
     /// Block is already in local chain.
     AlreadyIncludedInChain,
-    
+
     /// Block is already buffered in fork tree.
     AlreadyKnownInForkTree,
-    
+
     /// Block was rejected for any reason like failed validation, ConsensusRules, etc.
     Rejected(StryiCoreError),
 
@@ -55,7 +55,7 @@ pub enum ConsensusOnBlockVerdict  {
 /// It provides the only method `on_block`
 pub trait ConsensusEngine {
     type Error: Debug + Send + Error + Clone;
-    
+
     /// Method called for each new block
     fn on_block(&mut self, block: Block) -> BoxFuture<Result<ConsensusOnBlockVerdict, Self::Error>>;
 

@@ -5,7 +5,8 @@ use crate::{
     storage::UtxoStorage,
 };
 
-pub mod header;
+mod header;
+pub use header::validate_header;
 pub mod block;
 pub mod tx;
 

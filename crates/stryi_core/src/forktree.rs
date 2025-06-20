@@ -1,74 +1,150 @@
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
-use std::fmt::Debug;
 use std::time::Instant;
+
 use crate::block::{Block, BlockHash};
 use crate::error::StryiCoreError;
 
-/// Persistent map of blocks that are *off* the active chain.
-pub trait ForkStorage: Send + Sync {
-    type Err: Debug + Error + Send + 'static;
+/// A single, in‑memory container for forked blocks that are **valid**
+/// but **not** on the canonical chain at the moment.
+#[derive(Debug, Default)]
+pub struct ForkTree {
+    /// hash -> full entry
+    entries:   HashMap<BlockHash, ForkEntry>,
 
-    /// Insert or overwrite an entry.
-    fn put(&mut self, entry: ForkEntry) -> Result<(), Self::Err>;
-
-    /// Get by hash.
-    fn get(&self, hash: &BlockHash) -> Result<Option<ForkEntry>, Self::Err>;
-
-    /// Remove a branch starting from `tip_hash` and walking back
-    /// until the first hash that is *not* present in this storage.
-    fn prune_branch(&mut self, tip_hash: &BlockHash) -> Result<(), Self::Err>;
-
-    /// Return hashes of all current fork tips.
-    fn tips(&self) -> Result<Vec<BlockHash>, Self::Err>;
+    /// height -> set of hashes (helps pruning and quick stats)
+    by_height: HashMap<u64, HashSet<BlockHash>>,
 }
 
-/// Information about a forked block not in the active chain.
-/// Stores the full block and cached fork metadata without duplicating header fields.
 #[derive(Debug, Clone)]
 pub struct ForkEntry {
-    /// The block.
     pub block: Block,
-
-    /// Cumulative difficulty of the fork up to and including this block.
     pub cumulative_difficulty: u128,
-
-    /// The common known ancestor in the active chain where this fork diverged.
     pub common_ancestor: BlockHash,
-
-    /// Timestamp when this entry was first seen (for TTL pruning).
     pub timestamp: Instant,
 }
 
-/// A tree of forked chains, indexed by block hash and by height.
-/// This implementation relies on HashMaps to store forks and entries.
-// Note: Should we consider using more advanced storage for forks?
-#[derive(Debug, Default)]
-pub struct InMemoryForkTree {
-    /// Lookup for any fork entry by its block hash
-    pub entries: HashMap<BlockHash, ForkEntry>,
-    /// Index of forks by block height for quick access/pruning
-    pub by_height: HashMap<u64, HashSet<BlockHash>>,
-    //TODO: TTL for storing forks?
+impl ForkTree {
+    /// Insert or overwrite a fork entry.
+    pub fn put(&mut self, entry: ForkEntry) -> Result<(), StryiCoreError> {
+        let hash = entry.block.block_hash();
+        // if overwriting, clean up the old height index first
+        if let Some(old) = self.entries.remove(&hash) {
+            if let Some(set) = self.by_height.get_mut(&old.block.header.height) {
+                set.remove(&hash);
+                if set.is_empty() {
+                    self.by_height.remove(&old.block.header.height);
+                }
+            }
+        }
+        self.by_height
+            .entry(entry.block.header.height)
+            .or_default()
+            .insert(hash);
+        self.entries.insert(hash, entry);
+        Ok(())
+    }
+
+    /// Fetch an entry by its block hash.
+    pub fn get(&self, hash: &BlockHash) -> Option<ForkEntry> {
+        self.entries.get(hash).cloned()
+    }
+
+    /// Remove an entire side‑branch starting from `tip_hash` until we
+    /// encounter a block that is **not** stored here (i.e. ancestor in main chain).
+    pub fn prune_branch(&mut self, tip_hash: &BlockHash) {
+        let mut cur = *tip_hash;
+        while let Some(entry) = self.entries.remove(&cur) {
+            if let Some(set) = self.by_height.get_mut(&entry.block.header.height) {
+                set.remove(&cur);
+                if set.is_empty() {
+                    self.by_height.remove(&entry.block.header.height);
+                }
+            }
+            cur = entry.block.header.previous_block_hash;
+            if !self.entries.contains_key(&cur) {
+                break;
+            }
+        }
+    }
+
+    /// Return hashes that currently have **no child** inside this tree –
+    /// i.e. tips of every side‑branch we track.
+    pub fn tips(&self) -> Vec<BlockHash> {
+        let mut has_parent = HashSet::<BlockHash>::with_capacity(self.entries.len());
+        for e in self.entries.values() {
+            has_parent.insert(e.block.header.previous_block_hash);
+        }
+        self.entries
+            .keys()
+            .filter(|h| !has_parent.contains(*h))
+            .copied()
+            .collect()
+    }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::block::{BlockData, BlockHeader};
 
-impl ForkStorage for InMemoryForkTree {
-    type Err = StryiCoreError;
-
-    fn put(&mut self, entry: ForkEntry) -> Result<(), Self::Err> {
-        todo!()
+    fn make_block(parent: BlockHash, height: u64) -> Block {
+        let mut block = Block {
+            header: BlockHeader {
+                version: 1,
+                merkle_root_hash: [0u8; 32],
+                previous_block_hash: parent,
+                height,
+                difficulty_bits: 4,
+                timestamp: 0,
+                nonce: 0,
+                is_genesis: height == 0,
+            },
+            data: BlockData { transactions: vec![] },
+        };
+        block.update_merkle_root();
+        block
     }
 
-    fn get(&self, hash: &BlockHash) -> Result<Option<ForkEntry>, Self::Err> {
-        todo!()
+    fn entry(block: Block, work: u128, ancestor: BlockHash) -> ForkEntry {
+        ForkEntry {
+            block,
+            cumulative_difficulty: work,
+            common_ancestor: ancestor,
+            timestamp: Instant::now(),
+        }
     }
 
-    fn prune_branch(&mut self, tip_hash: &BlockHash) -> Result<(), Self::Err> {
-        todo!()
+    #[test]
+    fn forktree_put_get_and_tips() {
+        let mut ft = ForkTree::default();
+        let g = make_block(BlockHash::empty(), 0);
+        let a1 = make_block(g.block_hash(), 1);
+        let a2 = make_block(a1.block_hash(), 2);
+
+        ft.put(entry(a1.clone(), 100, g.block_hash())).unwrap();
+        ft.put(entry(a2.clone(), 200, g.block_hash())).unwrap();
+
+        assert!(ft.get(&a1.block_hash()).is_some());
+        assert!(ft.get(&a2.block_hash()).is_some());
+
+        let tips = ft.tips();
+        assert_eq!(tips.len(), 1);
+        assert_eq!(tips[0], a2.block_hash());
     }
 
-    fn tips(&self) -> Result<Vec<BlockHash>, Self::Err> {
-        todo!()
+    #[test]
+    fn forktree_prune_branch_removes_chain() {
+        let mut ft = ForkTree::default();
+        let g = make_block(BlockHash::empty(), 0);
+        let b1 = make_block(g.block_hash(), 1);
+        let b2 = make_block(b1.block_hash(), 2);
+
+        ft.put(entry(b1.clone(), 100, g.block_hash())).unwrap();
+        ft.put(entry(b2.clone(), 200, g.block_hash())).unwrap();
+
+        ft.prune_branch(&b2.block_hash());
+        assert!(ft.get(&b1.block_hash()).is_none());
+        assert!(ft.get(&b2.block_hash()).is_none());
+        assert!(ft.tips().is_empty());
     }
 }

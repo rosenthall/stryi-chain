@@ -1,16 +1,19 @@
 use std::sync::Arc;
 use tracing::{debug, info};
-use futures::future::BoxFuture;
+use futures::future::{ready, BoxFuture};
+use tokio::sync::{RwLock, RwLockWriteGuard};
 use crate::{
     block::Block,
     consensus::{ConsensusEngine, ConsensusRules},
 };
+use crate::block::BlockHash;
 use crate::consensus::ConsensusOnBlockVerdict;
+use crate::consensus::fork_overlay::ForkDbOverlay;
 use crate::consensus::index::ChainIndex;
 use crate::consensus::validator::BlockValidator;
 use crate::error::{StorageLayer, StryiCoreError};
-use crate::forktree::ForkStorage;
-use crate::storage::{UtxoStorage, BlockStorage, StorageStats};
+use crate::forktree::ForkTree;
+use crate::storage::{UtxoStorage, BlockStorage, StorageStats, UndoStorage};
 use crate::transactions::UtxoProcessor;
 
 #[cfg(test)]
@@ -23,9 +26,8 @@ use crate::storage::StryiInMemoryStorage;
 /// to work with any storage backend that conforms to the interface (e.g. InMemoryUtxoStorage, StryiStorage, etc.).
 /// - `FS` (Stands for Forks Storage) that implements `ForkStorage` trait. It allows engine use different backends
 ///  for storing and maintaining forks tree.
-pub struct StryiConsensusEngine<DB, FS> where
-    DB: UtxoStorage + BlockStorage + StorageStats,
-    FS: ForkStorage {
+pub struct StryiConsensusEngine<DB> where
+    DB: UtxoStorage + BlockStorage + StorageStats {
     /// Consensus rules object defining parameters like current difficulty and adjustment intervals.
     pub(crate) rules: ConsensusRules,
 
@@ -38,11 +40,12 @@ pub struct StryiConsensusEngine<DB, FS> where
     pub(crate) utxo_processor: UtxoProcessor,
 
 
-    /// Shared handle to the underlying storage.
-    ///
-    /// The engine owns only an `Arc`, so the same `DB` instance can be reused
-    /// by RPC handlers, the mempool, etc., without extra locking overhead.
-    pub(crate) db: Arc<DB>,
+    /// Shared handle to the underlying storage wrapped in an `RwLock`.
+    /// The `Arc` allows cheap cloning across subsystems, while the
+    /// `RwLock` lets concurrent readers proceed without blocking each
+    /// other and still grants exclusive access for writes when the
+    /// consensus engine needs it.
+    pub(crate) db: Arc<RwLock<DB>>,
 
     /// Lightweight in-memory index of the *active* chain.
     ///
@@ -55,10 +58,10 @@ pub struct StryiConsensusEngine<DB, FS> where
     /// Stores blocks that are valid but have **not** yet won fork-choice.
     /// Each entry remembers cumulative work and the common ancestor,
     /// allowing quick reorganisation if this branch becomes "better" than main one.
-    pub(crate) forks: FS,
+    pub(crate) forks: ForkTree,
 }
 
-impl<DB: UtxoStorage + BlockStorage + StorageStats, FS: ForkStorage> StryiConsensusEngine<DB, FS> {
+impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage> StryiConsensusEngine<DB> {
 
     /// Creates a fully wired consensus engine.
     ///
@@ -68,19 +71,18 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats, FS: ForkStorage> StryiConsen
         rules: ConsensusRules,
         block_validator: BlockValidator,
         utxo_processor: UtxoProcessor,
-        db: Arc<DB>,
-        forks: FS,
+        db: Arc<RwLock<DB>>,
     ) -> Result<Self, StryiCoreError> {
 
-        let chain_index = Self::build_chain_index(&*db).await?;
+        let chain_index = Self::build_chain_index(db.clone()).await?;
 
         Ok(Self {
             rules,
             block_validator,
             utxo_processor,
-            db,
+            db : db.clone(),
             chain_index,
-            forks,
+            forks : ForkTree::default(),
         })
     }
 
@@ -88,8 +90,11 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats, FS: ForkStorage> StryiConsen
 
     /// Walks from the stored tip back to genesis and fills `ChainIndex`.
     /// May return an error if chain refers to unknown block.
-    async fn build_chain_index(db: &DB) -> Result<ChainIndex, StryiCoreError> {
+    async fn build_chain_index(db: Arc<RwLock<DB>>) -> Result<ChainIndex, StryiCoreError> {
 
+        // Hold lock on db
+        let db = db.blocking_read();
+        
         debug!("Starting collecting chain index");
         
         let mut index = ChainIndex::default();
@@ -163,14 +168,119 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats, FS: ForkStorage> StryiConsen
         }
         total
     }
+
+
+    /// helper — cumulative work of parent + current diff bits
+    fn calc_work(&self, parent_work: u128, diff_bits: u8) -> u128 {
+        parent_work + (1u128 << diff_bits)
+    }
+
+    /// walks back from `from_hash` until it reaches `stop` (exclusive).
+    /// returns (Vec<hashes_detached>, Vec<blocks_attached>)
+    fn collect_detach_attach(&self, new_tip: &Block, lca: BlockHash) -> (Vec<BlockHash>, Vec<Block>) {
+        // collect detach list (hashes in main chain)
+        let mut detach = Vec::<BlockHash>::new();
+        {
+            let mut cur = self.chain_index.tip().unwrap().1;
+            while cur != lca {
+                detach.push(cur);
+                cur = self.chain_index.parent(&cur).expect("parent must exist");
+            }
+        }
+
+        // collect attach list from fork tree (blocks)
+        let mut attach = Vec::<Block>::new();
+        let mut walk = new_tip.clone();
+        while walk.block_hash() != lca {
+            attach.push(walk.clone());
+            walk = self
+                .forks
+                .get(&walk.header.previous_block_hash)
+                .expect("path must be in fork tree")
+                .block;
+        }
+        attach.reverse();
+        (detach, attach)
+    }
+
 }
 
 
-impl<DB : UtxoStorage + BlockStorage + StorageStats, FS : ForkStorage> ConsensusEngine for StryiConsensusEngine<DB, FS> {
+impl<DB : UtxoStorage + BlockStorage + StorageStats + UndoStorage + 'static> ConsensusEngine for StryiConsensusEngine<DB> {
     type Error = StryiCoreError;
 
     fn on_block(&mut self, block: Block) -> BoxFuture<Result<ConsensusOnBlockVerdict, Self::Error>> {
 
-        todo!()
+        let block = block.clone();
+
+        Box::pin(async move {
+
+            let hash = block.block_hash();
+
+            // Check if the block is already in main chain
+            if self.chain_index.has(&hash) {
+                return Ok(ConsensusOnBlockVerdict::AlreadyIncludedInChain);
+            }
+
+
+            // And if in fork
+            if self.forks.get(&hash).is_some() {
+                return Ok(ConsensusOnBlockVerdict::AlreadyKnownInForkTree);
+            }
+
+            // locate parent and return error if no
+            let parent = block.header.previous_block_hash;
+            let parent_in_main = self.chain_index.has(&parent);
+            let parent_in_fork = self.forks.get(&parent);
+            if !parent_in_main && parent_in_fork.is_none() {
+                // orphan for now
+                return Ok(ConsensusOnBlockVerdict::Rejected(StryiCoreError::other("Unknown parent.")));
+            }
+
+
+
+            // Choose correct db overlay for this block
+
+            // choose overlay
+
+            let parent_work = if parent_in_main {
+                self.chain_index.work(&parent).unwrap()
+            } else {
+                parent_in_fork.as_ref().unwrap().cumulative_difficulty
+            };
+            let mut db_guard = self.db.write().await;
+            
+            // validate block with provided overlay.
+            if let Err(e) = self
+                .block_validator
+                .validate(&block, &mut *db_guard)
+                .await
+            {
+                return Ok(ConsensusOnBlockVerdict::Rejected(e));
+            }
+            
+            
+            // cumulative work for this block
+            let cum_work = self.calc_work(parent_work, block.header.difficulty_bits);
+
+
+
+            // direct extension path
+            // let main_tip_hash = self.chain_index.tip().unwrap().1;
+            // if parent_in_main && parent == main_tip_hash {
+            //     self.db
+            //         .put_block(&block)
+            //         .await
+            //         .map_err(|e| StryiCoreError::storage(StorageLayer::Block, format!("{e:?}")))?;
+            //     self.chain_index.insert(&block, cum_work);
+            //     return Ok(ConsensusOnBlockVerdict::Applied { new_chain_complexity: cum_work as u64 });
+            // }
+            
+            // TODO: Finish the `on_block` ASAP
+
+
+            Err(Self::Error::other("unimplemented"))
+        })
+
     }
 }

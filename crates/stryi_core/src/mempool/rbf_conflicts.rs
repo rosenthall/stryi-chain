@@ -103,7 +103,6 @@ impl RbfConflictResolver {
     /// - `load_factor`: current mempool load factor.
     ///
     /// Returns Ok(()) if replacement is allowed, otherwise returns a ConflictError.
-
     pub fn resolve_conflicts(
         &self,
         conflicts: &HashSet<TransactionHash>,
