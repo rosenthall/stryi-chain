@@ -8,3 +8,14 @@ members = [
     "crates/stryi_network" # Contains stryi-network, p2p and protocols high-level api.
 ]
 resolver = "3"
+
+
+[profile.dev]
+incremental = true
+codegen-units = 256
+debug = 1
+
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
