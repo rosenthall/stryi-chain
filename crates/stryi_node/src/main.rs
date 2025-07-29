@@ -1,12 +1,14 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)] // This feature was added to avoid a known bug: https://github.com/rust-lang/rust/issues/133199
 
-
 mod node;
 mod grpc;
 mod error;
 mod mining_manager;
 mod keys;
+
+/// Common middlewares for node's services
+mod middleware;
 
 /// Helper functions for generating x.509 certificates for node's services
 mod tls;
@@ -16,7 +18,7 @@ mod config;
 
 /// Command-line overrides for node configuration.
 mod cli;
-
+mod http;
 
 use std::error::Error;
 use std::io::{ErrorKind, Read};
@@ -145,7 +147,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let storage = Arc::new(RwLock::new(storage));
 
 
-
     // TODO: Improve mempool configurability, make possible configure FeePolicy, RbfPolicy
     let mempool_config = MemPoolConfig::new(
         cfg.mempool_max_transactions,
@@ -172,7 +173,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             })
         })
     };
-
 
 
     let mempool = Arc::new(RwLock::new(MemPool::new(mempool_config, utxo_lookup)));
@@ -207,7 +207,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         warn!("A custom SAN list was provided, but it was empty; defaulting to `localhost`.");
         sans_vec.push("localhost");
     }
-
     let tls_identity = cert_and_key_from_peer(&keypair, &sans_vec)
         .expect("Cannot generate certificate based on this peer's keypair");
 

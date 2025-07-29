@@ -8,8 +8,9 @@ use stryi_core::mempool::MemPool;
 use stryi_network::{ServiceInfo, StryiNetworkManager};
 use stryi_storage::StryiStorage;
 use crate::error::StryiNodeError;
-use crate::grpc::{ReadinessMiddlewareLayer, StryiSyncService, StryiSyncServiceConfig};
+use crate::grpc::{StryiSyncService, StryiSyncServiceConfig};
 use crate::grpc_services::blockchain_sync_server::BlockchainSyncServer;
+use crate::middleware::ReadyGateLayer;
 use crate::tls::NodeTlsIdentity;
 
 /// The main struct representing the Stryi node instance.
@@ -84,17 +85,18 @@ impl StryiChainNode {
             let svc = BlockchainSyncServer::new(service_impl);
 
             // Build the readiness layer middleware.
-            let readiness_layer = ReadinessMiddlewareLayer::new(grpc_is_ready.clone());
+            let readiness_layer = ReadyGateLayer::new(grpc_is_ready.clone());
+            
+            // wrap it up
+            let svc = ServiceBuilder::new()
+                .layer(readiness_layer)
+                .service(svc);
 
             info!("Starting gRPC sync service on {}", &sync_service_config.address);
 
             // Start serving the sync service on the configured port
             Server::builder()
                 .tls_config(tls_config).unwrap()
-                .layer(
-                    ServiceBuilder::new()
-                        .layer(readiness_layer)
-                )
                 .add_service(svc)
                 .serve(sync_service_config.address)
                 .await
@@ -109,6 +111,7 @@ impl StryiChainNode {
             
             services_info.write().await.push(grpc_service_info);
         }
+        
         // Some more services we need (?)
 
         // network manager future

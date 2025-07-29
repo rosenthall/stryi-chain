@@ -1,28 +1,27 @@
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 use futures_util::stream;
 use tokio::sync::RwLock;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 use tonic::codegen::tokio_stream::Stream;
-use tower::{Layer, Service};
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::storage::{BlockStorage, UtxoStorage};
 use stryi_storage::{StryiStorage, StryiStorageError};
-use http::{Request as HttpRequest, Response as HttpResponse, StatusCode};
+use http::{Response as HttpResponse, StatusCode};
 use tonic::body::Body;
 use crate::grpc_services::{
-    // Some aliases to avoid overlapping with similar structs from stryi_core 
+    // Some aliases to avoid overlapping with similar structs from stryi_core
     Block as PbBlock,
     BlockHeader as PbBlockHeader,
     ChainInfo as PbChainInfo,
     BlockHeightRange, BlockHashList, SerializedBlockBody
 };
+use crate::grpc_services::blockchain_sync_server::BlockchainSyncServer;
+use crate::middleware::NotReadyResponder;
 
-
-/// Implementation of grpc sync protocol, see protos/sync.proto
+/// Implementation of grpc sync protocol, see proto/sync.proto
 #[derive(Clone)]
 pub struct StryiSyncService<DB>
 where DB:
@@ -39,7 +38,7 @@ where DB:
 pub struct StryiSyncServiceConfig {
 
     pub(crate) address : SocketAddr,
-    
+
     /// Name of this exact chain and network, e.g `testnet`, `stryichain`, whatever
     pub(crate) chain_name: String,
 
@@ -51,105 +50,23 @@ pub struct StryiSyncServiceConfig {
 }
 
 
-/// A layer that adds "readiness" checking to any service.
-/// `is_ready`=false means the service will return a UNAVAILABLE response.
-/// You can later set `is_ready` to `true` to let requests pass through.
-#[derive(Debug, Clone, Default)]
-pub struct ReadinessMiddlewareLayer {
-    is_ready : Arc<RwLock<bool>>,
-}
 
-impl ReadinessMiddlewareLayer {
-    pub fn new(shared_flag: Arc<RwLock<bool>>) -> Self {
-        ReadinessMiddlewareLayer {
-            is_ready: shared_flag,
-        }
-    }
-}
-
-
-impl<S> Layer<S> for ReadinessMiddlewareLayer {
-    type Service = ReadinessMiddleware<S>;
-
-
-    /// Wraps the given service `S` in a `ReadinessMiddleware`, injecting
-    /// an Arc<RwLock<bool>> to track whether the node is "ready."
-    fn layer(&self, service: S) -> Self::Service {
-        ReadinessMiddleware {
-            inner: service,
-            is_ready: self.is_ready.clone(), 
-        }
-    }
-}
-
-/// A pinned, boxed future type alias.
-type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
-/// The middleware struct itself, holding the inner service and
-/// a shared readiness state.
-#[derive(Debug, Clone)]
-pub struct ReadinessMiddleware<S> {
-    /// The underlying service we’re wrapping.
-    pub inner: S,
-    /// A shared boolean indicating whether this node is ready to serve requests.
-    pub is_ready: Arc<RwLock<bool>>,
-}
-
-impl<S, ReqBody> Service<HttpRequest<ReqBody>> for ReadinessMiddleware<S>
+// Implement `UnreadyServiceResponder` so sync service will properly answer even if not ready
+impl<T> NotReadyResponder for BlockchainSyncServer<T>
 where
+    T: Send + Sync + 'static, {
+    type NotReadyResponse = HttpResponse<Body>;
 
-    // The inner service must produce `HttpResponse<Body>` to match our short-circuit response.
-    S: Service<HttpRequest<ReqBody>, Response = HttpResponse<Body>> + Clone + Send + 'static,
-    // The future from the inner service must be `Send` + 'static.
-    S::Future: Send + 'static,
-    // The request body must be `Send` + 'static.
-    ReqBody: Send + 'static,
-{
-    // just use the same response and error types
-    type Response = S::Response;
-    type Error = S::Error;
-    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
+    fn not_ready(&self) -> Self::NotReadyResponse {
 
-
-    /// Forwards readiness checks to the inner service's readiness.
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
-    }
-
-    /// The core call method: if `is_ready` is false, return an UNAVAILABLE. Otherwise, call `inner`
-    fn call(&mut self, req: HttpRequest<ReqBody>) -> Self::Future {
-        let clone_inner = self.inner.clone();
-        let mut inner = std::mem::replace(&mut self.inner, clone_inner);
-        let readiness_flag = self.is_ready.clone();
-
-        Box::pin(async move {
-            
-            // check the flag
-            let ready = {
-                let guard = readiness_flag.read().await;
-                *guard
-            };
-
-            // if not ready - return UNAVAILABLE
-            if !ready {
-                
-                // Construct a gRPC "UNAVAILABLE" error response
-                let grpc_error = tonic::codegen::http::Response::builder()
-                    .status(StatusCode::OK) // gRPC specs typically use 200 OK here, and rely on the grpc-status header
-                    .header("content-type", "application/grpc")
-                    .header("grpc-status", "14") // 14 is "UNAVAILABLE" per https://github.com/grpc/grpc/blob/master/doc/statuscodes.md
-                    .header("grpc-message", "Node is not synchronized yet. Try again later")
-                    .body(Body::empty())
-                    .unwrap();
-
-                return Ok(grpc_error);
-
-            }
-
-            // If ready, delegate the request to the underlying service.
-            let response = inner.call(req).await?;
-            Ok(response)
-        })
+        // Construct a gRPC "UNAVAILABLE" error response
+        tonic::codegen::http::Response::builder()
+            .status(StatusCode::OK) // gRPC specs typically use 200 OK here, and rely on the grpc-status header
+            .header("content-type", "application/grpc")
+            .header("grpc-status", "14") // 14 is "UNAVAILABLE" per https://github.com/grpc/grpc/blob/master/doc/statuscodes.md
+            .header("grpc-message", "Node is not synchronized yet. Try again later")
+            .body(Body::empty())
+            .unwrap()
     }
 }
 
@@ -191,7 +108,7 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync for StryiSyncS
         let end_height   = params.end_height;
 
         // Enforce max range
-        let max = self.config.max_blocks_range_per_request as u64;
+         let max = self.config.max_blocks_range_per_request as u64;
         let actual_end = std::cmp::min(end_height, start_height + max);
 
         let storage = self.storage.clone();
