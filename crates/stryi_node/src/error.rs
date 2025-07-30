@@ -16,13 +16,14 @@ pub enum StryiNodeError {
 
     #[error(transparent)]
     Pkcs8(#[from] pkcs8::Error),
-    
+
+    #[error("Got http server error : {0}")]
+    HttpServer(String),
     
     // fallback / misc
     #[error("unexpected error: {0}")]
     Other(String),
 }
-
 
 
 impl StryiNodeError {

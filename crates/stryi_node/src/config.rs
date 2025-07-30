@@ -36,6 +36,10 @@ pub struct NodeConfig {
     pub sync_protocol_version: u32,
     pub sync_max_blocks_per_request: usize,
 
+    /* http service */
+    pub http_service_address: String,
+    pub http_service_version: u32,
+    
     /* keys */
     pub peer_key_path: String,
 
@@ -66,6 +70,9 @@ impl Default for NodeConfig {
             sync_protocol_version: 1,
             sync_max_blocks_per_request: 100,
 
+            http_service_address: "0.0.0.0:5556".to_string(),
+            http_service_version: 1,
+            
             peer_key_path: "/var/lib/stryi_chain/peer.stryi_keys".into(),
 
             tls_sans: vec!["localhost".into()],

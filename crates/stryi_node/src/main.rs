@@ -18,6 +18,8 @@ mod config;
 
 /// Command-line overrides for node configuration.
 mod cli;
+
+/// High-level http api for users of the node.
 mod http;
 
 use std::error::Error;
@@ -46,6 +48,8 @@ use crate::node::StryiChainNode;
 use crate::tls::cert_and_key_from_peer;
 use crate::config::NodeConfig;
 use crate::error::StryiNodeError;
+use crate::http::StryiHttpServiceConfig;
+use crate::middleware::ReadyFlag;
 
 pub(crate) mod grpc_services {
     tonic::include_proto!("stryi.sync");
@@ -129,9 +133,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let sync_service_config = StryiSyncServiceConfig {
         address: cfg.grpc_sync_address.parse()?,
-        chain_name:  cfg.chain_name,
+        chain_name:  cfg.chain_name.to_string(),
         protocol_version: cfg.sync_protocol_version as usize,
         max_blocks_range_per_request: cfg.sync_max_blocks_per_request,
+    };
+
+    let http_service_config = StryiHttpServiceConfig {
+        address: cfg.http_service_address.parse()?,
+        chain_name: cfg.chain_name,
+        api_version: cfg.http_service_version,
     };
 
     // Try to get genesis config by path
@@ -245,7 +255,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         services_info,
         tls_identity,
         sync_service_config,
-        grpc_is_ready: Arc::new(RwLock::new(false)),
+        http_service_config,
+        
+        // These are temporary always set to true until I'll finish node's db synchronization 
+        grpc_is_ready: ReadyFlag::new(RwLock::new(true)),
+        http_is_ready: ReadyFlag::new(RwLock::new(true)),
     };
 
     node.start_services().await?;

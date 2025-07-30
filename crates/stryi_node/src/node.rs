@@ -10,7 +10,8 @@ use stryi_storage::StryiStorage;
 use crate::error::StryiNodeError;
 use crate::grpc::{StryiSyncService, StryiSyncServiceConfig};
 use crate::grpc_services::blockchain_sync_server::BlockchainSyncServer;
-use crate::middleware::ReadyGateLayer;
+use crate::http::StryiHttpServiceConfig;
+use crate::middleware::{ReadyFlag, ReadyGateLayer};
 use crate::tls::NodeTlsIdentity;
 
 /// The main struct representing the Stryi node instance.
@@ -37,8 +38,14 @@ pub struct StryiChainNode {
     /// Configuration for the gRPC-based synchronization service.
     pub(crate) sync_service_config: StryiSyncServiceConfig,
 
+    /// Configuration for high-level http api service for node's users.
+    pub(crate) http_service_config : StryiHttpServiceConfig,
+    
     /// The readiness flag used by the gRPC middleware.
-    pub(crate) grpc_is_ready: Arc<RwLock<bool>>,
+    pub(crate) grpc_is_ready: ReadyFlag,
+
+    /// The readiness flag used by the http middleware.
+    pub(crate) http_is_ready: ReadyFlag,
 }
 
 impl StryiChainNode {
@@ -60,14 +67,32 @@ impl StryiChainNode {
         // Destructure to avoid partial borrows
         // After this - there will be no more "self" itself, but just all the fields/values separated
         let StryiChainNode {
-            mempool,
+            mempool: _mempool, // TODO: Make mempool mempoling or something 
             storage,
             mut network_manager,
             services_info,
             tls_identity,
             sync_service_config,
+            http_service_config,
             grpc_is_ready,
+            http_is_ready
         } = self;
+
+
+        // clone once per task
+        let storage_for_http = Arc::clone(&storage);
+        let storage_for_grpc = Arc::clone(&storage);
+        
+        // http server future
+        let http_fut = async {
+            
+            crate::http::start_http_server(
+                storage_for_http,
+                http_service_config, 
+                http_is_ready
+            ).await
+        };
+        
         
         // gRPC server future
         let grpc_fut = async {
@@ -75,7 +100,7 @@ impl StryiChainNode {
             // Create the sync service instance
             let service_impl = StryiSyncService {
                 config: sync_service_config.clone(),
-                storage,
+                storage: storage_for_grpc,
             };
 
             let tonic_identity = tonic::transport::Identity::from_pem(&tls_identity.cert_pem, &tls_identity.key_pem);
@@ -117,11 +142,10 @@ impl StryiChainNode {
         // network manager future
         let network_fut = network_manager.run_loop();
 
-        // run both concurrently
-        let (grpc_res, _net_res) = join!(grpc_fut, network_fut);
-
-        grpc_res?;
-
+        // run all three concurrently
+        let (grpc_res, _net_res, _http_res) = join!(grpc_fut, network_fut, http_fut);
+        grpc_res?;        // propagate gRPC error if any
+        
         Ok(())
     }
 }
