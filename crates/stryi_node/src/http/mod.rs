@@ -7,8 +7,9 @@
 mod model;
 mod misc;
 
-use crate::http::misc::__path_get_version;
-use crate::http::model::VersionBody;
+use crate::http::misc::__path_get_nodestate;
+use crate::http::model::NodeStateBody;
+use crate::http::misc::{get_nodestate};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use axum::body::Body;
@@ -22,15 +23,14 @@ use tower::ServiceBuilder;
 use tracing::info;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
-use stryi_core::storage::{BlockStorage, UtxoStorage};
+use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 use crate::error::StryiNodeError;
-use crate::http::misc::get_version;
 use crate::middleware::{NotReadyResponder, ReadyFlag, ReadyGateLayer};
 
 #[derive(Clone)]
 pub struct StryiHttpService<DB>
 where DB:
-     BlockStorage + UtxoStorage
+BlockStorage + UtxoStorage + StorageStats
 {
     pub(crate) config : StryiHttpServiceConfig,
 
@@ -69,13 +69,13 @@ where
     }
 }
 
-/// Aggregate the spec.
+/// Aggregate the spec for http server.
 #[derive(OpenApi)]
-#[openapi(paths(get_version), components(schemas(VersionBody)))]
+#[openapi(
+    paths(get_nodestate),
+    components(schemas(NodeStateBody)))
+]
 struct ApiDoc;
-
-
-
 
 
 /// Spawn the HTTP API. All routes stay behind `ReadyGateLayer` until the
@@ -86,7 +86,7 @@ pub async fn start_http_server<DB>(
     ready: ReadyFlag,
 ) -> Result<(), StryiNodeError>
 where
-    DB: BlockStorage + UtxoStorage + Send + Sync + 'static,
+    DB: BlockStorage + UtxoStorage + StorageStats +  Send + Sync + 'static,
 {
     // shared service state
     let svc = StryiHttpService {
@@ -96,10 +96,10 @@ where
 
 
     let state = Arc::new(svc);
-    
+
     // build the router
     let app = Router::new()
-        .route("/version", get(get_version::<DB>))
+        .route("/nodestate", get(get_nodestate::<DB>))
         .merge(SwaggerUi::new("/swagger-ui")
             .url("/api-docs/openapi.json", ApiDoc::openapi()))
         .with_state(state)

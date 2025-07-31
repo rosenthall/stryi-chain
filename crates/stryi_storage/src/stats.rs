@@ -1,7 +1,10 @@
 use bincode::config::standard;
 use fjall::{UserKey, UserValue};
+use futures::future;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use stryi_core::block::BlockHash;
+use stryi_core::storage::StorageStats;
 use crate::{StryiStorage, StryiStorageError};
 
 /// Struct with only purpose for storing current storage's stats
@@ -75,6 +78,38 @@ impl StryiStorage {
 
 }
 
+
+impl StorageStats for StryiStorage {
+    type StorageError = StryiStorageError;
+
+    fn tip(&self) -> BoxFuture<'_, Result<(u64, BlockHash), Self::StorageError>> {
+        Box::pin(future::ready(
+            self.get_current_storage_state()
+                .map(|s| (s.latest_block.0 as u64, s.latest_block.1)),
+        ))
+    }
+
+    fn last_updated(&self) -> BoxFuture<'_, Result<u64, Self::StorageError>> {
+        Box::pin(future::ready(
+            self.get_current_storage_state()
+                .map(|s| s.last_update_time as u64),
+        ))
+    }
+
+    fn block_count(&self) -> BoxFuture<'_, Result<u64, Self::StorageError>> {
+        Box::pin(future::ready(
+            self.get_current_storage_state()
+                .map(|s| s.blocks_count as u64),
+        ))
+    }
+
+    fn chain_difficulty(&self) -> BoxFuture<'_, Result<u128, Self::StorageError>> {
+        Box::pin(future::ready(
+            self.get_current_storage_state()
+                .map(|s| s.chain_difficulty as u128),
+        ))
+    }
+}
 
 
 #[cfg(test)]
