@@ -1,25 +1,53 @@
-use axum::extract::State;
+use axum::{extract::State, Json};
+use http::StatusCode;
 use std::sync::Arc;
-use axum::Json;
-use stryi_core::storage::{BlockStorage, UtxoStorage};
-use crate::http::model::VersionBody;
-use crate::http::StryiHttpService;
+use tracing::error;
 
-/// `/version` endpoint handler
+use crate::http::{model::NodeStateBody, StryiHttpService};
+use stryi_core::storage::{BlockStorage, UtxoStorage, StorageStats};
+
+/// `/nodestate` – one-stop snapshot of the node’s current position in the chain.
 #[utoipa::path(
     get,
-    path = "/version",
+    path = "/nodestate",
     responses(
-        (status = 200, description = "Current HTTP API version", body = VersionBody)
+        (status = 200, description = "Current node state", body = NodeStateBody),
+        (status = 500, description = "Internal storage error")
     )
 )]
-pub async fn get_version<DB>(
+pub async fn get_nodestate<DB>(
     State(svc): State<Arc<StryiHttpService<DB>>>,
-) -> Json<VersionBody>
+) -> Result<Json<NodeStateBody>, StatusCode>
 where
-    DB: BlockStorage + UtxoStorage + Send + Sync + 'static,
+    DB: BlockStorage + UtxoStorage + StorageStats + Send + Sync + 'static,
 {
-    Json(VersionBody {
-        version: svc.config.api_version,
-    })
+    let store = svc.storage.read().await;
+
+    // Helper macro to reduce boilerplate for each stat call.
+    macro_rules! fetch {
+        ($expr:expr, $label:literal) => {
+            match $expr.await {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("StorageStats::{} failed: {}", $label, e);
+                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            }
+        };
+    }
+
+    let (height, hash)  = fetch!(store.tip(), "tip");
+    let last_update= fetch!(store.last_updated(),  "last_updated");
+    let total_difficulty= fetch!(store.chain_difficulty(), "chain_difficulty");
+
+    let body = NodeStateBody {
+        chain_name:        svc.config.chain_name.clone(),
+        api_version:       svc.config.api_version,
+        height,
+        latest_block_hash: hash.to_string(),
+        total_difficulty,
+        last_update_time:  last_update,
+    };
+
+    Ok(Json(body))
 }
