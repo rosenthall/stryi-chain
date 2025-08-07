@@ -3,6 +3,8 @@ use tokio::join;
 use tokio::sync::RwLock;
 use tonic::transport::{Server, ServerTlsConfig};
 use tower::ServiceBuilder;
+use tower_http::compression::CompressionLayer;
+use tower_http::trace::TraceLayer;
 use tracing::info;
 use stryi_core::mempool::MemPool;
 use stryi_network::{ServiceInfo, StryiNetworkManager};
@@ -88,7 +90,7 @@ impl StryiChainNode {
             
             crate::http::start_http_server(
                 storage_for_http,
-                http_service_config, 
+                http_service_config.clone(),
                 http_is_ready
             ).await
         };
@@ -122,21 +124,37 @@ impl StryiChainNode {
             // Start serving the sync service on the configured port
             Server::builder()
                 .tls_config(tls_config).unwrap()
+                // Compress responses
+                .layer(CompressionLayer::new())
+                // High level logging of requests and responses
+                .layer(TraceLayer::new_for_grpc())
                 .add_service(svc)
                 .serve(sync_service_config.address)
                 .await
         };
 
 
-        // Register gRPC service in ServiceInfo's
+        // Register gRPC and HTTP service in ServiceInfos
         {
-            let grpc_service_info = ServiceInfo::new("grpc-sync".to_owned(),
-                                                     sync_service_config.address,
-                                                     1);
-            
+            let grpc_service_info = ServiceInfo::new(
+                "grpc-sync".to_owned(),
+                sync_service_config.address,
+                sync_service_config.protocol_version as u32
+            );
+
+
+            let http_service_info = ServiceInfo::new(
+                "http".to_owned(),
+                http_service_config.address,
+                http_service_config.api_version
+            );
+
+
             services_info.write().await.push(grpc_service_info);
+            services_info.write().await.push(http_service_info);
         }
-        
+
+
         // Some more services we need (?)
 
         // network manager future

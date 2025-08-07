@@ -2,7 +2,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 
-/// Payload returned by `/nodestate`.
+/// Payload returned by `/api/nodestate`.
 #[derive(Serialize, ToSchema)]
 pub struct NodeStateBody {
     /// Human-readable name of the network (e.g. “devnet”, “mainnet”).

@@ -43,6 +43,7 @@ http-body = "1.0.1"
 axum = { version = "0.8.4" }
 utoipa = "5.4.0"
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+tower-http = { version = "0.6.6", features = ["compression-gzip", "trace", "set-header", "validate-request"] }
 
 [dev-dependencies]
 x509-parser = "0.17.0"

@@ -9,7 +9,7 @@ use stryi_core::storage::{BlockStorage, UtxoStorage, StorageStats};
 /// `/nodestate` – one-stop snapshot of the node’s current position in the chain.
 #[utoipa::path(
     get,
-    path = "/nodestate",
+    path = "/api/nodestate",
     responses(
         (status = 200, description = "Current node state", body = NodeStateBody),
         (status = 500, description = "Internal storage error")

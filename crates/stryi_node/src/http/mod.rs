@@ -6,6 +6,9 @@
 
 mod model;
 mod misc;
+mod tx;
+mod error;
+mod blocks;
 
 use crate::http::misc::__path_get_nodestate;
 use crate::http::model::NodeStateBody;
@@ -20,6 +23,9 @@ use http::StatusCode;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tower::ServiceBuilder;
+use tower_http::compression::CompressionLayer;
+use tower_http::trace::TraceLayer;
+use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::info;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -29,15 +35,12 @@ use crate::middleware::{NotReadyResponder, ReadyFlag, ReadyGateLayer};
 
 #[derive(Clone)]
 pub struct StryiHttpService<DB>
-where DB:
-BlockStorage + UtxoStorage + StorageStats
-{
+where DB: BlockStorage + UtxoStorage + StorageStats {
     pub(crate) config : StryiHttpServiceConfig,
 
     /// Arc'd storage reference
     pub(crate) storage : Arc<RwLock<DB>>,
 }
-
 
 
 #[derive(Clone, Debug)]
@@ -97,23 +100,48 @@ where
 
     let state = Arc::new(svc);
 
+
+
+
     // build the router
     let app = Router::new()
-        .route("/nodestate", get(get_nodestate::<DB>))
-        .merge(SwaggerUi::new("/swagger-ui")
-            .url("/api-docs/openapi.json", ApiDoc::openapi()))
-        .with_state(state)
-        .layer(ReadyGateLayer::new(ready)); // readiness gate
 
-    // bind listener
-    let listener = TcpListener::bind(cfg.address)
-        .await
+
+        // -- router settings --
+        // .with_state(state)
+        // Enable responses responses
+        .layer(CompressionLayer::new())
+        // High level logging of requests and responses
+        .layer(TraceLayer::new_for_http())
+        // Readiness gate
+        .layer(ReadyGateLayer::new(ready))
+        // Only accept application/json
+        .layer(ValidateRequestHeaderLayer::accept("application/json"))
+
+
+        // -- Functional endpoints --
+
+        // docs
+        .merge(SwaggerUi::new("/api/swagger-ui")
+            .url("/api-docs/openapi.json", ApiDoc::openapi()))
+
+
+        .route("/api/nodestate", get(get_nodestate))
+
+        .with_state(state);
+
+    let listener = TcpListener::bind(cfg.address).await
         .map_err(|e| StryiNodeError::HttpServer(e.to_string()))?;
 
     info!("HTTP API listening on {}", cfg.address);
 
+
+
+
     // run server; axum::serve returns io::Result<()>
-    axum::serve(listener, ServiceBuilder::new().service(app))
+    axum::serve(listener, ServiceBuilder::new()
+        .service(app))
         .await
         .map_err(|e| StryiNodeError::HttpServer(e.to_string()))
+
 }
