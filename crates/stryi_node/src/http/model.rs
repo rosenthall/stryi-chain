@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 
@@ -25,4 +25,11 @@ pub struct NodeStateBody {
     
     
     // TODO : Consider adding more fields in NoteStateBody e.g PeerId, grpc address+port, possibly the contacts of node's owner(?)
+}
+
+/// Request to send a transaction to the node, POST `/tx` endpoint
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct SendTransactionRequest {
+    /// Raw transaction in base64-encoded format
+    pub raw_tx : String,
 }

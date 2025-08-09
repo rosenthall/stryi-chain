@@ -10,7 +10,10 @@ mod tx;
 mod error;
 mod blocks;
 
+use crate::http::model::SendTransactionRequest;
+use crate::http::tx::__path_send_tx;
 use crate::http::misc::__path_get_nodestate;
+use crate::http::error::StryiNodeHttpApiError;
 use crate::http::model::NodeStateBody;
 use crate::http::misc::{get_nodestate};
 use std::net::SocketAddr;
@@ -18,7 +21,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::response::Response;
 use axum::Router;
-use axum::routing::{get, Route};
+use axum::routing::{get, post, Route};
 use http::StatusCode;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
@@ -31,6 +34,7 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 use crate::error::StryiNodeError;
+use crate::http::tx::send_tx;
 use crate::middleware::{NotReadyResponder, ReadyFlag, ReadyGateLayer};
 
 #[derive(Clone)]
@@ -75,8 +79,8 @@ where
 /// Aggregate the spec for http server.
 #[derive(OpenApi)]
 #[openapi(
-    paths(get_nodestate),
-    components(schemas(NodeStateBody)))
+    paths(get_nodestate, send_tx),
+    components(schemas(NodeStateBody, SendTransactionRequest, StryiNodeHttpApiError)))
 ]
 struct ApiDoc;
 
@@ -97,18 +101,13 @@ where
         storage,
     };
 
-
     let state = Arc::new(svc);
-
-
-
 
     // build the router
     let app = Router::new()
 
+        // -- Router settings --
 
-        // -- router settings --
-        // .with_state(state)
         // Enable responses responses
         .layer(CompressionLayer::new())
         // High level logging of requests and responses
@@ -118,16 +117,14 @@ where
         // Only accept application/json
         .layer(ValidateRequestHeaderLayer::accept("application/json"))
 
-
         // -- Functional endpoints --
 
         // docs
         .merge(SwaggerUi::new("/api/swagger-ui")
             .url("/api-docs/openapi.json", ApiDoc::openapi()))
-
-
         .route("/api/nodestate", get(get_nodestate))
 
+        .route("/api/tx", post(send_tx))
         .with_state(state);
 
     let listener = TcpListener::bind(cfg.address).await

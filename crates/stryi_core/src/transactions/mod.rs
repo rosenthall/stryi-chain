@@ -158,9 +158,11 @@ impl Transaction {
     }
 
 
+
+    #[cfg(test)]
     /// Verifies that this transaction's recoverable signature recovers to real public key of this account.
     /// Since AccountAddress is hashed public key we will check if recovered public key hash is identical with real AccountAddress.
-    pub fn verify_transaction_author(&self, account_address: AccountAddress) -> bool {
+    fn verify_transaction_author(&self, account_address: AccountAddress) -> bool {
 
         let recovered_key = self.recover_public_key();
 
