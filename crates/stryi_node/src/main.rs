@@ -111,14 +111,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .add_directive("hyper=info".parse().unwrap())
         .add_directive("h2=info".parse().unwrap());
 
-    // Initialize tokio-console subscriber layer
-    let console_layer = console_subscriber::spawn();
 
-    tracing_subscriber::registry()
-        .with(filter_layer)
-        .with(fmt_layer)
-        .with(console_layer)
-        .init();
+    // With telemetry enabled: include the console layer
+    #[cfg(feature = "telemetry")]
+    {
+        let console_layer = console_subscriber::spawn();
+
+        tracing_subscriber::registry()
+            .with(filter_layer)
+            .with(fmt_layer)
+            .with(console_layer)
+            .init();
+    }
+
+    // Without telemetry: omit the console layer entirely
+    #[cfg(not(feature = "telemetry"))]
+    {
+        tracing_subscriber::registry()
+            .with(filter_layer)
+            .with(fmt_layer)
+            .init();
+    }
+
 
     // Initialize cfg, we use both .toml file and cli parameters for configuration
     // CLI parameters have higher priority than stryichain.toml so user may overlap values.
