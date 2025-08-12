@@ -13,7 +13,7 @@ use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 use stryi_core::transactions::Transaction;
 
 use crate::http::StryiHttpService;
-use crate::http::model::SendTransactionRequest;
+use crate::http::model::{ApiErrorBody, SendTransactionRequest};
 use crate::http::error::{StryiNodeHttpApiError, BadTxReason};
 
 
@@ -29,11 +29,21 @@ use crate::http::error::{StryiNodeHttpApiError, BadTxReason};
     tag = "transactions",
     request_body = SendTransactionRequest,
     responses(
-        // Your handler returns plain text. Document it explicitly.
-        (status = 200, description = "Transaction accepted", content_type = "text/plain", body = String, example = "Transaction accepted"),
-        // Map your domain error into a public error body for docs.
-        (status = 400, description = "Bad transaction", body = StryiNodeHttpApiError),
-        (status = 500, description = "Internal server error", body = StryiNodeHttpApiError)
+        (status = 200, description = "Transaction accepted",
+            content_type = "text/plain", body = String, example = "Transaction accepted"),
+        (status = 400, description = "Bad transaction", body = ApiErrorBody,
+            example = json!({
+                "error": "bad_transaction",
+                "message": "Invalid transaction signature.",
+                "details": { "reason": "invalid_signature" }
+            })
+        ),
+        (status = 500, description = "Internal server error", body = ApiErrorBody,
+            example = json!({
+                "error": "unexpected_error",
+                "message": "An unexpected error occurred."
+            })
+        )
     )
 )]
 pub async fn send_tx<DB>(

@@ -7,6 +7,7 @@ use std::fmt;
 use thiserror::Error;
 use utoipa::ToSchema;
 use stryi_core::address::AccountAddress;
+use stryi_core::block::{Block, BlockHash};
 use stryi_core::transactions::{OutPoint, TransactionHash};
 
 /// Minimal, structured reasons for a bad transaction.
@@ -35,11 +36,21 @@ pub enum StryiNodeHttpApiError {
         message: Option<String>,
     },
 
-    #[error("{resource} not found: {requested}")]
+    #[error("invalid identifier format for {resource_kind}. Message: {message}")]
+    #[schema(title = "InvalidResourceIdError")]
+    InvalidResourceId {
+        /// The resource type (block, transaction, account, utxo)
+        resource_kind: String,
+        /// Raw identifier provided by the client
+        requested: String,
+        /// user-friendly explanation of the error and required format
+        message: String,
+    },
+
+    #[error("Resource {resource} was not found")]
     #[schema(title = "ResourceNotFoundError")]
     ResourceNotFound {
         resource: ResourceKind,
-        requested: String,
     },
 
     // Keep string for logging at call sites; response body won’t leak it.
@@ -51,40 +62,77 @@ pub enum StryiNodeHttpApiError {
 
 
 
-/// Doc-only schema for OutPoint (txid + vout) shown in OpenAPI.
-#[derive(Serialize, Deserialize, ToSchema)]
-pub struct UtxoRefDoc {
-    /// Hex transaction id
-    #[schema(example = "9b6d1c0f1a0e4a8e9f3d2c1b0a...")]
-    pub txid: String,
-    /// Output index
-    #[schema(example = 0)]
-    pub vout: u32,
+
+/// Different values that can be used to query a block in the blockchain: hash or height.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[schema(title = "BlockIdentifier", description = "Identifier for a block in the blockchain, either by height or hash.")]
+pub enum BlockIdentifier {
+    /// Block height (u64)
+    #[schema(example = 42)]
+    Height(u64),
+
+    /// Block hash (in StryiChain's format, e.g. "Bx7e09ff05219c8e14e8ffe148a9b23a824748cfb77bf0d424f4aff4d2b5b30d73")
+    #[schema(value_type = String, example = "Bx9b6d1c0f1a0e4a8e9f3d2c1b0a000000000000000000000000000000000")]
+    Hash(BlockHash),
+}
+
+
+impl fmt::Display for BlockIdentifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BlockIdentifier::Height(h) => write!(f, "{h}"),
+            BlockIdentifier::Hash(h) => write!(f, "{h}"),
+        }
+    }
+}
+
+impl TryFrom<&str> for BlockIdentifier {
+    type Error = StryiNodeHttpApiError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        // Try height first (matches your current API semantics).
+        if let Ok(height) = value.parse::<u64>() {
+            return Ok(BlockIdentifier::Height(height));
+        }
+
+        // Try block hash next.
+        match BlockHash::from_hash_string(value) {
+            Ok(h) => Ok(BlockIdentifier::Hash(h)),
+            Err(_) => Err(StryiNodeHttpApiError::InvalidResourceId {
+                resource_kind: ResourceKind::Block(BlockIdentifier::Height(0)).as_str(),
+                requested: value.to_owned(),
+                message: "Expected block height (u64) or block hash in StryiChain's format (Bx...)".into(),
+            }),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema)]
 pub enum ResourceKind {
-    /// 'Block {height}'
-    Block(u64),
+    /// 'Block {height}' or 'Block {hash}'
+    #[schema(value_type = String, examples("Block 42", "Block Bx7e09ff05219c8e14e8ffe148a9b23a824748cfb77bf0d424f4aff4d2b5b30d73"))]
+    Block(BlockIdentifier),
 
-    /// 'Transaction {hash}' – document as string
-    #[schema(value_type = String, example = "9b6d1c0f1a0e4a8e9f3d2c1b0a...")]
+    /// 'Transaction {hash}'
+    #[schema(value_type = String, example = "Tx68e8dfa2225f7776c2f141e500bb27da09cb9e241dfc67b82573d7439ced28b2")]
     Transaction(TransactionHash),
 
-    /// 'Account @xxxxxx...yyyyyy' – document as string
-    #[schema(value_type = String, example = "@dd0ca8...d9136c")]
+    /// 'Account @xxxxxx...yyyyyy'
+    #[schema(value_type = String, example = "@14d191976ed003e7568495792286f699ad695478")]
     Account(AccountAddress),
 
-    /// 'Utxo {tx_hash}:{vout}' – document as object while keeping OutPoint at runtime
-    #[schema(value_type = String, example = "todo:todo")]
+    /// 'Utxo {tx_hash}:{vout}'
+    #[schema(value_type = String, example = "Tx68e8dfa2225f7776c2f141e500bb27da09cb9e241dfc67b82573d7439ced28b2:16")]
     Utxo(OutPoint),
 }
+
 
 impl ResourceKind {
     pub fn as_str(&self) -> String {
         match self {
-            // 'Block {height}' for blocks
-            ResourceKind::Block(height) => format!("Block {}", height),
+            // 'Block {height}' or 'Block {hash}' for blocks
+            ResourceKind::Block(identifier) => format!("Block {}", identifier),
             // 'Account {partial_hash}' for accounts
             // where partial_hash is the first 7 characters and last 6 characters of the account
             // hash, e.g. 'Account @123456...789abc'
@@ -133,7 +181,22 @@ impl StryiNodeHttpApiError {
                 });
                 (StatusCode::BAD_REQUEST, body)
             }
-            StryiNodeHttpApiError::ResourceNotFound{ resource, requested} => {
+            StryiNodeHttpApiError::InvalidResourceId { resource_kind, requested, message } => {
+
+                let body = json!({
+                    "error": "invalid_resource_id",
+                    "message": message,
+                    "details": {
+                        "resource": {
+                            "kind": resource_kind,
+                        },
+                        "requested": requested,
+                    }
+                });
+                (StatusCode::BAD_REQUEST, body)
+            }
+
+            StryiNodeHttpApiError::ResourceNotFound{ resource} => {
                 let body = json!({
                     "error": "resource_not_found",
                     "message": format!("{} was not found.", resource),
@@ -142,7 +205,6 @@ impl StryiNodeHttpApiError {
                             "kind": resource.kind_tag(),
                             "label": resource.to_string(),
                         },
-                        "requested": requested,
                     }
                 });
                 (StatusCode::NOT_FOUND, body)
@@ -198,8 +260,7 @@ mod tests {
     #[test]
     fn not_found_status_and_body() {
         let err = StryiNodeHttpApiError::ResourceNotFound {
-            resource: ResourceKind::Block(42),
-            requested: "height=42".into()
+            resource: ResourceKind::Block(BlockIdentifier::Height(42)),
         };
 
         let (status, body) = err.into_status_and_json();

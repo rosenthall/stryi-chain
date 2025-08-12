@@ -1,5 +1,22 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use utoipa::ToSchema;
+use stryi_core::block::{Block, BlockHash};
+
+
+
+
+/// Generic error body for the API, used in various endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ApiErrorBody {
+    #[schema(example = "resource_not_found")]
+    pub error: String,
+    #[schema(example = "Block 42 was not found.")]
+    pub message: String,
+    /// Variant-specific details or null.
+    #[schema(value_type = Object, nullable)]
+    pub details: Option<Value>,
+}
 
 
 /// Payload returned by `/api/nodestate`.
@@ -27,9 +44,22 @@ pub struct NodeStateBody {
     // TODO : Consider adding more fields in NoteStateBody e.g PeerId, grpc address+port, possibly the contacts of node's owner(?)
 }
 
-/// Request to send a transaction to the node, POST `/tx` endpoint
+/// Request to send a transaction to the node, POST `/api/tx` endpoint
 #[derive(Serialize, Deserialize, ToSchema)]
 pub struct SendTransactionRequest {
     /// Raw transaction in base64-encoded format
     pub raw_tx : String,
+}
+
+/// Payload returned by `/api/blocks/{height/hash)` endpoint.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[schema(title = "BlockResponse", description = "Full block including header and transactions.")]
+pub struct BlockResponse {
+    /// Hex block hash in the spec
+    #[schema(value_type = String, example = "Bx7e09ff05219c8e14e8ffe148a9b23a824748cfb77bf0d424f4aff4d2b5b30d73")]
+    pub hash: BlockHash,
+
+    /// Full block 
+    #[schema(value_type = Object)]
+    pub block: Value,
 }

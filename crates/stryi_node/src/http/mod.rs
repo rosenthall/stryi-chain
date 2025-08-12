@@ -10,9 +10,11 @@ mod tx;
 mod error;
 mod blocks;
 
+use crate::http::model::BlockResponse;
 use crate::http::model::SendTransactionRequest;
 use crate::http::tx::__path_send_tx;
 use crate::http::misc::__path_get_nodestate;
+use crate::http::blocks::__path_get_block;
 use crate::http::error::StryiNodeHttpApiError;
 use crate::http::model::NodeStateBody;
 use crate::http::misc::{get_nodestate};
@@ -79,8 +81,8 @@ where
 /// Aggregate the spec for http server.
 #[derive(OpenApi)]
 #[openapi(
-    paths(get_nodestate, send_tx),
-    components(schemas(NodeStateBody, SendTransactionRequest, StryiNodeHttpApiError)))
+    paths(get_nodestate, send_tx, get_block),
+    components(schemas(NodeStateBody, SendTransactionRequest, BlockResponse, StryiNodeHttpApiError)))
 ]
 struct ApiDoc;
 
@@ -104,6 +106,7 @@ where
     let state = Arc::new(svc);
 
     // build the router
+    // TODO: Consider using OpenApiRouter instead of regular one
     let app = Router::new()
 
         // -- Router settings --
@@ -124,7 +127,12 @@ where
             .url("/api-docs/openapi.json", ApiDoc::openapi()))
         .route("/api/nodestate", get(get_nodestate))
 
+        // TODO: Make signature and merkle_root_hash serializable as base64, not just bytes arrays for better readability
+        // TODO: Make BlockData.inputs skip serialization of no inputs
+        .route("/api/block/{param}", get(blocks::get_block))
+
         .route("/api/tx", post(send_tx))
+
         .with_state(state);
 
     let listener = TcpListener::bind(cfg.address).await
