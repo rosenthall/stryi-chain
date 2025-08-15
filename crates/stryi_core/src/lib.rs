@@ -21,7 +21,7 @@ pub mod address;
 
 /// Simple implementation of the [Merkle Tree](https://en.wikipedia.org/wiki/Merkle_tree)
 /// Provides simple api for constructing trees, generating and checking proofs
-mod merkletree;
+pub mod merkletree;
 
 /// Definition of Transaction, TransactionHash, API for signing and validating, module for checking and performing UTXOs logic.
 pub mod transactions;

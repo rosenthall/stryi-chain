@@ -312,7 +312,7 @@ impl From<Block> for PbBlock {
     fn from(block: Block) -> PbBlock {
         let header = PbBlockHeader {
             version: block.header.version as u32,
-            merkle_root_hash: block.header.merkle_root_hash.to_vec(),
+            merkle_root_hash: block.header.merkle_root_hash.to_string(),
             previous_block_hash: block.header.previous_block_hash.to_string(),
             height: block.header.height,
             difficulty_bits: block.header.difficulty_bits as u32,

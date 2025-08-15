@@ -1,17 +1,39 @@
-use blake3;
 use serde::{Deserialize, Serialize};
+use crate::hash::{Hash, HashKind};
 
-/// A 32-byte hash produced by Blake3.
-pub type MerkleHash = [u8; 32];
+/// 32-byte Merkle hash kind.
+/// The prefix chosen is "MKR" for compact human-readable form like: "MKR<hex...>".
+/// MKR stands for MerKle Root.
+/// Uses blake3 hash function.
+#[derive(Default, Eq, PartialEq, Debug, Clone, Copy, Hash)]
+pub struct MerkleHashKind;
 
-/// Computes a Blake3 hash of the given data.
-fn compute_hash(data: impl AsRef<[u8]>) -> MerkleHash {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(data.as_ref());
-    let result = hasher.finalize();
-    let mut hash = [0u8; 32];
-    hash.copy_from_slice(result.as_bytes());
-    hash
+impl HashKind for MerkleHashKind {
+    const SIZE: usize = 32;
+    const PREFIX: &'static str = "MKR";
+
+    /// Hash function using Blake3 (fixed 32-byte digest).
+    fn hash(data: &[u8]) -> [u8; Self::SIZE] {
+        let h = blake3::hash(data);
+        let mut out = [0u8; Self::SIZE];
+        out.copy_from_slice(h.as_bytes());
+        out
+    }
+}
+
+/// A 32-byte hash produced by Blake3, serialized as a human-friendly string (e.g., "MKR<hex...>")
+/// via the generic `Hash<K>` implementation.
+pub type MerkleHash = Hash<MerkleHashKind>;
+
+impl MerkleHash {
+    /// Create an explicit "empty" Merkle hash with all zeros.
+    /// Useful as a sentinel for empty blocks.
+    pub const fn empty() -> Self {
+        MerkleHash {
+            kind: MerkleHashKind,
+            data: [0u8; MerkleHashKind::SIZE],
+        }
+    }
 }
 
 /// Represents a Merkle Tree with its levels and root.
@@ -43,10 +65,14 @@ impl MerkleTree {
     pub fn new(leaves_data: &[Vec<u8>]) -> Self {
         let mut levels = Vec::new();
 
-        // Compute leaf hashes
+        // Compute leaf hashes via HashKind
         let mut current_level: Vec<MerkleHash> = leaves_data
             .iter()
-            .map(|data| compute_hash(data))
+            .map(|data| {
+                let digest = MerkleHashKind::hash(data);
+                MerkleHash::try_from(digest.as_slice())
+                    .expect("digest length must be 32")
+            })
             .collect();
 
         // Handle edge case: empty tree
@@ -73,7 +99,7 @@ impl MerkleTree {
             current_level = next_level;
         }
 
-        let root = current_level.get(0).cloned();
+        let root = current_level.first().cloned();
         MerkleTree { levels, root }
     }
 
@@ -87,12 +113,12 @@ impl MerkleTree {
     /// A new `MerkleHash` resulting from combining the two input hashes.
     fn combine_hashes(left: &MerkleHash, right: &MerkleHash) -> MerkleHash {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(left);
-        hasher.update(right);
+        hasher.update(&left.data);
+        hasher.update(&right.data);
         let result = hasher.finalize();
-        let mut hash = [0u8; 32];
-        hash.copy_from_slice(result.as_bytes());
-        hash
+
+        MerkleHash::try_from(&result.as_bytes()[..])
+            .expect("digest length must be 32")
     }
 
     /// Retrieve the root hash of the Merkle tree.
@@ -146,7 +172,12 @@ impl MerkleProof {
     /// # Returns
     /// `true` if the proof is valid and corresponds to the expected root, `false` otherwise.
     pub fn verify(&self, leaf_data: &[u8], expected_root: MerkleHash) -> bool {
-        let mut computed_hash = compute_hash(leaf_data);
+        // Recompute the leaf hash using MerkleHashKind directly.
+        let leaf_digest = MerkleHashKind::hash(leaf_data);
+        let mut computed_hash =
+            MerkleHash::try_from(leaf_digest.as_slice())
+                .expect("digest length must be 32");
+
         let mut index = self.leaf_index;
 
         // Reconstruct the path from leaf to root using sibling hashes
@@ -258,15 +289,13 @@ mod tests {
         let proof = tree.generate_proof(leaf_index).expect("Proof should be generated");
         let leaf_data = &transactions[leaf_index];
 
-        let fake_root = [0u8; 32];
+        // Explicit "all zeros" digest: build from bytes, not via hashing.
+        let fake_root = MerkleHash::try_from(&[0u8; 32][..]).expect("valid 32-byte digest");
         assert!(
             !proof.verify(leaf_data, fake_root),
             "Proof verification should fail with incorrect root hash"
         );
     }
-
-
-
 
     #[test]
     fn test_random_trees_and_proofs() {
@@ -313,18 +342,20 @@ mod tests {
                     let serialized = bincode::serde::encode_to_vec(&proof, standard())
                         .expect("Serialization should succeed");
 
-                    
                     // Deserialize the proof back
-                    let (deserialized, _decoded_bytes): (MerkleProof, _) = bincode::serde::decode_from_slice(&serialized, standard())
-                        .expect("Deserialization should succeed");
+                    let (deserialized, _decoded_bytes): (MerkleProof, _) =
+                        bincode::serde::decode_from_slice(&serialized, standard())
+                            .expect("Deserialization should succeed");
 
                     // Verify that the deserialized proof also verifies correctly
                     assert!(deserialized.verify(leaf_data, root),
                             "Deserialized proof should verify for leaf at index {} in a tree with {} leaves",
                             leaf_index, leaf_count);
                 } else {
-                    panic!("Proof generation failed for valid index {} in a tree with {} leaves",
-                           leaf_index, leaf_count);
+                    panic!(
+                        "Proof generation failed for valid index {} in a tree with {} leaves",
+                        leaf_index, leaf_count
+                    );
                 }
             }
         }

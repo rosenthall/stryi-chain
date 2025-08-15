@@ -32,7 +32,8 @@ message BlockHeightRange {
 // Requests for blocks by a list of hashes
 //---------------------------------------------
 message BlockHashList {
-  repeated string block_hashes = 1; // Repeated raw hash values in their "native" format (e.g Bx12341234...)
+  // Hashes in human-readable native format with prefix
+  repeated string block_hashes = 1;
 }
 
 //---------------------------------------------
@@ -43,23 +44,22 @@ message Block {
   SerializedBlockBody  body   = 2;
 }
 
-
 //---------------------------------------------
 // Definition of block header structure
-// Can be easily mapped to rust structure.
+// Can be easily mapped to Rust structure.
 //---------------------------------------------
 message BlockHeader {
   uint32 version             = 1;
-  bytes merkle_root_hash     = 2;
-  string previous_block_hash = 3; // using our string representation (Bx..) of block hash
+
+  string  merkle_root_hash   = 2;
+  string previous_block_hash = 3;
+
   uint64 height              = 4;
   uint32 difficulty_bits     = 5;
   uint64 timestamp           = 6;
   uint32 nonce               = 7;
   bool   is_genesis          = 8;
 }
-
-
 
 //---------------------------------------------
 // Serialized body of block.
@@ -68,7 +68,7 @@ message BlockHeader {
 // Some reasoning:
 // That's simple and allows us to reduce complexity of the network layer
 // No real need of being able to use this in different languages for now.
-// Note: As far as I know there are several bincode implementations for another languages/platforms, so it is still possible,
+// Note: As far as I know there are several bincode implementations for other languages/platforms, so it is still possible,
 // but no protobuf definitions are provided
 //---------------------------------------------
 message SerializedBlockBody {
@@ -98,6 +98,6 @@ service BlockchainSync {
 
   // Retrieve full blocks by a list of hashes (stream)
   rpc GetBlocksByHash (BlockHashList) returns (stream Block);
-  
+
   // something else?
 }

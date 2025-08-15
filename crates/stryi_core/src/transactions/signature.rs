@@ -3,35 +3,29 @@ use serde::de::{Error as DeError, Visitor};
 use std::fmt;
 use k256::ecdsa::{RecoveryId, Signature};
 use crate::error::StryiCoreError;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 /// Represents 65 bytes recoverable signature, implements serde's traits so can be easily serialized and deserialized
 pub struct StryiSignature(pub Box<[u8; 65]>);
 
-
 impl Default for StryiSignature {
     fn default() -> Self {
-        // Default value is nulls.
         Self(Box::new([0u8; 65]))
     }
 }
 
-
 impl StryiSignature {
-    // Try parse a 65-byte representation of signature:
-    // - 1 byte for recovery ID
-    // - 64 bytes for (r, s)
-    // Returns Ok((RecoveryId, Signature)) if no error happened.
+    /// Parse a 65-byte representation of signature:
+    /// - 1 byte for recovery ID
+    /// - 64 bytes for (r, s)
     pub(crate) fn extract_signature_parts(&self) -> Result<(RecoveryId, Signature), StryiCoreError> {
-        
-        // 1) Try restore recovery id from first byte
         let recovery_id = RecoveryId::try_from(self.0[0]).map_err(|_| {
             StryiCoreError::InvalidSignature {
                 msg: "Cannot restore Recovery Id from signature.".to_string(),
             }
         })?;
 
-        // 2) construct Signature object from rest of StryiSignature
         let sig_bytes = &self.0[1..];
         let signature = Signature::from_slice(sig_bytes).map_err(|_| {
             StryiCoreError::InvalidSignature {
@@ -43,15 +37,13 @@ impl StryiSignature {
     }
 }
 
-
-
 impl Serialize for StryiSignature {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        // Serialize the inner array as bytes
-        serializer.serialize_bytes(self.0.as_slice())
+        let encoded = STANDARD.encode(self.0.as_slice());
+        serializer.serialize_str(&encoded)
     }
 }
 
@@ -61,34 +53,23 @@ impl<'de> Visitor<'de> for StryiSignatureVisitor {
     type Value = StryiSignature;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a 65-byte signature")
+        formatter.write_str("a base64-encoded 65-byte signature string")
     }
 
-    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
     where
         E: DeError,
     {
-        if v.len() != 65 {
-            return Err(DeError::invalid_length(v.len(), &self));
+        let decoded = STANDARD
+            .decode(v)
+            .map_err(|_| DeError::custom("Invalid base64 for StryiSignature"))?;
+
+        if decoded.len() != 65 {
+            return Err(DeError::invalid_length(decoded.len(), &self));
         }
 
-        // Convert slice to a fixed-size array
         let mut arr = [0u8; 65];
-        arr.copy_from_slice(v);
-        Ok(StryiSignature(Box::new(arr)))
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: serde::de::SeqAccess<'de>,
-    {
-        let mut arr = [0u8; 65];
-        for i in 0..65 {
-            arr[i] = match seq.next_element()? {
-                Some(val) => val,
-                None => return Err(DeError::invalid_length(i, &self)),
-            };
-        }
+        arr.copy_from_slice(&decoded);
         Ok(StryiSignature(Box::new(arr)))
     }
 }
@@ -98,10 +79,9 @@ impl<'de> Deserialize<'de> for StryiSignature {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_bytes(StryiSignatureVisitor)
+        deserializer.deserialize_str(StryiSignatureVisitor)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -110,18 +90,17 @@ mod tests {
 
     #[test]
     fn serialize_deserialize_signature() {
-        // Create a StryiSignature with dummy data (65 bytes of value 42)
         let original_signature = StryiSignature(Box::new([42u8; 65]));
 
-        // Serialize the signature to a JSON string
         let serialized = serde_json::to_string(&original_signature)
             .expect("Serialization should succeed");
 
-        // Deserialize the JSON string back into a StryiSignature
-        let deserialized_signature: StryiSignature = serde_json::from_str(&serialized)
+        println!("Serialized: {}", serialized);
+        assert!(serialized.starts_with("\"") && serialized.ends_with("\""));
+
+        let deserialized: StryiSignature = serde_json::from_str(&serialized)
             .expect("Deserialization should succeed");
 
-        // Assert that the original and deserialized signatures are identical
-        assert_eq!(original_signature, deserialized_signature);
+        assert_eq!(original_signature, deserialized);
     }
 }

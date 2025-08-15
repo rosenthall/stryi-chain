@@ -97,6 +97,6 @@ impl NodeConfig {
 
         figment
             .extract()
-            .map_err(|e| StryiNodeError::other(e))
+            .map_err(StryiNodeError::other)
     }
 }

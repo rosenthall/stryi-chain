@@ -161,7 +161,7 @@ impl Block {
 
         let tree = MerkleTree::new(&leaves_data);
         tree.root_hash()
-            .unwrap_or([0u8; 32]) // handle empty block or error case
+            .unwrap_or(MerkleHash::empty()) // handle empty block or error case
     }
 
     /// Calculates the block hash.

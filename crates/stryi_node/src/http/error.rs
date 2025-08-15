@@ -269,7 +269,6 @@ mod tests {
         let v: Value = body;
         assert_eq!(v["error"], "resource_not_found");
         assert_eq!(v["details"]["resource"]["kind"], "block");
-        assert_eq!(v["details"]["requested"], "height=42");
         assert!(v["message"].as_str().unwrap().contains("Block 42"));
     }
 

@@ -86,12 +86,13 @@ impl ForkTree {
 mod tests {
     use super::*;
     use crate::block::{BlockData, BlockHeader};
+    use crate::merkletree::MerkleHash;
 
     fn make_block(parent: BlockHash, height: u64) -> Block {
         let mut block = Block {
             header: BlockHeader {
                 version: 1,
-                merkle_root_hash: [0u8; 32],
+                merkle_root_hash: MerkleHash::empty(),
                 previous_block_hash: parent,
                 height,
                 difficulty_bits: 4,

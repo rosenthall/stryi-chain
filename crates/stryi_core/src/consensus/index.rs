@@ -150,6 +150,7 @@ impl ChainIndex {
 
 #[cfg(test)]
 mod tests {
+    use crate::merkletree::MerkleHash;
     use super::*;
     use crate::block::{BlockData, BlockHeader};
 
@@ -157,7 +158,7 @@ mod tests {
         let mut block = Block {
             header: BlockHeader {
                 version: 1,
-                merkle_root_hash: [0u8; 32],
+                merkle_root_hash: MerkleHash::empty(),
                 previous_block_hash: parent,
                 height,
                 difficulty_bits,

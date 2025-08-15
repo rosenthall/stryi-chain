@@ -233,13 +233,14 @@ pub(crate) mod tests {
     use tempfile::TempDir;
     use fjall::{Config, PartitionCreateOptions};
     use stryi_core::block::{Block, BlockHeader};
+    use stryi_core::merkletree::MerkleHash;
 
     /// Helper function to create a test block with given height
     fn create_test_block(height: usize) -> Block {
         Block {
             header: BlockHeader {
                 version: 1,
-                merkle_root_hash: [0u8; 32],
+                merkle_root_hash: MerkleHash::empty(),
                 previous_block_hash: BlockHash::empty(),
                 height: height as u64,
                 difficulty_bits: 1,

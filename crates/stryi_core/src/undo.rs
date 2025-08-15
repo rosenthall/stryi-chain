@@ -54,12 +54,12 @@ where
     for input in &tx.data.inputs {
         let utxo = utxo_lookup(&input.previous_output)
             .await
-            .ok_or_else(|| StryiCoreError::TxMissingUtxo {
-                txid: input.previous_output.txid.clone(),
+            .ok_or(StryiCoreError::TxMissingUtxo {
+                txid: input.previous_output.txid,
                 vout: input.previous_output.vout,
             })?;
 
-        spent.insert((input.previous_output.clone(), utxo));
+        spent.insert((input.previous_output, utxo));
     }
     Ok(())
 }
@@ -80,6 +80,7 @@ fn process_outputs(tx: &Transaction, created: &mut HashSet<OutPoint>) {
 mod tests {
     use crate::address::AccountAddress;
     use crate::block::{BlockData, BlockHash, BlockHeader};
+    use crate::merkletree::MerkleHash;
     use crate::transactions::{TransactionData, TransactionHash, TransactionIn, TransactionKind, TransactionOut};
     use super::*;
 
@@ -88,11 +89,11 @@ mod tests {
         // Create test data
         let dummy_txid = TransactionHash::new(&[1u8; 32]);
         let dummy_outpoint = OutPoint {
-            txid: dummy_txid.clone(),
+            txid: dummy_txid,
             vout: 0,
         };
         let dummy_utxo = UTXO {
-            txid: dummy_txid.clone(),
+            txid: dummy_txid,
             vout: 0,
             value: 1000,
             owner: AccountAddress::new(&[2u8; 20]),
@@ -103,9 +104,7 @@ mod tests {
 
         // Define async lookup closure - now using clone inside async block
         let lookup = |op: &OutPoint| {
-            let op = op.clone();  // Clone the input parameter
-            let dummy_outpoint = dummy_outpoint.clone();
-            let dummy_utxo = dummy_utxo.clone();
+            let op = *op;  // Clone the input parameter
             async move {
                 if op == dummy_outpoint {
                     Some(dummy_utxo)
@@ -122,18 +121,18 @@ mod tests {
 
         // Verify spent UTXOs
         assert!(
-            undo.spent_utxos.contains(&(dummy_outpoint.clone(), dummy_utxo.clone())),
+            undo.spent_utxos.contains(&(dummy_outpoint, dummy_utxo)),
             "Spent UTXO should be recorded"
         );
 
         // Verify created outpoints
         let txid = block.data.transactions[0].data.hash();
         let expected_outpoint0 = OutPoint {
-            txid: txid.clone(),
+            txid,
             vout: 0,
         };
         let expected_outpoint1 = OutPoint {
-            txid: txid.clone(),
+            txid: txid,
             vout: 1,
         };
 
@@ -154,7 +153,7 @@ mod tests {
     async fn test_create_undo_missing_utxo() {
         let dummy_txid = TransactionHash::new(&[5u8; 32]);
         let missing_outpoint = OutPoint {
-            txid: dummy_txid.clone(),
+            txid: dummy_txid,
             vout: 0,
         };
 
@@ -181,7 +180,7 @@ mod tests {
     // Helper function to create test block
     fn create_test_block(input_outpoint: &OutPoint) -> Block {
         let tx_in = TransactionIn {
-            previous_output: input_outpoint.clone(),
+            previous_output: *input_outpoint,
             sequence: 0,
         };
 
@@ -209,7 +208,7 @@ mod tests {
         Block {
             header: BlockHeader {
                 version: 1,
-                merkle_root_hash: [0u8; 32],
+                merkle_root_hash: MerkleHash::empty(),
                 previous_block_hash: BlockHash::empty(),
                 height: 0,
                 difficulty_bits: 1,

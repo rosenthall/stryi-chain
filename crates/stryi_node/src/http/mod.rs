@@ -127,7 +127,6 @@ where
             .url("/api-docs/openapi.json", ApiDoc::openapi()))
         .route("/api/nodestate", get(get_nodestate))
 
-        // TODO: Make signature and merkle_root_hash serializable as base64, not just bytes arrays for better readability
         // TODO: Make BlockData.inputs skip serialization of no inputs
         .route("/api/block/{param}", get(blocks::get_block))
 
