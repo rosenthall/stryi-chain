@@ -8,7 +8,6 @@ use crate::{
 };
 use crate::block::BlockHash;
 use crate::consensus::ConsensusOnBlockVerdict;
-use crate::consensus::fork_overlay::ForkDbOverlay;
 use crate::consensus::index::ChainIndex;
 use crate::consensus::validator::BlockValidator;
 use crate::error::{StorageLayer, StryiCoreError};
@@ -27,7 +26,7 @@ use crate::storage::StryiInMemoryStorage;
 /// - `FS` (Stands for Forks Storage) that implements `ForkStorage` trait. It allows engine use different backends
 ///  for storing and maintaining forks tree.
 pub struct StryiConsensusEngine<DB> where
-    DB: UtxoStorage + BlockStorage + StorageStats {
+    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage {
     /// Consensus rules object defining parameters like current difficulty and adjustment intervals.
     pub(crate) rules: ConsensusRules,
 
@@ -199,10 +198,10 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage> StryiConsensus
                 .expect("path must be in fork tree")
                 .block;
         }
+
         attach.reverse();
         (detach, attach)
     }
-
 }
 
 
@@ -215,13 +214,14 @@ impl<DB : UtxoStorage + BlockStorage + StorageStats + UndoStorage + 'static> Con
 
         Box::pin(async move {
 
-            let hash = block.block_hash();
+            let block_hash = block.block_hash();
+            let hash = block_hash;
 
             // Check if the block is already in main chain
             if self.chain_index.has(&hash) {
                 return Ok(ConsensusOnBlockVerdict::AlreadyIncludedInChain);
             }
-
+	    
 
             // And if in fork
             if self.forks.get(&hash).is_some() {
@@ -237,36 +237,7 @@ impl<DB : UtxoStorage + BlockStorage + StorageStats + UndoStorage + 'static> Con
                 return Ok(ConsensusOnBlockVerdict::Rejected(StryiCoreError::other("Unknown parent.")));
             }
 
-
-
-            // Choose correct db overlay for this block
-
-            // choose overlay
-
-            let parent_work = if parent_in_main {
-                self.chain_index.work(&parent).unwrap()
-            } else {
-                parent_in_fork.as_ref().unwrap().cumulative_difficulty
-            };
-            let mut db_guard = self.db.write().await;
-            
-            // validate block with provided overlay.
-            if let Err(e) = self
-                .block_validator
-                .validate(&block, &mut *db_guard)
-                .await
-            {
-                return Ok(ConsensusOnBlockVerdict::Rejected(e));
-            }
-            
-            
-            // cumulative work for this block
-            let cum_work = self.calc_work(parent_work, block.header.difficulty_bits);
-
-
-
-            // direct extension path
-            // let main_tip_hash = self.chain_index.tip().unwrap().1;
+	    
             // if parent_in_main && parent == main_tip_hash {
             //     self.db
             //         .put_block(&block)
