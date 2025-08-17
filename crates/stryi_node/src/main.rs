@@ -60,18 +60,18 @@ pub(crate) mod grpc_services {
 fn try_genesis_config_from_path(path : PathBuf) ->  Result<GenesisInitConfig, StryiNodeError> {
     // Check if file exists and if it is a file.
     // .exists() method is redundant since is_file() already checks it
-    if !path.is_file() { 
+    if !path.is_file() {
         return Err(StryiNodeError::Io(io::Error::new(ErrorKind::NotFound, "Provided path with genesis configuration is not a file or doesn't exists.")));
     }
-    
+
     let mut file = std::fs::File::open(&path)?;
     let mut buf = String::new();
     file.read_to_string(&mut buf)?;
-    
-    // Try to deserialize 
+
+    // Try to deserialize
     serde_json::from_str(&buf)
         .map_err(|e| StryiNodeError::other(format!("Cannot deserialize genesis configuration, error : {}", e.to_string())))
-    
+
 }
 
 
@@ -163,9 +163,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .as_deref()
         .map(PathBuf::from)
         .map(try_genesis_config_from_path)
-        .transpose()?;  
+        .transpose()?;
 
-    
+
     // Initializing storage in configured provided path
     let storage = StryiStorage::initialize_in_path(PathBuf::from(cfg.storage_path), genesis_config).await?;
     let storage = Arc::new(RwLock::new(storage));
@@ -175,7 +175,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mempool_config = MemPoolConfig::new(
         cfg.mempool_max_transactions,
         FeePolicy::default(),
-        RbfPolicy::default(), 
+        RbfPolicy::default(),
         36000
     );
 
@@ -203,8 +203,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 
     // -- Initialize NetworkManager --
-    
-    
+
+
     // Backup peer key
     let peer_key = match PeerKey::restore(&cfg.peer_key_path) {
         Ok(k) => {
@@ -222,7 +222,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let keypair = peer_key.inner().clone(); // clone to hand over to NetworkManager
 
-    
+
     // Generate TLS identity for node services.
     let mut sans_vec: Vec<&str> = cfg.tls_sans.iter().map(String::as_str).collect();
 
@@ -239,16 +239,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("{}", tls_identity.cert_pem.as_str().purple());
 
 
+    let rendezvous_mode = match cfg.network_rendezvous_mode.as_str() {
+        "server" => RendezvousMode::Server,
+        "client" => RendezvousMode::Client,
+        other => return Err(StryiNodeError::other(format!("invalid rendezvous mode: {}", other)).into()),
+    };
+
+
+    info!("Rendezvous mode is set to: {rendezvous_mode:?}");
+
+    // Validate rendezvous server address if rendezvous mode is set to client
+    if matches!(rendezvous_mode, RendezvousMode::Client)
+        && cfg.network_rendezvous_address.as_deref().unwrap_or("").is_empty()
+    {
+        return Err(StryiNodeError::other("Client mode requires `network_rendezvous_address` to be provided").into());
+    }
+
+
     let behaviour_config = StryiBehaviourConfig {
         ping_interval:  Duration::from_secs(cfg.network_ping_interval_secs),
         ping_timeout:   Duration::from_secs(cfg.network_ping_timeout_secs),
         gossipsub_heartbeat: Duration::from_secs(cfg.network_gossipsub_heartbeat_secs),
-        enable_rendezvous_server: cfg.network_rendezvous_mode == "server",
-        enable_rendezvous_client: cfg.network_rendezvous_mode == "client",
+        enable_rendezvous_server: matches!(rendezvous_mode, RendezvousMode::Server),
+        enable_rendezvous_client: matches!(rendezvous_mode, RendezvousMode::Client),
     };
+
     let network_manager_config = StryiNetworkManagerConfig {
         listen_addr: cfg.network_listen_addr,
-        rendezvous_mode: RendezvousMode::Server,
+        rendezvous_mode,
+        rendezvous_server_addr: cfg.network_rendezvous_address.clone(),
         keypair: keypair.clone(),
         stryi_behaviour_config: behaviour_config,
         ..Default::default()
@@ -258,25 +277,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // An initially empty list – we'll fill it later when services start.
     let services_info: Arc<RwLock<Vec<ServiceInfo>>> = Arc::new(RwLock::new(Vec::new()));
-    
-    let network_manager = StryiNetworkManager::new(&network_manager_config, mempool.clone(), services_info.clone(), network_manager_cancellation_token)?;
 
+    let network_manager = StryiNetworkManager::new(
+        &network_manager_config,
+        mempool.clone(),
+        services_info.clone(),
+        network_manager_cancellation_token)?;
+
+    let network_manager = Some(network_manager);
+    
+    
     // Instantiate the StryiChainNode
-    let node = StryiChainNode {
+    let mut node = StryiChainNode {
         mempool,
         storage,
         network_manager,
         services_info,
         tls_identity,
+        net_cmd: None,
+        net_events: None,
         sync_service_config,
         http_service_config,
-        
-        // These are temporary always set to true until I'll finish node's db synchronization 
+
+        // These are temporary always set to true until I'll finish node's db synchronization
         grpc_is_ready: ReadyFlag::new(RwLock::new(true)),
         http_is_ready: ReadyFlag::new(RwLock::new(true)),
     };
 
-    node.start_services().await?;
+    // Connect the node to the network.
+    // This will start the network manager and connect to the rendezvous server if configured.
+    node.connect().await?;
+
+
+    // TODO: Keep back node.start_services() call later
     
     // Keep the node running indefinitely.
     loop {

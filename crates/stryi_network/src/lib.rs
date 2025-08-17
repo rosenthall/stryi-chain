@@ -5,16 +5,17 @@ mod manager;
 mod model;
 mod mempool;
 mod services;
+mod event;
 
 pub use behaviour::*;
 pub use error::StryiNetworkError;
 pub use manager::*;
 pub use services::ServiceInfo;
+pub use crate::model::BroadcastBlock;
 use libp2p::{Multiaddr};
 
 pub use libp2p::identity::{Keypair, ed25519, SigningError, DecodingError};
 use stryi_core::transactions::Transaction;
-use crate::model::BroadcastBlock;
 
 /// Indicates whether we run as a Rendezvous **Server** or a **Client** node.
 #[derive(Debug, Clone)]
@@ -97,31 +98,4 @@ pub enum NetworkEvent {
     // Something more I need?
 }
 
-
-
-impl StryiNetworkManager {
-
-    //--- Some high-level methods ---  
-    // TODO: Actually revise and define high-level methods for StryiNetworkManager for broadcasting blocks, transactions, etc
-
-    // /// Sends provided mined block across the network to other nodes, may return error if sending message to NetworkManager fails
-    // pub async fn publish_mined_block(&self, block: &Block) -> Result<(), StryiNetworkError> {
-    //     let block_bytes = bincode::serde::encode_to_vec(block, standard()).expect("Serialization commonly does not falls");
-    // 
-    //     self.command_tx.send(NetworkCommand::PublishBlock(block_bytes)).await.map_err(StryiNetworkError::ChannelError)
-    // }
-    // 
-    // 
-    // /// Publishes provided transaction to other nodes via gossipsub, may return error if sending message to NetworkManager fails
-    // pub async fn publish_transaction(&self, tx : &Transaction) -> Result<(), StryiNetworkError> {
-    //     let transaction_bytes = bincode::serde::encode_to_vec(tx, standard()).expect("Serialization commonly does not falls");
-    // 
-    //     self.command_tx.send(NetworkCommand::PublishTransaction(transaction_bytes)).await.map_err(StryiNetworkError::ChannelError)
-    // }
-    // 
-    // /// Gets current mempool state from random connected node for further synchronization
-    //  async fn get_mempool_state(&self) -> Result<stryi_core::mempool::MemPoolSyncData, StryiNetworkError> {
-    //     todo!()
-    // }
-}
 
