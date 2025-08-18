@@ -1,0 +1,8 @@
+network_rendezvous_mode = "server"
+network_listen_addr     = "/ip4/127.0.0.1/tcp/4001"
+genesis_config_path     = "../../utils/demo_genesis.json"
+
+storage_path            = "/tmp/stryi/server"
+grpc_sync_address       = "127.0.0.1:6001"
+http_service_address    = "127.0.0.1:7001"
+peer_key_path           = "/tmp/stryi/server/peer.stryi_keys"
