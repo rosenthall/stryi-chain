@@ -8,6 +8,7 @@ mod rbf_conflicts;
 pub use rbf_conflicts::*;
 
 mod validator;
+pub use validator::MempoolValidationError;
 mod error;
 pub use error::MemPoolError;
 mod types;
@@ -22,10 +23,11 @@ use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use petgraph::graph::NodeIndex;
+use tracing::warn;
 use crate::block::BlockData;
 use crate::mempool::dependencies::DependencyTracker;
 use crate::mempool::storage::TransactionStorage;
-use crate::mempool::validator::{MempoolTxValidator, MempoolValidationError};
+use crate::mempool::validator::MempoolTxValidator;
 use crate::transactions::{OutPoint, Transaction, TransactionHash, UTXO};
 
 /// A type alias for the asynchronous UTXO lookup function.
@@ -121,6 +123,21 @@ impl MemPool {
 
         // 5. If there are conflicts, resolve them via RBF
         if !conflicts.is_empty() {
+
+
+            // Check if RBF is disabled, 
+            if self.config.rbf_policy.is_disabled() {
+                warn!("RBF is disabled, cannot resolve conflicts for transaction: {}", tx_hash);
+                
+                // If RBF is disabled, we cannot resolve conflicts so just return any error
+                let first = conflicts.iter().next().unwrap();
+                return Err(MemPoolError::DuplicateTransaction {
+                    hash: *first 
+                });
+                
+                
+            }
+
             // Process RBF conflicts using the actual fee
             if let Err(rbf_err) = self.rbf_resolver.resolve_conflicts(
                 &conflicts,
@@ -137,7 +154,7 @@ impl MemPool {
                     // Fallback for any other error
                     RbfConflictError::Other(msg) => {
                         Err(MemPoolError::Storage(Box::new(
-                            std::io::Error::new(std::io::ErrorKind::Other, msg),
+                            std::io::Error::other(msg),
                         )))
                     }
                 }
@@ -145,7 +162,7 @@ impl MemPool {
         }
 
         // 6. Insert the new transaction with the actual fee
-        self.storage.insert(tx_hash.clone(), tx.clone(), actual_fee);
+        self.storage.insert(tx_hash, tx.clone(), actual_fee);
 
         // 7. Update dependency tracker with parent-child relationships
         let parent_hashes: Vec<TransactionHash> = tx
@@ -211,7 +228,7 @@ impl MemPool {
             let tx_hash = tx.data.hash();
             let fee = self.fee_calculator.calculate_fee(&tx);
 
-            self.storage.insert(tx_hash.clone(), tx.clone(), fee);
+            self.storage.insert(tx_hash, tx.clone(), fee);
 
             let parent_hashes: Vec<TransactionHash> = tx
                 .data
@@ -317,9 +334,9 @@ impl MemPool {
             if used_nodes.contains(&node_idx) || remaining_space == 0 {
                 continue;
             }
-
+            
             if let Some(tx_hash) = self.dependency_tracker.get_tx_by_node(node_idx) {
-                if let Some(_) = self.storage.get(&tx_hash) {
+                if self.storage.get(&tx_hash).is_some() {
                     // Get all required ancestors in topological order
                     let ancestors = self.dependency_tracker.gather_ancestors(node_idx);
 

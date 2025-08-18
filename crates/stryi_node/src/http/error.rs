@@ -22,6 +22,14 @@ pub enum BadTxReason {
     RecoverPublicKey,
     #[error("invalid_signature")]
     InvalidSignature,
+    #[error("duplicate_transaction")]
+    DuplicateTx,
+    #[error("double_spend")]
+    DoubleSpend,
+    #[error("insufficient_fee")]
+    InsufficientFee,
+    #[error("mempool_full")]
+    PoolFull,
 }
 
 /// Error type for StryiNode HTTP API

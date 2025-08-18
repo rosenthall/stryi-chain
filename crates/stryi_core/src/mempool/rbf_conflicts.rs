@@ -40,7 +40,20 @@ impl RbfPolicy {
             percentage_increase,
         }
     }
+    
+    /// Creates a disabled RBF policy, that does not perform any replacement checks and always allows transactions.
+    pub fn disabled() -> Self {
+        Self {
+            base_fee_delta: 0,
+            percentage_increase: 0.0,
+        }
+    }
 
+    /// Checks if the RBF policy is disabled (i.e., no fee increase required).
+    pub fn is_disabled(&self) -> bool {
+        self.base_fee_delta == 0 && self.percentage_increase == 0.0
+    }
+    
     /// Computes the required fee to replace an existing transaction fee under a given load factor.
     pub fn required_fee(&self, old_fee: u64, load_factor: f64) -> u64 {
         // Calculate required fee by absolute increase.
@@ -84,7 +97,7 @@ impl RbfConflictResolver {
         for inp in &new_tx.data.inputs {
             // See if any transaction in the mempool is already spending this outpoint
             if let Some(existing_hash) = storage.get_spending_tx(&inp.previous_output) {
-                conflicts.insert(existing_hash.clone());
+                conflicts.insert(*existing_hash);
             }
         }
 
@@ -123,12 +136,12 @@ impl RbfConflictResolver {
         for conflict_hash in conflicts {
             if let Some(conflict_tx) = storage.get(conflict_hash) {
                 total_conflict_fee = total_conflict_fee.saturating_add(conflict_tx.fee);
-                all_affected_txs.insert(conflict_hash.clone());
+                all_affected_txs.insert(*conflict_hash);
 
                 // Also include all descendants of conflicting transactions
                 let descendants = tracker.get_descendants(conflict_hash);
                 for desc_hash in &descendants {
-                    all_affected_txs.insert(desc_hash.clone());
+                    all_affected_txs.insert(*desc_hash);
 
                     if let Some(desc_tx) = storage.get(desc_hash) {
                         total_conflict_fee = total_conflict_fee.saturating_add(desc_tx.fee);

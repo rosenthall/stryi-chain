@@ -9,6 +9,7 @@ use bincode::serde::decode_borrowed_from_slice;
 use http::StatusCode;
 use tracing::{debug, info};
 use stryi_core::address::AccountAddress;
+use stryi_core::mempool::{MemPoolError, MempoolValidationError};
 use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 use stryi_core::transactions::Transaction;
 
@@ -47,7 +48,7 @@ use crate::http::error::{StryiNodeHttpApiError, BadTxReason};
     )
 )]
 pub async fn send_tx<DB>(
-    State(_state): State<Arc<StryiHttpService<DB>>>,
+    State(state): State<Arc<StryiHttpService<DB>>>,
     Json(req): Json<SendTransactionRequest>,
 ) -> Result<Response, StryiNodeHttpApiError>
 where
@@ -94,10 +95,15 @@ where
     let author_address = AccountAddress::new(&author_verifying_key.to_sec1_bytes());
     debug!("Transaction author address: {}", author_address);
 
-    // TODO: Integrate mempool and storage to validate and handle new transactions in http service
 
-    // For now, we will just pretty log the transaction and return a success response.
-    info!("Received transaction from {}: {}", author_address, transaction.data.hash());
+    // Add the transaction to the mempool
+    let mut mem = state.mempool.write().await;
+    mem.add_transaction(transaction.clone())
+        .await
+        .map_err(map_mempool)?; // Map MemPoolError to StryiNodeHttpApiError if it occurs
+
+    
+    info!("Received and added to mempool transaction from {}: {}", author_address, transaction.data.hash());
 
     // Return a success response
     Ok(Response::builder()
@@ -106,3 +112,36 @@ where
         .unwrap())
 }
 
+/// Maps MemPoolError to StryiNodeHttpApiError for HTTP responses
+fn map_mempool(err: MemPoolError) -> StryiNodeHttpApiError {
+    use BadTxReason::*;
+    match err {
+        // duplicate tx -> 400
+        MemPoolError::DuplicateTransaction { .. } => {
+            StryiNodeHttpApiError::BadTransaction { reason: DuplicateTx, message: Some("Such transaction already in mempool".into()) }
+        }
+        // already-spent input -> 400
+        MemPoolError::DoubleSpend(outpoint) => {
+            StryiNodeHttpApiError::BadTransaction { reason: DoubleSpend, message: format!("Double spend detected: {:?}", outpoint).into() }
+        }
+        // mempool size cap hit -> 400
+        MemPoolError::PoolFull { .. } => {
+            StryiNodeHttpApiError::BadTransaction { reason: PoolFull, message: Some("mempool is full".into()) }
+        }
+        // insufficient fee for RBF -> 400
+        MemPoolError::InsufficientFee { required, actual } => {
+            let msg = format!("required {required}, provided {actual}");
+            StryiNodeHttpApiError::BadTransaction { reason: InsufficientFee, message: Some(msg) }
+        }
+        // validation error -> map inner enum
+        MemPoolError::ValidationError(inner) => match inner {
+            MempoolValidationError::SignatureFailed(_) => {
+                StryiNodeHttpApiError::BadTransaction { reason: InvalidSignature, message: None }
+            }
+            // the rest fall back to generic invalid-signature bucket
+            _ => StryiNodeHttpApiError::BadTransaction { reason: InvalidSignature, message: Some(inner.to_string()) },
+        },
+        // anything else → 500
+        other => StryiNodeHttpApiError::Unexpected(other.to_string()),
+    }
+}

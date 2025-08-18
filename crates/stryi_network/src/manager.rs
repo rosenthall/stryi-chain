@@ -215,6 +215,9 @@ impl StryiNetworkManager {
         Ok(transport)
     }
 
+    
+    /// Runs the main event loop of the StryiNetworkManager.
+    /// This loop handles incoming network events, processes commands, and manages subscriptions.
     pub async fn run_loop(&mut self) {
         let mut swarm = self.swarm.lock().await;
 
@@ -256,8 +259,9 @@ impl StryiNetworkManager {
                 }
 
             }
-            info!("StryiNetworkManager run loop terminated gracefully.");
         }
+
+        info!("StryiNetworkManager run loop terminated gracefully.");
     }
 
 }

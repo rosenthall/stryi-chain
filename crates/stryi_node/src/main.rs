@@ -171,16 +171,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let storage = Arc::new(RwLock::new(storage));
 
 
-    // TODO: Improve mempool configurability, make possible configure FeePolicy, RbfPolicy
+    // TODO: Improve mempool configurability, make possible configure FeePolicy, RbfPolicy and set RbfPolicy::disabled from config
     let mempool_config = MemPoolConfig::new(
         cfg.mempool_max_transactions,
         FeePolicy::default(),
-        RbfPolicy::default(),
-        36000
+        RbfPolicy::disabled(), // Disable RBF for now
+        60 * 60, // 1 hour expiry time
     );
 
     // Create utxo_lookup for mempool that reads UTXO by outpoint from storage
     let utxo_lookup: UtxoLookup = {
+        
         let storage = storage.clone();
 
         // Closure captures Arc-ed storage

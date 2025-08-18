@@ -34,6 +34,7 @@ use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::info;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
+use stryi_core::mempool::MemPool;
 use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 use crate::error::StryiNodeError;
 use crate::http::tx::send_tx;
@@ -42,8 +43,14 @@ use crate::middleware::{NotReadyResponder, ReadyFlag, ReadyGateLayer};
 #[derive(Clone)]
 pub struct StryiHttpService<DB>
 where DB: BlockStorage + UtxoStorage + StorageStats {
+
+    /// Configuration for this HTTP service
     pub(crate) config : StryiHttpServiceConfig,
 
+    
+    /// Mempool instance
+    pub(crate) mempool: Arc<RwLock<MemPool>>,
+    
     /// Arc'd storage reference
     pub(crate) storage : Arc<RwLock<DB>>,
 }
@@ -92,15 +99,17 @@ struct ApiDoc;
 pub async fn start_http_server<DB>(
     storage: Arc<RwLock<DB>>,
     cfg: StryiHttpServiceConfig,
+    mempool: Arc<RwLock<MemPool>>,
     ready: ReadyFlag,
 ) -> Result<(), StryiNodeError>
 where
-    DB: BlockStorage + UtxoStorage + StorageStats +  Send + Sync + 'static,
+    DB: BlockStorage + UtxoStorage + StorageStats +  Send + Sync + 'static 
 {
     // shared service state
     let svc = StryiHttpService {
         config: cfg.clone(),
         storage,
+        mempool
     };
 
     let state = Arc::new(svc);
