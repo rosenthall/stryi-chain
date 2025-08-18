@@ -56,7 +56,7 @@ mod tests {
     };
     use k256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
     use std::collections::HashMap;
-    use crate::block::mine_block_in_parallel;
+    use crate::block::mining::mine_block_in_parallel;
 
     /// Helper: after a block is proven valid, “commit” every new output
     /// into the in-memory UTXO set and spend the inputs of payment txs.

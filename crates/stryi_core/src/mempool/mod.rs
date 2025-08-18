@@ -364,6 +364,12 @@ impl MemPool {
 
         Ok(result)
     }
+    
+    
+    /// Returns the current number of transactions in the mempool.
+    pub fn transaction_count(&self) -> usize {
+        self.storage.len()
+    }
 }
 
 /// Helper function to get current Unix timestamp

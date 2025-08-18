@@ -22,6 +22,9 @@ mod cli;
 /// High-level http api for users of the node.
 mod http;
 
+/// An implementation of node's mining service.
+mod miner;
+
 use std::error::Error;
 use std::io::{ErrorKind, Read};
 use std::path::PathBuf;
@@ -37,8 +40,9 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use stryi_core::address::AccountAddress;
 use stryi_core::mempool::{MemPool, MemPoolConfig, RbfPolicy, UtxoLookup};
-use stryi_core::storage::UtxoStorage;
+use stryi_core::storage::{StorageStats, UtxoStorage};
 use stryi_core::transactions::{FeePolicy, OutPoint};
 use stryi_network::{StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig, RendezvousMode, ServiceInfo};
 use stryi_storage::{GenesisInitConfig, StryiStorage};
@@ -50,6 +54,7 @@ use crate::config::NodeConfig;
 use crate::error::StryiNodeError;
 use crate::http::StryiHttpServiceConfig;
 use crate::middleware::ReadyFlag;
+use crate::miner::{StryiMiner, StryiMinerConfig};
 
 pub(crate) mod grpc_services {
     tonic::include_proto!("stryi.sync");
@@ -201,7 +206,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 
     let mempool = Arc::new(RwLock::new(MemPool::new(mempool_config, utxo_lookup)));
-
+    
 
     // -- Initialize NetworkManager --
 
@@ -304,6 +309,65 @@ async fn main() -> Result<(), Box<dyn Error>> {
         grpc_is_ready: ReadyFlag::new(RwLock::new(true)),
         http_is_ready: ReadyFlag::new(RwLock::new(true)),
     };
+
+
+
+
+    // -- Initialize the miner manager --
+    let get_tip = {
+        let storage = node.storage.clone();
+        // Closure captures Arc-ed storage
+        Box::new(move || {
+            // Clone storage for the async block
+            let storage = storage.clone();
+            // Return boxed async future that reads tip
+            Box::pin(async move { storage.read().await.tip().await })
+        })
+    };
+    
+    if cfg.miner_enabled {
+        info!("Mining is enabled, initializing the miner...");
+
+        let reward_address = if let Ok(addr) = AccountAddress::from_hash_string(&cfg.miner_reward_address) {
+            addr
+        } else {
+            error!("Invalid miner reward address provided: {}", &cfg.miner_reward_address);
+            return Err(StryiNodeError::other("Invalid miner reward address").into());
+        };
+
+        // Pretty print the miner reward address so user will not miss it
+        println!("{}", "==================================MINER==================================".blue().bold());
+        println!("{} {}", "Miner reward address is set to:".purple(), reward_address.to_string().green().bold());
+        println!("{}", "=========================================================================".blue().bold());
+
+
+
+        // Create a channel for network commands
+        // let (net_cmd_tx, net_cmd_rx) = tokio::sync::mpsc::channel(100);
+
+        // Create a channel for network events
+        // let (net_events_tx, net_events_rx) = tokio::sync::broadcast::channel(100);
+
+        // Initialize the miner with the provided configuration
+        let miner = StryiMinerConfig {
+            tx_threshold: cfg.miner_tx_threshold,
+            block_version: cfg.block_header_version,
+            max_delay_secs: cfg.miner_max_delay_secs,
+            reward_address,
+        };
+
+        
+        // Create the miner instance 
+        // .....
+        
+        
+        
+    } else {
+        info!("Mining is disabled, skipping miner initialization.");
+    }
+
+    
+    
 
     // Connect the node to the network.
     // This will start the network manager and connect to the rendezvous server if configured.

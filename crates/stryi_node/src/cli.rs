@@ -69,6 +69,26 @@ pub struct CliArgs {
     #[arg(long)]
     pub mempool_max_transactions: Option<usize>,
 
+
+    /* miner */
+
+    /// Enable the miner.
+    #[arg(long)]
+    pub miner_enabled: Option<bool>,
+
+    /// Target number of transactions before mining.
+    #[arg(long)]
+    pub miner_tx_threshold: Option<usize>,
+
+    /// Maximum delay (seconds) before mining a block, even if the tx threshold is not reached.
+    #[arg(long)]
+    pub miner_max_delay_secs: Option<usize>,
+
+    /// Block reward receiver address in the stryi format (e.g. `@addres..`).
+    #[arg(long)]
+    pub miner_reward_address: Option<String>,
+
+
     /* gRPC sync */
 
     /// Socket address (`ip:port`) for the gRPC sync service.
@@ -89,7 +109,7 @@ pub struct CliArgs {
 
     /* keys */
 
-    /// Path where the peer Ed25519 key is backed up.
+    /// Path where the peer's Ed25519 key is backed up.
     #[arg(long)]
     pub peer_key_path: Option<String>,
 

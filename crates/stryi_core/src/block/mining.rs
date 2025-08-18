@@ -1,10 +1,7 @@
-use rayon::prelude::*;
-use rand::{rng, Rng};
-
 use crate::{
-    block::Block,
     block::block_hash::{BlockHash},
 };
+use crate::block::Block;
 
 /// Checks if the provided block hash meets the given difficulty (bits) requirement.
 ///
@@ -35,13 +32,22 @@ pub fn meets_difficulty(block_hash: &BlockHash, bits: u8) -> bool {
     true
 }
 
+
+
 /// Mines the given block in parallel by generating random 32-bit nonce's. 
+/// Note: This function is designed for testing purposes and should not be used in production.
+/// Note: The max_attempts parameter is used to prevent infinite loops during testing.
 ///
 /// - `block` is mutable, so if a solution is found, the block's header.nonce is updated.
 /// - `max_attempts` is the maximum number of random trials across all threads.
 /// - Returns `true` if a solution is found (and updates the block's nonce),
 ///   otherwise returns `false`.
-pub fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bool {
+pub(crate) fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bool {
+
+    use rand::Rng;
+    use rayon::prelude::*;
+    use rand::rng;
+
     let bits = block.header.difficulty_bits;
     // We use `find_any` over a parallel iterator so that if ANY thread finds a valid nonce,
     // the search stops.
@@ -82,6 +88,8 @@ pub fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bool {
         false
     }
 }
+
+
 
 #[cfg(test)]
 mod tests {

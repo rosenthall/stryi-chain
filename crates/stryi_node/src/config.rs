@@ -14,6 +14,7 @@ pub struct NodeConfig {
     /* global settings */
     pub chain_name: String,
     pub genesis_config_path: Option<String>,
+    pub block_header_version: u16,
 
     /* network */
     pub network_listen_addr: String,
@@ -30,6 +31,13 @@ pub struct NodeConfig {
 
     /* mempool */
     pub mempool_max_transactions: usize,
+    
+    /* miner */
+    pub miner_enabled : bool,
+    pub miner_tx_threshold: usize,
+    pub miner_max_delay_secs: usize,
+    pub miner_reward_address: String,
+    
 
     /* gRPC sync */
     pub grpc_sync_address: String,
@@ -52,6 +60,7 @@ impl Default for NodeConfig {
         Self {
             chain_name: "dev".into(),
             genesis_config_path: None,
+            block_header_version: 1,
                     
             network_listen_addr: "/ip4/0.0.0.0/tcp/1234".into(),
             network_rendezvous_mode: "server".into(),
@@ -66,6 +75,11 @@ impl Default for NodeConfig {
 
             mempool_max_transactions: 100,
 
+            miner_enabled: false,
+            miner_tx_threshold: 1,
+            miner_max_delay_secs: 20,
+            miner_reward_address: "@nah".to_string(),
+            
             grpc_sync_address: "0.0.0.0:5555".into(),
             sync_protocol_version: 1,
             sync_max_blocks_per_request: 100,

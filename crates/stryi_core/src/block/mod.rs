@@ -1,9 +1,9 @@
 mod block_hash;
-mod mining;
+pub(crate) mod mining;
 
 use std::collections::HashMap;
 pub use block_hash::BlockHash;
-pub use mining::{meets_difficulty, mine_block_in_parallel};
+pub use mining::meets_difficulty;
 
 use serde::{Deserialize, Serialize};
 use crate::address::AccountAddress;

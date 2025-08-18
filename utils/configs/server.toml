@@ -2,6 +2,11 @@ network_rendezvous_mode = "server"
 network_listen_addr     = "/ip4/127.0.0.1/tcp/4001"
 genesis_config_path     = "../../utils/demo_genesis.json"
 
+
+miner_enabled           = true
+miner_reward_address    = "@74e67a9ad28b9ac964b8a39779617271980b35bb"
+
+
 storage_path            = "/tmp/stryi/server"
 grpc_sync_address       = "127.0.0.1:6001"
 http_service_address    = "127.0.0.1:7001"
