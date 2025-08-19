@@ -1,5 +1,7 @@
+use bincode::config::standard;
 use serde::{Deserialize, Serialize};
 use crate::hash::{Hash, HashKind};
+use crate::transactions::Transaction;
 
 /// 32-byte Merkle hash kind.
 /// The prefix chosen is "MKR" for compact human-readable form like: "MKR<hex...>".
@@ -160,6 +162,32 @@ impl MerkleTree {
             leaf_index,
         })
     }
+}
+
+
+/// Compute the Merkle-root for a list of transactions.
+///
+/// * `txs` – slice of transactions already selected for the block.
+/// * Returns `MerkleHash::empty()` if the slice is empty.
+pub fn calc_merkle_root(txs: &[Transaction]) -> MerkleHash {
+    if txs.is_empty() {
+        return MerkleHash::empty();
+    }
+
+    // Serialize each transaction and turn the bytes into leaves.
+    let leaves: Vec<Vec<u8>> = txs
+        .iter()
+        .map(|tx| {
+            bincode::serde::encode_to_vec(tx, standard())
+                .expect("Transaction serialization cannot fail")
+        })
+        .collect();
+
+    // Build the tree and fetch its root.
+    // `root_hash()` returns `Option<MerkleHash>`, but we know the tree is non-empty.
+    MerkleTree::new(&leaves)
+        .root_hash()
+        .unwrap_or_else(MerkleHash::empty)
 }
 
 impl MerkleProof {

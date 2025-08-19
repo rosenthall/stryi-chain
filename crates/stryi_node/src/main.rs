@@ -25,6 +25,9 @@ mod http;
 /// An implementation of node's mining service.
 mod miner;
 
+/// Simple estimation of the node's hashrate
+mod hashrate;
+
 use std::error::Error;
 use std::io::{ErrorKind, Read};
 use std::path::PathBuf;
@@ -338,7 +341,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // Pretty print the miner reward address so user will not miss it
         println!("{}", "==================================MINER==================================".blue().bold());
         println!("{} {}", "Miner reward address is set to:".purple(), reward_address.to_string().green().bold());
+        // Also print the hashrate (just for fun)
+        hashrate::warm_up();
         println!("{}", "=========================================================================".blue().bold());
+
 
 
 
@@ -349,12 +355,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // let (net_events_tx, net_events_rx) = tokio::sync::broadcast::channel(100);
 
         // Initialize the miner with the provided configuration
-        let miner = StryiMinerConfig {
-            tx_threshold: cfg.miner_tx_threshold,
-            block_version: cfg.block_header_version,
-            max_delay_secs: cfg.miner_max_delay_secs,
+        let miner = StryiMinerConfig::new(
+            cfg.miner_tx_threshold,
+            cfg.block_header_version,
+            cfg.miner_max_delay_secs,
             reward_address,
-        };
+        );
 
         
         // Create the miner instance 
