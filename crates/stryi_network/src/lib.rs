@@ -6,13 +6,14 @@ mod model;
 mod mempool;
 mod services;
 mod event;
+mod peer;
 
 pub use behaviour::*;
 pub use error::StryiNetworkError;
 pub use manager::*;
 pub use services::ServiceInfo;
 pub use crate::model::BroadcastBlock;
-use libp2p::{Multiaddr};
+use libp2p::{Multiaddr, PeerId};
 
 pub use libp2p::identity::{Keypair, ed25519, SigningError, DecodingError};
 use stryi_core::transactions::Transaction;
@@ -70,7 +71,8 @@ impl Default for StryiNetworkManagerConfig {
 
 
 /// Commands that can be sent to the network service.
-#[derive(Debug, Clone)]
+// TODO: Major refactor is needed for NetworkCommand, all the commands should be have tokio::sync::oneshot channel to answer with result
+#[derive(Debug)]
 pub enum NetworkCommand {
     // /// Dial a remote peer using the provided multiaddr.
     // Dial { address: String },
@@ -79,6 +81,13 @@ pub enum NetworkCommand {
     
     /// Publish a new transaction to the network.
     PublishTransaction(Transaction),
+
+    /// Get the current network status, including connected peers and their addresses.
+    QueryPeersWithService {
+        service: String,
+        respond_to: tokio::sync::oneshot::Sender<Vec<(PeerId, ServiceInfo)>>,
+    },
+    
     /// Gets current mempool state from random connected node and synchronizes it with own.
     SyncMempoolState,
 }

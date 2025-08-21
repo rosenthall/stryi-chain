@@ -1,5 +1,4 @@
-use crate::mempool::{MempoolResponse, MempoolSyncBehaviour};
-use crate::services::{ServiceInfo, ServicesResponse};
+use crate::services::ServiceInfo;
 use crate::{
     NetworkCommand, NetworkEvent, RendezvousMode, StryiNetworkManagerConfig, behaviour,
     behaviour::{StryiBehaviour, StryiBehaviourConfig, StryiEvent},
@@ -7,27 +6,25 @@ use crate::{
 };
 use libp2p::core::transport::Boxed;
 use libp2p::gossipsub::IdentTopic;
-use libp2p::request_response::{
-    InboundRequestId, ProtocolSupport, ResponseChannel,
-};
+use libp2p::request_response::{ ProtocolSupport, ResponseChannel };
 use libp2p::{
     Multiaddr, PeerId, Transport,
     core::upgrade,
-    gossipsub,
     identity::Keypair,
     noise, ping, request_response,
     swarm::{Config as SwarmConfig, Swarm},
     tcp, yamux,
 };
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use futures::StreamExt;
+use rand::prelude::IteratorRandom;
 use stryi_core::mempool::MemPool;
-use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc, RwLockReadGuard};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace, warn};
+use crate::peer::PeerInfo;
 
 /// StryiNetworkManager sets up the transport, constructs a swarm using our unified StryiBehaviour,
 /// and runs the event loop.
@@ -66,23 +63,6 @@ pub struct StryiNetworkManager {
 
     /// Cancellation token for graceful shutdown of the run loop
     cancel_token: CancellationToken,
-}
-
-#[derive(Clone, Debug)]
-pub struct PeerInfo {
-    /// Time the connection was established, if known.
-    pub established_at: Option<SystemTime>,
-    /// Most recent time the peer was seen or updated.
-    pub last_seen: Option<SystemTime>,
-    /// All known addresses for this peer. TODO: Is storing more than 1 address of single peer is necessary for design?
-    pub addresses: Vec<Multiaddr>,
-    /// gRPC sync server address, if available.
-    pub grpc_sync_server_address: Option<SocketAddr>,
-
-    /// Number of consecutive ping failures for this peer.
-    /// This is used to detect unresponsive peers and potentially disconnect them.
-    pub consecutive_ping_failures: usize,
-    
 }
 
 // hard‑coded topic names that every node must agree on
@@ -151,7 +131,7 @@ impl StryiNetworkManager {
                             Ok(ma) => {
                                 info!("Dialing rendezvous server at {}", srv_addr);
                                 if let Err(e) = swarm.dial(ma) {
-                                    tracing::warn!("Dial to rendezvous server failed: {e:?}");
+                                    warn!("Dial to rendezvous server failed: {e:?}");
                                 }
                             }
                             Err(e) => {
@@ -199,6 +179,27 @@ impl StryiNetworkManager {
     pub fn command_sender(&self) -> mpsc::Sender<NetworkCommand> {
         self.command_tx.clone()
     }
+
+    /// Returns a random peer that has a service of the specified kind.
+    /// `None` is returned if no peer currently matches.
+    pub async fn random_peer_with_service(
+        &self,
+        kind: &str,
+    ) -> Option<(PeerId, ServiceInfo)> {
+        let peers = self.connected_peers.read().await;
+
+        peers
+            .iter()
+            .filter_map(|(id, info)| {
+                info.services
+                    .iter()
+                    .find(|s| s.kind == kind)
+                    .cloned()
+                    .map(|svc| (*id, svc))
+            })
+            .choose(&mut rand::thread_rng())
+    }
+
 
     /// Helper function to build a transport (TCP + Noise + Yamux).
     pub(crate) fn build_transport(
@@ -250,9 +251,33 @@ impl StryiNetworkManager {
 
                 command = self.command_rx.recv() => {
                     // TODO: Implement NetworkCommands handler in network-manager loop
-                    info!("Received command : {command:?}");
-                }
 
+
+                   if let Some(NetworkCommand::QueryPeersWithService { service, respond_to }) = command {
+
+                        // Read the current peer map atomically
+                        // self.connected_peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>
+                        let peers_snapshot: Vec<(PeerId, ServiceInfo)> = {
+                            let guard: RwLockReadGuard<'_, HashMap<PeerId, PeerInfo>> =
+                            self.connected_peers.read().await;
+                            guard.iter()
+                            .flat_map(|(peer_id, info)| {
+                                info.services
+                                .iter()
+                                .filter(|svc| svc.kind() == service)
+                                .cloned()
+                                .map(|svc| (*peer_id, svc))
+                            })
+                            .collect()
+                        };
+
+                        //  reply (ignore if receiver is gone)
+                        let _ = respond_to.send(peers_snapshot);
+
+                    };
+                }
+                
+                
                 // --- libp2p events ---
                 event = swarm.select_next_some() => {
                     self.process_event(&mut swarm, event).await;

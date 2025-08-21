@@ -1,1 +1,0 @@
-// TODO : Implement some struct for high-level management of mining process for node. Maybe use oneshot channels for each block?

@@ -24,7 +24,7 @@ pub struct ServicesResponse {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ServiceInfo {
     /// The kind of service e.g. "grpc", "jsonrpc", "graphql".
-    kind : String,
+    pub(crate) kind : String,
 
     /// Address(ip:port) in human-readable format e.g. 37.73.37.73:12240
     address : SocketAddr,
@@ -48,6 +48,25 @@ impl ServiceInfo {
             version,
         }
     }
+
+    
+    /// Returns the kind of the service.
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+    
+    /// Returns the address of the service.
+    pub fn address(&self) -> &SocketAddr {
+        &self.address
+    }
+    
+    /// Returns the version of the service.
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+    
+
+
 }
 
 

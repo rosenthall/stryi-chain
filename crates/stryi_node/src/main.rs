@@ -1,10 +1,10 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)] // This feature was added to avoid a known bug: https://github.com/rust-lang/rust/issues/133199
 
+
 mod node;
 mod grpc;
 mod error;
-mod mining_manager;
 mod keys;
 
 /// Common middlewares for node's services
@@ -28,6 +28,9 @@ mod miner;
 /// Simple estimation of the node's hashrate
 mod hashrate;
 
+/// Tools to let user choose genesis configuration (e.g. from file, another node, etc.)
+mod genesis_manager;
+
 use std::error::Error;
 use std::io::{ErrorKind, Read};
 use std::path::PathBuf;
@@ -49,6 +52,7 @@ use stryi_core::storage::{StorageStats, UtxoStorage};
 use stryi_core::transactions::{FeePolicy, OutPoint};
 use stryi_network::{StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig, RendezvousMode, ServiceInfo};
 use stryi_storage::{GenesisInitConfig, StryiStorage};
+use crate::cli::NodeStartMode;
 use crate::grpc::{StryiSyncServiceConfig};
 use crate::keys::PeerKey;
 use crate::node::StryiChainNode;
@@ -166,12 +170,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
         api_version: cfg.http_service_version,
     };
 
-    // Try to get genesis config by path
-    let genesis_config = cfg.genesis_config_path
-        .as_deref()
-        .map(PathBuf::from)
-        .map(try_genesis_config_from_path)
-        .transpose()?;
+
+    let mut start_mode = cfg.start_mode;
+
+    if matches!(start_mode, NodeStartMode::Auto) {
+        start_mode = if cfg.genesis_config_path.is_some() {
+            NodeStartMode::Bootstrap
+        } else {
+            NodeStartMode::Join
+        }
+    }
+    info!("Start mode = {:?}", start_mode);
+
+    // Try to get genesis config by path if we are in Bootstrap mode.
+    let genesis_config = match start_mode {
+        NodeStartMode::Bootstrap => {
+            let p = cfg.genesis_config_path
+                .as_deref()
+                .ok_or_else(|| StryiNodeError::other("Bootstrap mode requires `genesis_config_path`"))?;
+            Some(try_genesis_config_from_path(PathBuf::from(p))?)
+        },
+        NodeStartMode::Join => None,
+        NodeStartMode::Auto => unreachable!(),
+    };
 
 
     // Initializing storage in configured provided path
@@ -372,16 +393,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
         info!("Mining is disabled, skipping miner initialization.");
     }
 
-    
-    
+
+
 
     // Connect the node to the network.
     // This will start the network manager and connect to the rendezvous server if configured.
     node.connect().await?;
 
 
+
+
+    // Synchronize the node with the network.
+    // This will fetch the latest blocks, transactions, and other data needed to bring the node
+
+
+    match start_mode {
+        NodeStartMode::Bootstrap => {
+            info!("Bootstrap: skipping synchronize(); this node is the source of genesis.");
+        },
+
+        NodeStartMode::Join => {
+            info!("Join: running synchronize() to fetch genesis/chain from peers.");
+            node.synchronize().await?;
+        }
+
+        NodeStartMode::Auto => unreachable!(),
+    }
+
+
+    // node.synchronize().await?;
+
+
     // TODO: Keep back node.start_services() call later
-    
+
     // Keep the node running indefinitely.
     loop {
         sleep(Duration::from_secs(60)).await;

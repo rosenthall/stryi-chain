@@ -6,15 +6,18 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 use figment::{Figment, providers::{Toml, Serialized}};
 use figment::providers::Format;
-use crate::cli::CliArgs;
+use crate::cli::{CliArgs, NodeStartMode};
 use crate::error::StryiNodeError;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NodeConfig {
     /* global settings */
     pub chain_name: String,
+    pub chain_id : String,
     pub genesis_config_path: Option<String>,
     pub block_header_version: u16,
+    #[serde(default)]
+    pub start_mode: NodeStartMode,
 
     /* network */
     pub network_listen_addr: String,
@@ -59,9 +62,11 @@ impl Default for NodeConfig {
     fn default() -> Self {
         Self {
             chain_name: "dev".into(),
+            chain_id: "devnet-001".to_string(),
             genesis_config_path: None,
             block_header_version: 1,
-                    
+
+            start_mode: NodeStartMode::Auto,
             network_listen_addr: "/ip4/0.0.0.0/tcp/1234".into(),
             network_rendezvous_mode: "server".into(),
             network_rendezvous_address: None,

@@ -59,6 +59,7 @@ base64 = "0.22.1"
 rand = "0.9.2"
 rayon = "1.10.0"
 indicatif = "0.18.0"
+comfy-table = "7.1.4"
 
 [dev-dependencies]
 x509-parser = "0.17.0"

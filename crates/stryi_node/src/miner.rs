@@ -327,6 +327,8 @@ fn mine_block(block: &mut Block, cancel: &CancellationToken) -> bool {
     const BATCH: u64 = 1_000_000;               // candidates per Rayon batch
     let bits = block.header.difficulty_bits;    // current network target
 
+    // TODO: Pre-compute block's static parts; memcpy the varying 4-byte nonce into a buffer before hashing instead of serializing the whole header each time.
+    
     // outer loop – repeat batches until solved or cancelled
     while !cancel.is_cancelled() {
         // Rayon tries the whole batch in parallel; stops the moment `find_any`

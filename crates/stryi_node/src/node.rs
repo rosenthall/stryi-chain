@@ -1,23 +1,28 @@
-use std::sync::Arc;
-use tokio::join;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::{broadcast, mpsc, RwLock};
-use tonic::transport::{Server, ServerTlsConfig};
-use tower::ServiceBuilder;
-use tower_http::compression::CompressionLayer;
-use tower_http::trace::TraceLayer;
-use tracing::info;
-use stryi_core::block::Block;
-use stryi_core::mempool::MemPool;
-use stryi_core::transactions::Transaction;
-use stryi_network::{BroadcastBlock, NetworkCommand, NetworkEvent, ServiceInfo, StryiNetworkManager};
-use stryi_storage::StryiStorage;
 use crate::error::StryiNodeError;
-use crate::grpc::{StryiSyncService, StryiSyncServiceConfig};
+use crate::grpc::{StryiSyncService, StryiSyncServiceConfig, GRPC_PEER_SERVICE};
 use crate::grpc_services::blockchain_sync_server::BlockchainSyncServer;
 use crate::http::StryiHttpServiceConfig;
 use crate::middleware::{ReadyFlag, ReadyGateLayer};
 use crate::tls::NodeTlsIdentity;
+use futures_util::pin_mut;
+use std::sync::Arc;
+use stryi_core::block::{Block, BlockHash};
+use stryi_core::mempool::MemPool;
+use stryi_core::transactions::Transaction;
+use stryi_network::{BroadcastBlock, NetworkCommand, NetworkEvent, ServiceInfo, StryiNetworkManager};
+use stryi_storage::StryiStorage;
+use tokio::join;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio_stream::StreamExt;
+use tonic::transport::{Server, ServerTlsConfig};
+use tower::ServiceBuilder;
+use tower_http::compression::CompressionLayer;
+use tower_http::trace::TraceLayer;
+use tracing::{error, info, trace};
+use crate::grpc_services;
+use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
+use crate::grpc_services::{BlockHashList, BlockHeightRange};
 
 /// The main struct representing the Stryi node instance.
 /// This node will later integrate networking, consensus, gRPC sync, mempool and mining services.
@@ -45,6 +50,7 @@ pub struct StryiChainNode {
     // Lightweight handles that live after connect().
     /// The command channel for sending network commands to the network manager.
     pub(crate) net_cmd: Option<mpsc::Sender<NetworkCommand>>,
+    
     /// The network events channel, used to receive events from the network manager.
     pub(crate) net_events: Option<broadcast::Receiver<NetworkEvent>>,
 
@@ -69,6 +75,7 @@ impl StryiChainNode {
     /// It must be called before any other operations, like synchronization or starting services.
     pub(crate) async fn connect(&mut self) -> Result<(), StryiNodeError> {
 
+        info!("Connecting to the network...");
 
         let mut mgr = self
             .network_manager
@@ -93,9 +100,99 @@ impl StryiChainNode {
 
     }
 
-    /// TODO: Implement synchronization functional for StryiChainNode. Synchronization must be *after* connecting to the network and *before* hosting sync service and processing network events.
-    async fn synchronize(mut self) -> Result<(), StryiNodeError> {
-        unimplemented!()
+
+
+    /// synchronize() is the second step in the node's lifecycle.
+    /// It is responsible for synchronizing the node with the network, fetching blocks, transactions,
+    /// and other data needed to bring the node up to date.
+    pub(crate) async fn synchronize(&mut self) -> Result<(), StryiNodeError> {
+        info!("Synchronizing with the network...");
+
+
+        let net_cmd = self.net_cmd.as_ref().ok_or_else(|| StryiNodeError::other("network not connected"))?;
+
+        // Ask the running manager for peers that offer gRPC sync
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        net_cmd.send(NetworkCommand::QueryPeersWithService {
+            service: GRPC_PEER_SERVICE.to_string(),
+            respond_to: tx,
+        }).await.map_err(|_| StryiNodeError::other("network command channel closed"))?;
+
+        let peers = rx.await.map_err(|_| StryiNodeError::other("network manager dropped response"))?;
+
+        let (grpc_peer_id, grpc_peer_service_info) = peers
+            .into_iter()
+            .find(|(_peer, svc)| svc.version() as usize == self.sync_service_config.protocol_version)
+            .ok_or_else(|| StryiNodeError::other("No compatible gRPC sync service found"))?;
+
+        info!(
+            "Using gRPC sync service from peer {} at address {} with version {}",
+            grpc_peer_id,
+            grpc_peer_service_info.address(),
+            grpc_peer_service_info.version()
+        );
+
+
+
+        // Connect to gRPC !
+        let addr = grpc_peer_service_info.address()
+            .to_string()
+            .parse::<tonic::transport::Uri>()
+            .map_err(|e| {
+                error!("Failed to parse gRPC sync service address: {}", e);
+                StryiNodeError::other("Failed to parse gRPC sync service address")
+            })?;;
+
+        let mut grpc_client = BlockchainSyncClient::connect(addr).await
+            .map_err(|e| {
+            error!("Failed to connect to gRPC sync service: {}", e);
+            StryiNodeError::other("Failed to connect to gRPC sync service")
+        })?;
+
+
+
+        // request the genesis block from the gRPC sync service
+        info!("Requesting genesis block from gRPC sync service at {}", grpc_peer_service_info.address());
+
+        let genesis_block: Block = {
+            let response = grpc_client.get_blocks_by_hash(
+                BlockHashList {
+                    block_hashes: vec![BlockHash::empty().to_string()],
+                }
+            ).await.map_err(|e| {
+                error!("Failed to get genesis block from gRPC sync service: {}", e);
+                StryiNodeError::other("Failed to get genesis block from gRPC sync service")
+            })?;
+
+            // The `get_blocks_by_hash` actually returns a list of blocks, so we need to extract the first one
+            let genesis_block = response.into_inner().next().await
+                .ok_or_else(|| StryiNodeError::other("No genesis block returned from gRPC sync service"))?
+                .map_err(|e| {
+                    error!("Cannot get genesis block from gRPC sync service, status {}", e);
+                    StryiNodeError::other("Cannot get genesis block from gRPC sync service")
+                })?;
+
+            // Convert the gRPC block to our Block type
+            genesis_block.try_into()
+                .map_err(|e| {
+                    error!("Failed to convert gRPC block to our Block type: {}", e);
+                    StryiNodeError::other(format!("Failed to convert gRPC block to our Block type: {:?}", e))
+                })?
+        };
+
+
+        trace!("Received genesis block: {:?}", genesis_block);
+
+
+
+
+
+
+
+        let address = grpc_peer_service_info.address().to_owned();
+
+
+        Ok(())
     }
 
     /*

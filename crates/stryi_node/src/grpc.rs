@@ -6,11 +6,13 @@ use tokio::sync::RwLock;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 use tonic::codegen::tokio_stream::Stream;
-use stryi_core::block::{Block, BlockHash};
+use stryi_core::block::{Block, BlockHash, BlockHeader};
 use stryi_core::storage::{BlockStorage, UtxoStorage};
 use stryi_storage::{StryiStorage, StryiStorageError};
 use http::{Response as HttpResponse, StatusCode};
 use tonic::body::Body;
+use stryi_core::merkletree::MerkleHash;
+use stryi_core::StryiCoreError;
 use crate::grpc_services::{
     // Some aliases to avoid overlapping with similar structs from stryi_core
     Block as PbBlock,
@@ -20,6 +22,11 @@ use crate::grpc_services::{
 };
 use crate::grpc_services::blockchain_sync_server::BlockchainSyncServer;
 use crate::middleware::NotReadyResponder;
+
+
+/// Const value for the gRPC service name to register in the network.
+pub const GRPC_PEER_SERVICE: &str = "grpc.sync";
+
 
 /// Implementation of grpc sync protocol, see proto/sync.proto
 #[derive(Clone)]
@@ -331,3 +338,41 @@ impl From<Block> for PbBlock {
         }
     }
 }
+
+
+impl TryFrom<PbBlock> for Block {
+    type Error = StryiCoreError;
+
+    fn try_from(value: PbBlock) -> Result<Self, Self::Error> {
+        
+        // Try to extract the header from the PbBlock
+        let header: stryi_core::block::BlockHeader = {
+            let grpc_header = value.header.ok_or(StryiCoreError::other("Got block with no header!"))?;
+            
+            BlockHeader {
+                version: grpc_header.version as u16,
+                merkle_root_hash: MerkleHash::from_hash_string(&grpc_header.merkle_root_hash)?,
+                previous_block_hash: BlockHash::from_hash_string(&grpc_header.previous_block_hash)?,
+                height: grpc_header.height,
+                difficulty_bits: grpc_header.difficulty_bits as u8,
+                timestamp: grpc_header.timestamp,
+                nonce: grpc_header.nonce,
+                is_genesis: grpc_header.is_genesis,
+            }
+        };
+        
+        // Decode the serialized block body
+        let data = {
+            let grpc_body = value.body.ok_or(StryiCoreError::other("Got block with no body!"))?;
+            bincode::serde::decode_from_slice(&grpc_body.serialized, bincode::config::standard())
+                .map_err(StryiCoreError::other)?.0
+        };
+        
+        // Construct the Block from header and body
+        Ok(Block {
+            header,
+            data,
+        })
+    }
+}
+

@@ -3,9 +3,42 @@
 //! Every field is an `Option<T>`.
 //! If a flag is omitted, its value doesn’t overwrite the TOML file.
 
+use std::str::FromStr;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
+
+
+
+/// Represents the behavior of the node at startup.
+#[derive(Debug, Deserialize, Default, Serialize)]
+#[serde(rename_all = "PascalCase")] // "Bootstrap" | "Join" | "Auto"
+pub enum NodeStartMode {
+    /// In this mode, the node starts from the provided genesis block and builds the chain from scratch.
+    Bootstrap,
+
+    /// In this mode, the node connects to peer and takes its genesis block, and then builds the chain from there.
+    Join,
+
+    #[default]
+    /// In this mode, the node checks if it already has a genesis block, and if not, it starts in Bootstrap mode, else it starts in Join mode.
+    Auto,
+}
+
+
+
+impl FromStr for NodeStartMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "bootstrap" => Ok(NodeStartMode::Bootstrap),
+            "join"      => Ok(NodeStartMode::Join),
+            "auto"      => Ok(NodeStartMode::Auto),
+            other       => Err(format!("unknown StartMode: {other}")),
+        }
+    }
+}
+
 
 #[skip_serializing_none]
 #[derive(Parser, Debug, Default, Serialize, Deserialize)]

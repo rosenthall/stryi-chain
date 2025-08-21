@@ -12,6 +12,7 @@ mod hash;
 
 /// Definition of StryiError enum.
 mod error;
+pub use error::StryiCoreError;
 
 /// Implementation Block primitive of the blockchain, includes high-level APIs and parallel CPU mining module.
 pub mod block;
