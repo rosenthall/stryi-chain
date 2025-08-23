@@ -37,6 +37,7 @@ pub struct NodeConfig {
     
     /* miner */
     pub miner_enabled : bool,
+    pub miner_hashrate_bench: bool,
     pub miner_tx_threshold: usize,
     pub miner_max_delay_secs: usize,
     pub miner_reward_address: String,
@@ -81,6 +82,7 @@ impl Default for NodeConfig {
             mempool_max_transactions: 100,
 
             miner_enabled: false,
+            miner_hashrate_bench: false,
             miner_tx_threshold: 1,
             miner_max_delay_secs: 20,
             miner_reward_address: "@nah".to_string(),

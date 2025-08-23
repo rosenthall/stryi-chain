@@ -362,11 +362,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // Pretty print the miner reward address so user will not miss it
         println!("{}", "==================================MINER==================================".blue().bold());
         println!("{} {}", "Miner reward address is set to:".purple(), reward_address.to_string().green().bold());
-        // Also print the hashrate (just for fun)
-        hashrate::warm_up();
+        // Run the hashrate bench if enabled in config
+        if cfg.miner_hashrate_bench {
+            hashrate::warm_up();
+        }
         println!("{}", "=========================================================================".blue().bold());
-
-
 
 
         // Create a channel for network commands
@@ -383,17 +383,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
             reward_address,
         );
 
-        
-        // Create the miner instance 
+
+        // Create the miner instance
         // .....
-        
-        
-        
+
+
     } else {
         info!("Mining is disabled, skipping miner initialization.");
     }
-
-
+    
 
 
     // Connect the node to the network.
@@ -404,9 +402,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 
     // Synchronize the node with the network.
-    // This will fetch the latest blocks, transactions, and other data needed to bring the node
-
-
+    // Depending on the start mode, this may involve fetching the genesis block and chain data from peers.
+    // Or if bootstrapping, skip synchronization as this node is the source of genesis.
     match start_mode {
         NodeStartMode::Bootstrap => {
             info!("Bootstrap: skipping synchronize(); this node is the source of genesis.");

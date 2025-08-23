@@ -12,7 +12,7 @@ use serde_with::skip_serializing_none;
 
 /// Represents the behavior of the node at startup.
 #[derive(Debug, Deserialize, Default, Serialize)]
-#[serde(rename_all = "PascalCase")] // "Bootstrap" | "Join" | "Auto"
+#[serde(rename_all = "snake_case")] // "bootstrap" | "join" | "auto"
 pub enum NodeStartMode {
     /// In this mode, the node starts from the provided genesis block and builds the chain from scratch.
     Bootstrap,
@@ -108,6 +108,9 @@ pub struct CliArgs {
     /// Enable the miner.
     #[arg(long)]
     pub miner_enabled: Option<bool>,
+    
+    /// Enable the hashrate bench at start of run
+    pub miner_hashrate_bench: Option<bool>,
 
     /// Target number of transactions before mining.
     #[arg(long)]

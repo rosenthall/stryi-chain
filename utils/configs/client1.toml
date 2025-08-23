@@ -1,8 +1,7 @@
 network_rendezvous_mode   = "client"
 network_rendezvous_address = "/ip4/127.0.0.1/tcp/4001"
 network_listen_addr       = "/ip4/127.0.0.1/tcp/4002"
-#genesis_config_path     = "../../utils/demo_genesis.json"
-start_mode = "Auto"
+start_mode = "join"
 
 storage_path              = "/tmp/stryi/client1"
 grpc_sync_address         = "127.0.0.1:6002"
