@@ -23,7 +23,8 @@ use rand::prelude::IteratorRandom;
 use stryi_core::mempool::MemPool;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, RwLockReadGuard};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
+use tracing::field::debug;
 use crate::peer::PeerInfo;
 
 /// StryiNetworkManager sets up the transport, constructs a swarm using our unified StryiBehaviour,
@@ -80,6 +81,7 @@ impl StryiNetworkManager {
         // Use provided key or generate one.
         let key = config.clone().keypair;
         let local_peer_id = PeerId::from(key.public());
+        info!("local_peer_id={}", local_peer_id);
 
         // Build the transport (TCP + Noise + Yamux).
         let transport = Self::build_transport(&key)?;
@@ -193,13 +195,18 @@ impl StryiNetworkManager {
             .filter_map(|(id, info)| {
                 info.services
                     .iter()
-                    .find(|s| s.kind == kind)
+                    .find(|s| s.kind() == kind)
                     .cloned()
                     .map(|svc| (*id, svc))
             })
             .choose(&mut rand::thread_rng())
     }
 
+    /// Returns the configured keypair for this network manager.
+    pub fn get_keypair(&self) -> Keypair {
+        self.config.keypair.clone()
+    }
+    
 
     /// Helper function to build a transport (TCP + Noise + Yamux).
     pub(crate) fn build_transport(
@@ -208,7 +215,7 @@ impl StryiNetworkManager {
         let noise_config = noise::Config::new(key).map_err(StryiNetworkError::NoiseConfigError)?;
         let tcp_transport = tcp::tokio::Transport::new(tcp::Config::default());
         let transport = tcp_transport
-            .upgrade(upgrade::Version::V1)
+            .upgrade(upgrade::Version::V1Lazy)
             .authenticate(noise_config)
             .multiplex(yamux::Config::default())
             .boxed();
@@ -252,31 +259,64 @@ impl StryiNetworkManager {
                 command = self.command_rx.recv() => {
                     // TODO: Implement NetworkCommands handler in network-manager loop
 
-
-                   if let Some(NetworkCommand::QueryPeersWithService { service, respond_to }) = command {
-
+                match command {
+                    // -- QueryPeersWithService command --
+                    Some(NetworkCommand::QueryPeersWithService { service, respond_to }) => {
+                        debug!("NetworkManager: Got QueryPeersWithService command.");
+            
                         // Read the current peer map atomically
                         // self.connected_peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>
-                        let peers_snapshot: Vec<(PeerId, ServiceInfo)> = {
-                            let guard: RwLockReadGuard<'_, HashMap<PeerId, PeerInfo>> =
-                            self.connected_peers.read().await;
-                            guard.iter()
-                            .flat_map(|(peer_id, info)| {
-                                info.services
+                        let mut discovered_services: Vec<(PeerId, ServiceInfo)> = {
+                            let guard = self.connected_peers.read().await;
+                            guard
                                 .iter()
-                                .filter(|svc| svc.kind() == service)
-                                .cloned()
-                                .map(|svc| (*peer_id, svc))
-                            })
-                            .collect()
+                                .flat_map(|(peer_id, info)| {
+                                    info.services
+                                        .iter()
+                                        .filter(|svc| svc.kind() == service)
+                                        .cloned()
+                                        .map(|svc| (*peer_id, svc))
+                                })
+                                .collect()
                         };
-
+            
+                        // Add services of this very peer
+                        let own_services = self.services_info.read().await;
+                        for own_service in own_services.iter().filter(|svc| svc.kind() == service) {
+                            discovered_services.push((self.peer_id, own_service.clone()));
+                        }
+            
+                        info!(
+                            "NetworkManager: Found {} peers with service '{}'.",
+                            discovered_services.len(),
+                            service
+                        );
+                        debug!("Discovered services: {:?}", debug(&discovered_services));
+            
                         //  reply (ignore if receiver is gone)
-                        let _ = respond_to.send(peers_snapshot);
-
-                    };
+                        let _ = respond_to.send(discovered_services);
+                    }
+            
+                    // -- QueryPeerPublicKey command --
+                    Some(NetworkCommand::QueryPeerPublicKey { peer, respond_to }) => {
+                        debug!("NetworkManager: Got QueryPeerPublicKey command.");
+            
+                        // Look up the peer's public key
+                        let public_key = {
+                            let guard = self.connected_peers.read().await;
+                            guard.get(&peer).and_then(|info| info.public_key.clone())
+                        };
+            
+                        // Reply (ignore if receiver is gone)
+                        let _ = respond_to.send(public_key);
+                    }
+            
+                    // Anything else (including `None` when the channel closes) is safely ignored
+                    _ => {}
+                    
+                    }
                 }
-                
+
                 
                 // --- libp2p events ---
                 event = swarm.select_next_some() => {

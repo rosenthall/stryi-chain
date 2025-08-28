@@ -131,8 +131,7 @@ impl StryiBehaviour {
 
 
         // Build Identify with a fixed protocol version.
-        let id_cfg = IdentifyConfig::new(protocol_version.to_string(), keypair.public());
-        let identify = Identify::new(id_cfg);
+        let identify = Self::build_identify(keypair);
 
         // Set up Rendezvous toggles.
         let rendezvous_server = if cfg.enable_rendezvous_server {
@@ -157,8 +156,13 @@ impl StryiBehaviour {
         })
     }
 
-
-
+    
+    /// Helper to build identify behaviour with automatic listen address updates.
+    pub fn build_identify(keypair: &Keypair) -> Identify {
+        let cfg = IdentifyConfig::new("stryichain/0.1.0".to_string(), keypair.public())
+            .with_push_listen_addr_updates(true); // Enable automatic updates of listen addresses
+        Identify::new(cfg)
+    }
     
     /// Helper to build a custom gossipsub behaviour instance using the provided `StryiBehaviourConfig` and a `keypair`.
     fn build_gossipsub(cfg: &StryiBehaviourConfig, keypair: &Keypair) -> Result<Gossipsub, StryiNetworkError> {
@@ -173,7 +177,7 @@ impl StryiBehaviour {
             .validation_mode(ValidationMode::Strict)
             .message_id_fn(msg_id_fn)
             .build()
-            .map_err(|e| GossipsubConfigError(e))?;
+            .map_err(GossipsubConfigError)?;
 
         let gossipsub_behaviour = Gossipsub::new(
             MessageAuthenticity::Signed(keypair.clone()),

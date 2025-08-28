@@ -25,7 +25,7 @@ use crate::middleware::NotReadyResponder;
 
 
 /// Const value for the gRPC service name to register in the network.
-pub const GRPC_PEER_SERVICE: &str = "grpc.sync";
+pub const GRPC_PEER_SERVICE: &str = "grpc-sync";
 
 
 /// Implementation of grpc sync protocol, see proto/sync.proto

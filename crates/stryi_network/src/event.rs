@@ -4,14 +4,25 @@ use crate::services::{ServicesInfoRequest, ServicesResponse};
 use crate::{BroadcastBlock, NetworkEvent, StryiBehaviour, StryiEvent, StryiNetworkError, StryiNetworkManager};
 use bincode::config::standard;
 use bincode::serde::decode_from_slice;
-use libp2p::request_response::Event as ReqRespEvent;
+use libp2p::request_response::{Event as ReqRespEvent, Message};
+use libp2p::identify::{Event as IdentifyEvent, Info as IdentifyInfo};
 use libp2p::request_response::{InboundRequestId, ResponseChannel};
 use libp2p::swarm::SwarmEvent;
-use libp2p::{Swarm, gossipsub, request_response};
+use libp2p::{Swarm, gossipsub, request_response, Multiaddr, PeerId, identity};
+use libp2p::core::ConnectedPoint;
 use libp2p::ping::{Event as PingEvent};
 use stryi_core::transactions::Transaction;
 use tracing::{debug, error, info, trace, warn};
-use crate::peer::PeerInfo;
+use crate::peer::{PeerInfo, PeerMapExt};
+
+const MAX_PING_FAILURES: usize = 10;
+
+fn remote_addr_from_endpoint(endpoint: &ConnectedPoint) -> Multiaddr {
+    match endpoint {
+        ConnectedPoint::Dialer { address, .. } => address.clone(),
+        ConnectedPoint::Listener { send_back_addr, .. } => send_back_addr.clone(),
+    }
+}
 
 impl StryiNetworkManager {
     /// Process a single event from the swarm, handling it according to its type.
@@ -29,26 +40,21 @@ impl StryiNetworkManager {
             SwarmEvent::NewListenAddr { address, .. } => {
                 info!("Listening on {}", address);
             }
-            SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                info!("Connected to {}", peer_id);
 
-
-                // get the peer's services info
-                let behaviour_ref = swarm.behaviour_mut();
-                let outbound_request_id = behaviour_ref
-                    .services_info
-                    .send_request(
-                        &peer_id,
-                        ServicesInfoRequest::ListServices,
-                    );
-                info!("Sent ServicesInfo request to peer {} with request ID {}", peer_id, outbound_request_id);
-
+            SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+                let remote = remote_addr_from_endpoint(&endpoint);
+                {
+                    let mut peers = self.connected_peers.write().await;
+                    peers.upsert_connected(peer_id, remote);
+                }
             }
+
 
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                 info!("Disconnected from {}", peer_id);
                 self.connected_peers.write().await.remove(&peer_id);
             }
+
 
             // -- Stryichain's custom behaviour events --
             SwarmEvent::Behaviour(behaviour_event) => {
@@ -105,30 +111,27 @@ impl StryiNetworkManager {
                                 }
                             }
 
-                            // inbound response
+                            // Inbound response: cache peer's services
                             ReqRespEvent::Message {
-                                peer,    // remote PeerId
-                                message:
-                                request_response::Message::Response {
-                                    response,
-                                    ..
-                                },
+                                peer,
+                                message: Message::Response { response, .. },
                                 ..
                             } => {
-
                                 let ServicesResponse { services } = response;
-                                let mut peers = self.connected_peers.write().await;
-                                    peers
-                                        .entry(peer)
-                                        .and_modify(|info| info.services = services.clone())
-                                        .or_insert(PeerInfo {
-                                            established_at: None,
-                                            last_seen:      Some(SystemTime::now()),
-                                            addresses:      Vec::new(),
-                                            services,                       // cached service list
-                                            consecutive_ping_failures: 0,
-                                        });
-                                    trace!("cached services for peer {peer}");
+                                {
+                                    let mut peers = self.connected_peers.write().await;
+                                    peers.upsert_services(peer, services);     // helper stores + timestamps
+                                }
+                                trace!("cached services for peer {}", peer);
+                            }
+
+
+                            // Channel failures (just diagnostics)
+                            ReqRespEvent::OutboundFailure { peer, error, request_id, .. } => {
+                                warn!("ServicesInfo outbound failure peer={} req_id={:?} err={:?}", peer, request_id, error);
+                            }
+                            ReqRespEvent::InboundFailure  { peer, error, request_id, .. } => {
+                                warn!("ServicesInfo inbound failure peer={} req_id={:?}  err={:?}", peer, request_id, error);
                             }
 
                             _ => {
@@ -142,42 +145,34 @@ impl StryiNetworkManager {
                     StryiEvent::Gossipsub(gossipsub_event) => {
                         self.handle_gossipsub_event(gossipsub_event).await.ok();
                     }
-
-                    // ---- Ping ----
                     StryiEvent::Ping(PingEvent { peer, result, .. }) => {
                         match result {
 
-                            // If the ping was successful, update the peer info
+                            // Success path: mark last_seen, reset failure counter
                             Ok(rtt) => {
-                                let mut peers = self.connected_peers.write().await;
-                                let info = peers.entry(peer).or_insert_with(|| PeerInfo {
-                                    established_at: Some(SystemTime::now()),
-                                    last_seen: None,
-                                    addresses: Vec::new(),
-                                    consecutive_ping_failures: 0, // any new correct ping resets the failure count
-                                    services: vec![],
-                                });
-                                info.last_seen = Some(SystemTime::now());
-                                info.consecutive_ping_failures = 0;
+                                {
+                                    let mut peers = self.connected_peers.write().await;
+                                    peers.ping_success(peer);
+                                }
                                 debug!("ping {} rtt = {:?}", peer, rtt);
                             }
 
-                            // If the ping failed, log the error and check if we need to disconnect the peer (in case of too many failures in a row)
+                            // Failure path: increment failure counter and optionally disconnect
                             Err(err) => {
-                                const MAX_PING_FAILURES: usize = 10;
                                 warn!("ping {} failed: {}", peer, err);
-                                let mut drop_now = false;
-                                {
+
+                                // update counter under lock, grab the new value
+                                let failures = {
                                     let mut peers = self.connected_peers.write().await;
-                                    if let Some(info) = peers.get_mut(&peer) {
-                                        info.consecutive_ping_failures += 1;
-                                        drop_now = info.consecutive_ping_failures >= MAX_PING_FAILURES;
-                                    }
-                                }
-                                if drop_now {
-                                    warn!("Disconnecting unresponsive peer {}", peer);
+                                    peers.ping_failure(peer)                // helper returns the count
+                                };
+
+                                debug!("ping {} consecutive failures = {}", peer, failures);
+
+                                if failures >= MAX_PING_FAILURES {
+                                    warn!("Disconnecting unresponsive peer {} (failures >= {})", peer, MAX_PING_FAILURES);
                                     if let Err(e) = swarm.disconnect_peer_id(peer) {
-                                        error!("Disconnect error: {:?}", e);
+                                        error!("Disconnect error for {}: {:?}", peer, e);
                                     }
                                 }
                             }
@@ -186,10 +181,48 @@ impl StryiNetworkManager {
 
                     // --- Identify ---
 
-                    // TODO: Setup Identify events handling
+
+
+                    StryiEvent::Identify(id_ev) => {
+                        match id_ev {
+                            IdentifyEvent::Received { peer_id, info, .. } => {
+                                // Cache listen_addrs and observed_addr
+                                let IdentifyInfo { listen_addrs, observed_addr, public_key, .. } = info;
+
+                                {
+                                    let mut peers = self.connected_peers.write().await;
+                                    peers.upsert_identify(
+                                        peer_id,
+                                        listen_addrs,
+                                        Some(observed_addr),
+                                        public_key.clone(),
+                                    );
+                                }
+
+
+                                // Send a single ServicesInfo request now (after Identify)
+                                let req_id = swarm
+                                    .behaviour_mut()
+                                    .services_info
+                                    .send_request(&peer_id, ServicesInfoRequest::ListServices);
+                                info!("Sent ServicesInfo request to {} (req_id={:?}) after Identify", peer_id, req_id);
+                            }
+
+                            IdentifyEvent::Sent { peer_id, ..} => {
+                                debug!("Identify sent to {}", peer_id);
+                            }
+
+                            IdentifyEvent::Error { peer_id, error , ..} => {
+                                warn!("Identify error with {}: {}", peer_id, error);
+                            }
+
+                            other => {
+                                debug!("Identify event: {:?}", other);
+                            }
+                        }
+                    }
 
                     // -- temporal stubs --
-                    StryiEvent::Identify(e) => debug!("Identify event: {:?}", e),
                     StryiEvent::RzvServer(e) => debug!("Rendezvous Server event: {:?}", e),
                     StryiEvent::RzvClient(e) => debug!("Rendezvous Client event: {:?}", e),
 

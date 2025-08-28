@@ -1,10 +1,12 @@
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use pem::Pem;
 use pkcs8::{ObjectIdentifier, PrivateKeyInfo};
 use pkcs8::der::Encode;
 use pkcs8::spki::AlgorithmIdentifier;
 use rcgen::{date_time_ymd, CertificateParams, DistinguishedName, KeyPair, PKCS_ED25519};
 use rustls_pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
-use stryi_network::Keypair; // Re-import of libp2p's Keypair  
+use stryi_network::Keypair; // Re-import of libp2p's Keypair
 use crate::error::StryiNodeError;
 
 /// TLS identity of a Stryi node:
@@ -16,6 +18,9 @@ pub struct NodeTlsIdentity {
 
     /// PEM-encoded PKCS#8 private key (`-----BEGIN PRIVATE KEY----- …`)
     pub key_pem: String,
+
+    /// ed25519 signature of der certificate in base64 format
+    pub cert_sig: String,
 }
 
 /// Wrap a 32-byte Ed25519 seed in a valid PKCS-8 OneAsymmetricKey.
@@ -51,7 +56,7 @@ pub fn cert_and_key_from_peer(
         .secret()
         .as_ref()
         .try_into()
-        .map_err(|e| StryiNodeError::other(e))?;
+        .map_err(StryiNodeError::other)?;
 
 
     let private_key_der = pkcs8_from_seed(&seed)?;
@@ -61,6 +66,10 @@ pub fn cert_and_key_from_peer(
     // 2. Build params
     let mut params = CertificateParams::new(sans.iter().map(|s| s.to_string()).collect::<Vec<_>>())
         .map_err(|e| StryiNodeError::Other(e.to_string()))?;
+
+    params.key_usages.push(rcgen::KeyUsagePurpose::KeyCertSign);
+    params.is_ca      = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained); // CA:TRUE
+
     params.distinguished_name = DistinguishedName::new();
     params.not_before = date_time_ymd(1975, 1, 1);
     params.not_after  = date_time_ymd(4096, 1, 1);
@@ -68,21 +77,35 @@ pub fn cert_and_key_from_peer(
     params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
 
     // 3. Self-sign & serialize
-    let cert = params.self_signed(&key_pair).map_err(|e| StryiNodeError::other(e))?;
+    let cert = params.self_signed(&key_pair).map_err(StryiNodeError::other)?;
 
 
     let cert_pem = cert.pem();
 
     
     let der = key_pair.serialize_der(); // Vec<u8> 
-    let key_pem = pem::encode(&Pem::new("PRIVATE KEY", der)); // String
+    let key_pem = pem::encode(&Pem::new("PRIVATE KEY", der.clone())); // String
+
     
     
-    Ok(NodeTlsIdentity { cert_pem, key_pem })
+    // 4. Sign the certificate DER with the peer key to prove ownership
+    let ed_kp = peer_key
+        .clone()
+        .try_into_ed25519()
+        .expect("always ed25519");
+
+    let sig   = ed_kp.sign(&der); // Vec<u8>
+    let cert_sig = BASE64_STANDARD.encode(sig);
+    
+    
+
+    Ok(NodeTlsIdentity { cert_pem, key_pem, cert_sig })
 }
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
+    use base64::prelude::BASE64_STANDARD;
     use stryi_network::Keypair;
     use super::{cert_and_key_from_peer, NodeTlsIdentity};
     use x509_parser::{parse_x509_certificate, prelude::*};
@@ -94,20 +117,25 @@ mod tests {
         let libp2p_pk = peer_key.public(); // libp2p public key bytes
 
         // call the helper under test 
-        let NodeTlsIdentity { cert_pem, key_pem} = cert_and_key_from_peer(&peer_key, &["stryi.service"]).unwrap();
+        let NodeTlsIdentity { cert_pem, key_pem, cert_sig} = cert_and_key_from_peer(&peer_key, &["stryi.service"]).unwrap();
 
         
         println!("{cert_pem}");
         println!("{key_pem}");
+        println!("{cert_sig}");
         
         
         // basic sanity: PEM headers
         assert!(cert_pem.starts_with("-----BEGIN CERTIFICATE-----"));
         assert!(key_pem.starts_with("-----BEGIN PRIVATE KEY-----"));
 
+        
+        // cert_sig is base64
+        assert!(BASE64_STANDARD.decode(&cert_sig).is_ok());
+        
         // parse certificate DER
         // strip PEM into DER
-        let der_bytes = parse_x509_pem(&cert_pem.as_bytes()).unwrap().1.contents;
+        let der_bytes = parse_x509_pem(cert_pem.as_bytes()).unwrap().1.contents;
 
 
         // X.509 parse

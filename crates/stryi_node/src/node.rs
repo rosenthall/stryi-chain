@@ -4,23 +4,26 @@ use crate::grpc_services::blockchain_sync_server::BlockchainSyncServer;
 use crate::http::StryiHttpServiceConfig;
 use crate::middleware::{ReadyFlag, ReadyGateLayer};
 use crate::tls::NodeTlsIdentity;
-use futures_util::pin_mut;
 use std::sync::Arc;
+use std::time::Duration;
+use rustls::{ClientConfig, RootCertStore};
+use rustls_pki_types::pem::{PemObject, SectionKind};
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::mempool::MemPool;
-use stryi_core::transactions::Transaction;
-use stryi_network::{BroadcastBlock, NetworkCommand, NetworkEvent, ServiceInfo, StryiNetworkManager};
+use stryi_network::{BroadcastBlock, NetworkCommand, NetworkEvent, PeerId, ServiceInfo, StryiNetworkManager};
 use stryi_storage::StryiStorage;
 use tokio::join;
-use tokio::sync::mpsc::Sender;
 use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::time::{sleep, Instant};
 use tokio_stream::StreamExt;
-use tonic::transport::{Server, ServerTlsConfig};
+use tonic::transport::{Channel, ClientTlsConfig, Endpoint, Server, ServerTlsConfig};
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
-use tracing::{error, info, trace};
-use crate::grpc_services;
+use tracing::{debug, error, info, trace};
+use stryi_network::ed25519::Keypair;
+use crate::{grpc, grpc_services};
+use crate::genesis_manager::GenesisManager;
 use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
 use crate::grpc_services::{BlockHashList, BlockHeightRange};
 
@@ -40,12 +43,17 @@ pub struct StryiChainNode {
     // Network manager is owned until connect(); then moved into the run loop task.
     pub(crate) network_manager: Option<StryiNetworkManager>,
 
+    /// The node's identity keypair (ed25519) from NetworkManager
+    pub(crate) keypair: Keypair,
+
     /// A list of services that this node runs
     pub(crate) services_info: Arc<RwLock<Vec<ServiceInfo>>>,
 
     /// A node's tls identity (based on PeerKey)
     pub(crate) tls_identity: NodeTlsIdentity,
 
+    /// The root certificate for TLS connections to other peers (for gRPC client)
+    pub(crate) grpc_tls_root: tonic::transport::Certificate,
 
     // Lightweight handles that live after connect().
     /// The command channel for sending network commands to the network manager.
@@ -54,6 +62,8 @@ pub struct StryiChainNode {
     /// The network events channel, used to receive events from the network manager.
     pub(crate) net_events: Option<broadcast::Receiver<NetworkEvent>>,
 
+    /// The genesis manager, responsible for loading/initializing the genesis block and UTXO set.
+    pub(crate) genesis_manager: GenesisManager,
 
     /// Configuration for the gRPC-based synchronization service.
     pub(crate) sync_service_config: StryiSyncServiceConfig,
@@ -100,6 +110,14 @@ impl StryiChainNode {
 
     }
 
+    // Constants for peer discovery during synchronization
+    
+    /// How many seconds try to discover peers with gRPC sync service
+    const DISCOVERY_TIMEOUT: Duration  = Duration::from_secs(10);
+    
+    /// How often to poll the network for peers with gRPC sync service
+    const DISCOVERY_INTERVAL: Duration = Duration::from_millis(250);
+
 
 
     /// synchronize() is the second step in the node's lifecycle.
@@ -111,18 +129,71 @@ impl StryiChainNode {
 
         let net_cmd = self.net_cmd.as_ref().ok_or_else(|| StryiNodeError::other("network not connected"))?;
 
-        // Ask the running manager for peers that offer gRPC sync
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        net_cmd.send(NetworkCommand::QueryPeersWithService {
-            service: GRPC_PEER_SERVICE.to_string(),
-            respond_to: tx,
-        }).await.map_err(|_| StryiNodeError::other("network command channel closed"))?;
 
-        let peers = rx.await.map_err(|_| StryiNodeError::other("network manager dropped response"))?;
+        let started = Instant::now();
+        let mut candidates: Vec<(PeerId, ServiceInfo)> = Vec::new();
 
-        let (grpc_peer_id, grpc_peer_service_info) = peers
+        // First, discover peers that offer the gRPC sync service with the compatible version
+        // not fail instantly if none found - retry for up to DISCOVERY_TIMEOUT
+        loop {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            net_cmd.send(NetworkCommand::QueryPeersWithService {
+                service: GRPC_PEER_SERVICE.to_owned(),
+                respond_to: tx,
+            }).await.map_err(|_| StryiNodeError::other("network command channel closed"))?;
+
+            if let Ok(mut v) = rx.await {
+                v.retain(|(_, s)| s.version() as usize == self.sync_service_config.protocol_version);
+                if !v.is_empty() { candidates = v; break; }
+            }
+
+            if started.elapsed() >= Self::DISCOVERY_TIMEOUT { break; }
+            sleep(Self::DISCOVERY_INTERVAL).await;
+        }
+
+        if candidates.is_empty() {
+            return Err(StryiNodeError::other("No compatible gRPC sync service found"));
+        }
+
+
+        let (peer, svc) = candidates[0].clone();
+
+        // obtain peer's libp2p public key
+        let peer_pubkey = {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            net_cmd
+                .send(NetworkCommand::QueryPeerPublicKey { peer, respond_to: tx })
+                .await
+                .map_err(|_| StryiNodeError::other("network command channel closed"))?;
+
+            rx.await
+                .map_err(|_| StryiNodeError::other("network response channel closed"))?
+                .ok_or_else(|| StryiNodeError::other("peer not found"))?
+        };
+
+        // verify the signature on the service info using the peer's public key
+
+        // convert to ed25519 public key
+        let peer_pubkey = peer_pubkey.try_into_ed25519().expect("peer public key is not ed25519");
+
+        if !svc.verify_signature(&peer_pubkey) {
+            return Err(StryiNodeError::other("TLS certificate signature invalid"));
+        }
+
+        info!("Using gRPC sync service at {} (version {})", svc.address(), svc.version());
+
+
+        debug!("{:#?}", candidates);
+        
+
+        let (grpc_peer_id, grpc_peer_service_info) = candidates
             .into_iter()
-            .find(|(_peer, svc)| svc.version() as usize == self.sync_service_config.protocol_version)
+            .find(|(_peer, svc)|
+                      {
+                          trace!("peer's service info: {:?}", svc);
+                          trace!("Discovered service version: {}, required: {}", svc.version(), self.sync_service_config.protocol_version);
+                          svc.version() as usize == self.sync_service_config.protocol_version
+                      })
             .ok_or_else(|| StryiNodeError::other("No compatible gRPC sync service found"))?;
 
         info!(
@@ -133,69 +204,84 @@ impl StryiChainNode {
         );
 
 
-
         // Connect to gRPC !
-        let addr = grpc_peer_service_info.address()
-            .to_string()
+
+        // Parse the address into a tonic::transport::Uri
+        let formatted_addr = format!("http://{}", grpc_peer_service_info.address().to_string());
+
+        let uri = formatted_addr
             .parse::<tonic::transport::Uri>()
-            .map_err(|e| {
-                error!("Failed to parse gRPC sync service address: {}", e);
-                StryiNodeError::other("Failed to parse gRPC sync service address")
-            })?;;
+            .map_err(|e| StryiNodeError::other(format!("Failed to parse URI: {e}")))?;
 
-        let mut grpc_client = BlockchainSyncClient::connect(addr).await
-            .map_err(|e| {
-            error!("Failed to connect to gRPC sync service: {}", e);
-            StryiNodeError::other("Failed to connect to gRPC sync service")
-        })?;
+        // ServiceInfo already validated; its PEM can become the CA directly.
+        let peer_ca = tonic::transport::Certificate::from_pem(
+            svc.cert_pem()
+                .ok_or_else(|| StryiNodeError::other("service missing certificate"))?,
+        );
 
+        // Extract host part for SNI / domain verification
+        // let tls_cfg = ClientTlsConfig::new()
+        //    .accept_invalid_hostnames(true);
 
+        // create TLS channel and gRPC client
+        let channel = Endpoint::from(uri)
+        //  .tls_config(tls_cfg)
+        // .map_err(|e| StryiNodeError::other(format!("TLS config error: {e}")))?
+            .connect()
+            .await
+            .map_err(|e| StryiNodeError::other(format!("gRPC dial error: {e}")))?;
+
+        let mut grpc_client = BlockchainSyncClient::new(channel);
 
         // request the genesis block from the gRPC sync service
-        info!("Requesting genesis block from gRPC sync service at {}", grpc_peer_service_info.address());
+        info!(
+            "Requesting genesis block from gRPC sync service at {}",
+            svc.address()
+        );
 
         let genesis_block: Block = {
-            let response = grpc_client.get_blocks_by_hash(
-                BlockHashList {
+            let response = grpc_client
+                .get_blocks_by_hash(BlockHashList {
                     block_hashes: vec![BlockHash::empty().to_string()],
-                }
-            ).await.map_err(|e| {
-                error!("Failed to get genesis block from gRPC sync service: {}", e);
-                StryiNodeError::other("Failed to get genesis block from gRPC sync service")
-            })?;
-
-            // The `get_blocks_by_hash` actually returns a list of blocks, so we need to extract the first one
-            let genesis_block = response.into_inner().next().await
-                .ok_or_else(|| StryiNodeError::other("No genesis block returned from gRPC sync service"))?
+                })
+                .await
                 .map_err(|e| {
-                    error!("Cannot get genesis block from gRPC sync service, status {}", e);
-                    StryiNodeError::other("Cannot get genesis block from gRPC sync service")
+                    StryiNodeError::other(format!(
+                        "Failed to get genesis block from gRPC service: {e}"
+                    ))
                 })?;
 
-            // Convert the gRPC block to our Block type
-            genesis_block.try_into()
+            // `get_blocks_by_hash` returns a stream; pull first element
+            let genesis_block_grpc = response
+                .into_inner()
+                .next()
+                .await
+                .ok_or_else(|| StryiNodeError::other("No genesis block returned"))?
                 .map_err(|e| {
-                    error!("Failed to convert gRPC block to our Block type: {}", e);
-                    StryiNodeError::other(format!("Failed to convert gRPC block to our Block type: {:?}", e))
-                })?
+                    StryiNodeError::other(format!(
+                        "Received error status while fetching genesis: {e}"
+                    ))
+                })?;
+
+            genesis_block_grpc.try_into().map_err(|e| {
+                StryiNodeError::other(format!(
+                    "Failed to convert gRPC block to internal type: {e:?}"
+                ))
+            })?
         };
+
+
 
 
         trace!("Received genesis block: {:?}", genesis_block);
 
-
-
-
-
-
-
-        let address = grpc_peer_service_info.address().to_owned();
-
+        self.genesis_manager.prompt_and_cache_block(&genesis_block)?;
+        
 
         Ok(())
     }
 
-    /*
+
     /// Starts the node instance and basic services, like mempool, grpc sync server, mining-loop (if set in the config), handles network events
     /// Meant to be called after `connect()` and `synchronize()`. 
     pub async fn start_services(self) -> Result<(), Box<dyn std::error::Error>> {
@@ -203,16 +289,17 @@ impl StryiChainNode {
         // Destructure to avoid partial borrows
         // After this - there will be no more "self" itself, but just all the fields/values separated
         let StryiChainNode {
-            mempool: _mempool, // TODO: Make mempool mempooling or something
+            mempool,
             storage,
-            mut network_manager,
+            network_manager,
+            keypair,
             services_info,
             tls_identity,
-            net_cmd : net_cmd_,
+            net_cmd,
             sync_service_config,
             http_service_config,
             grpc_is_ready,
-            http_is_ready
+            http_is_ready, ..
         } = self;
 
 
@@ -228,12 +315,14 @@ impl StryiChainNode {
             crate::http::start_http_server(
                 storage_for_http,
                 http_service_config.clone(),
+                mempool.clone(),
                 http_is_ready
             ).await
         };
         
         
         // gRPC server future
+        // TODO: Make gRPC really use tls based on provider peer's identity keys 
         let grpc_fut = async {
 
             // Create the sync service instance
@@ -260,7 +349,7 @@ impl StryiChainNode {
 
             // Start serving the sync service on the configured port
             Server::builder()
-                .tls_config(tls_config).unwrap()
+                // .tls_config(tls_config).unwrap()
                 // Compress responses
                 .layer(CompressionLayer::new())
                 // High level logging of requests and responses
@@ -273,34 +362,33 @@ impl StryiChainNode {
 
         // Register gRPC and HTTP service in ServiceInfos
         {
-            let grpc_service_info = ServiceInfo::new(
-                "grpc-sync".to_owned(),
+            let grpc_service_info = ServiceInfo::new_signed(
+                GRPC_PEER_SERVICE.to_owned(),
                 sync_service_config.address,
-                sync_service_config.protocol_version as u32
+                sync_service_config.protocol_version as u32,
+                tls_identity.cert_pem.clone(),
+                &keypair,
             );
 
-
+            
+            // TODO: Not all of the node's services need to be TLS-ed (e.g high-level http api)
+            /*
             let http_service_info = ServiceInfo::new(
                 "http".to_owned(),
                 http_service_config.address,
                 http_service_config.api_version
             );
-
+            */
 
             services_info.write().await.push(grpc_service_info);
-            services_info.write().await.push(http_service_info);
+            // services_info.write().await.push(http_service_info);
         }
 
 
-        // Some more services we need (?)
-
-        // network manager future
-        let network_fut = network_manager.run_loop();
-
-        // run all three concurrently
-        let (grpc_res, _net_res, _http_res) = join!(grpc_fut, network_fut, http_fut);
-        grpc_res?;        // propagate gRPC error if any
+        // run all the services concurrently
+        let (grpc_res, _http_res) = join!(grpc_fut, http_fut);
+        grpc_res?; // propagate gRPC error if any
         
         Ok(())
-    }*/
+    }
 }

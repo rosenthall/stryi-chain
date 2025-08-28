@@ -13,9 +13,10 @@ pub use error::StryiNetworkError;
 pub use manager::*;
 pub use services::ServiceInfo;
 pub use crate::model::BroadcastBlock;
-use libp2p::{Multiaddr, PeerId};
+pub use libp2p::{Multiaddr, PeerId};
 
 pub use libp2p::identity::{Keypair, ed25519, SigningError, DecodingError};
+use libp2p::identity::PublicKey;
 use stryi_core::transactions::Transaction;
 
 /// Indicates whether we run as a Rendezvous **Server** or a **Client** node.
@@ -88,6 +89,13 @@ pub enum NetworkCommand {
         respond_to: tokio::sync::oneshot::Sender<Vec<(PeerId, ServiceInfo)>>,
     },
     
+    /// Get the public key of a peer by its PeerId.
+    QueryPeerPublicKey { 
+        peer: PeerId,
+        respond_to: tokio::sync::oneshot::Sender<Option<PublicKey>> 
+    },
+
+
     /// Gets current mempool state from random connected node and synchronizes it with own.
     SyncMempoolState,
 }

@@ -59,6 +59,7 @@ use crate::node::StryiChainNode;
 use crate::tls::cert_and_key_from_peer;
 use crate::config::NodeConfig;
 use crate::error::StryiNodeError;
+use crate::genesis_manager::GenesisManager;
 use crate::http::StryiHttpServiceConfig;
 use crate::middleware::ReadyFlag;
 use crate::miner::{StryiMiner, StryiMinerConfig};
@@ -196,7 +197,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 
     // Initializing storage in configured provided path
-    let storage = StryiStorage::initialize_in_path(PathBuf::from(cfg.storage_path), genesis_config).await?;
+    let storage = StryiStorage::initialize_in_path(PathBuf::from(cfg.storage_path.clone()), genesis_config).await?;
     let storage = Arc::new(RwLock::new(storage));
 
 
@@ -258,8 +259,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // If the provided SAN list is empty, default to "localhost".
     if sans_vec.is_empty() {
-        warn!("A custom SAN list was provided, but it was empty; defaulting to `localhost`.");
+        warn!("A custom SAN list was provided, but it was empty; defaulting to `localhost` and `127.0.0.1`");
         sans_vec.push("localhost");
+        sans_vec.push("127.0.0.1");
+
     }
     let tls_identity = cert_and_key_from_peer(&keypair, &sans_vec)
         .expect("Cannot generate certificate based on this peer's keypair");
@@ -267,6 +270,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     info!("Generated certificate for node services! This node certificate :");
     println!("{}", tls_identity.cert_pem.as_str().purple());
+
+
+    let grpc_tls_root = tonic::transport::Certificate::from_pem(tls_identity.cert_pem.as_bytes());
 
 
     let rendezvous_mode = match cfg.network_rendezvous_mode.as_str() {
@@ -295,7 +301,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     let network_manager_config = StryiNetworkManagerConfig {
-        listen_addr: cfg.network_listen_addr,
+        listen_addr: cfg.network_listen_addr.clone(),
         rendezvous_mode,
         rendezvous_server_addr: cfg.network_rendezvous_address.clone(),
         keypair: keypair.clone(),
@@ -315,17 +321,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
         network_manager_cancellation_token)?;
 
     let network_manager = Some(network_manager);
-    
-    
+
+    let keypair = keypair.clone().try_into_ed25519().expect("Keypair is not Ed25519");
+
+
+    // setup genesis manager
+    let genesis_manager = GenesisManager::new(cfg.storage_path.clone().into());
+
     // Instantiate the StryiChainNode
     let mut node = StryiChainNode {
         mempool,
         storage,
         network_manager,
+        keypair,
         services_info,
         tls_identity,
+        grpc_tls_root,
         net_cmd: None,
         net_events: None,
+        genesis_manager,
         sync_service_config,
         http_service_config,
 
@@ -391,7 +405,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     } else {
         info!("Mining is disabled, skipping miner initialization.");
     }
-    
 
 
     // Connect the node to the network.
@@ -418,10 +431,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
 
-    // node.synchronize().await?;
 
+    // Start the node's services: gRPC sync service, HTTP API service, etc.
 
-    // TODO: Keep back node.start_services() call later
+    node.start_services().await?;
+
 
     // Keep the node running indefinitely.
     loop {
