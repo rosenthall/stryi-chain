@@ -62,7 +62,7 @@ pub type GetCurrentTip = Arc<dyn Fn() -> BoxFuture<'static, Result<(u64, BlockHa
 /// What this struct does not do is:
 /// - It does not validate transactions/blocks
 /// - Doesn't add self-mined blocks to the storage
-/// It is expected that the network layer will handle these tasks.
+///   It is expected that the network layer will handle these tasks.
 pub struct StryiMiner {
     
     /// The miner's configuration.

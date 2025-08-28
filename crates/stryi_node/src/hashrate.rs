@@ -19,6 +19,8 @@ pub fn warm_up() {
     const BATCH: u64  = 10_000;        // <= 100 ms on most CPUs
     const DIFFICULTY: u32 = 1;         // kept explicit
 
+    println!("Starting hashrate benchmark for {} seconds...", SECS);
+    
     // Static header template
     let header = BlockHeader {
         version: 1,

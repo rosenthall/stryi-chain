@@ -110,6 +110,7 @@ pub struct CliArgs {
     pub miner_enabled: Option<bool>,
     
     /// Enable the hashrate bench at start of run
+    #[arg(long)]
     pub miner_hashrate_bench: Option<bool>,
 
     /// Target number of transactions before mining.
