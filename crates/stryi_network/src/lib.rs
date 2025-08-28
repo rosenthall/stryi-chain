@@ -1,4 +1,6 @@
 #![allow(async_fn_in_trait)]
+#![allow(clippy::result_large_err)]
+
 mod behaviour;
 mod error;
 mod manager;

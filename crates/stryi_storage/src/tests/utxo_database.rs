@@ -32,9 +32,9 @@ fn random_outpoint(rng: &mut impl Rng) -> OutPoint {
 /// assigning a random value in [1_000..1_000_000).
 fn random_utxo(owner: AccountAddress, op: &OutPoint, rng: &mut impl Rng) -> UTXO {
     UTXO {
-        txid: op.txid.clone(),
+        txid: op.txid,
         vout: op.vout,
-        value: rng.gen_range(1_000..1_000_000),
+        value: rng.random_range(1_000..1_000_000),
         owner,
     }
 }
@@ -80,7 +80,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     let mut all_pairs = Vec::with_capacity(total);
     for _ in 0..total {
         let op = random_outpoint(&mut rng);
-        let addr = addresses[rng.gen_range(0..addresses.len())];
+        let addr = addresses[rng.random_range(0..addresses.len())];
         let ut = random_utxo(addr, &op, &mut rng);
         all_pairs.push((op, ut));
     }
@@ -96,7 +96,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
         truth_map.insert(*op, *ut);
     }
 
-    let batch_vec: Vec<_> = batch_group.iter().map(|(op, ut)| (*op, ut.clone())).collect();
+    let batch_vec: Vec<_> = batch_group.iter().map(|(op, ut)| (*op, *ut)).collect();
     storage.batch_put_utxos(batch_vec).await?;
     for (op, ut) in batch_group {
         truth_map.insert(*op, *ut);

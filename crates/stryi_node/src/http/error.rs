@@ -7,7 +7,7 @@ use std::fmt;
 use thiserror::Error;
 use utoipa::ToSchema;
 use stryi_core::address::AccountAddress;
-use stryi_core::block::{Block, BlockHash};
+use stryi_core::block::BlockHash;
 use stryi_core::transactions::{OutPoint, TransactionHash};
 
 /// Minimal, structured reasons for a bad transaction.

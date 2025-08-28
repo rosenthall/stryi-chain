@@ -79,9 +79,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
 pub use crate::error::StryiStorageError;
-pub use blocks::*;
 use stryi_core::address::AccountAddress;
-pub use utxo::*;
 
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::storage::BlockStorage;

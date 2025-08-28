@@ -13,6 +13,7 @@ use bincode::config::standard;
 /// - Track which transactions spend outpoints (`input_spending_index`).
 /// - Provide methods to insert and remove transactions, automatically
 ///   maintaining indices consistency.
+#[derive(Default)]
 pub struct TransactionStorage {
     /// A map from transaction hash to the stored mempool transaction data.
     pub(crate) transactions: HashMap<TransactionHash, MemPoolTx>,
@@ -24,15 +25,6 @@ pub struct TransactionStorage {
     input_spending_index: HashMap<OutPoint, TransactionHash>,
 }
 
-impl Default for TransactionStorage {
-    fn default() -> Self {
-        Self {
-            transactions: HashMap::new(),
-            output_creation_index: HashMap::new(),
-            input_spending_index: HashMap::new(),
-        }
-    }
-}
 
 impl TransactionStorage {
     /// Inserts a transaction into the storage.
@@ -54,20 +46,20 @@ impl TransactionStorage {
         };
 
         // Insert the new entry
-        self.transactions.insert(tx_hash.clone(), mem_tx);
+        self.transactions.insert(tx_hash, mem_tx);
 
         // Index outputs (this transaction CREATES these outpoints)
         for (vout_idx, _) in tx.data.outputs.iter().enumerate() {
             let op = OutPoint {
-                txid: tx_hash.clone(),
+                txid: tx_hash,
                 vout: vout_idx as u32,
             };
-            self.output_creation_index.insert(op, tx_hash.clone());
+            self.output_creation_index.insert(op, tx_hash);
         }
 
         // Index inputs (this transaction SPENDS these outpoints)
         for input in &tx.data.inputs {
-            self.input_spending_index.insert(input.previous_output.clone(), tx_hash.clone());
+            self.input_spending_index.insert(input.previous_output, tx_hash);
         }
     }
 
@@ -80,7 +72,7 @@ impl TransactionStorage {
             // Clean up output creation index (outputs this tx created)
             for (vout_idx, _) in mem_tx.transaction.data.outputs.iter().enumerate() {
                 let op = OutPoint {
-                    txid: tx_hash.clone(),
+                    txid: *tx_hash,
                     vout: vout_idx as u32,
                 };
                 self.output_creation_index.remove(&op);

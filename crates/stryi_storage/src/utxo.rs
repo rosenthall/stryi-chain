@@ -30,7 +30,7 @@ use stryi_core::transactions::{OutPoint, UTXO};
 /// Encodes an outpoint into a 36-byte key:
 /// - bytes [0..32]: `txid.data`
 /// - bytes [32..36]: `vout` as a big-endian 32-bit integer.
-/// We use 4 bytes to handle large numbers of outputs if needed.
+///   We use 4 bytes to handle large numbers of outputs if needed.
 fn encode_utxo_key(outpoint: &OutPoint) -> [u8; 36] {
     let mut key = [0u8; 36];
     key[..32].copy_from_slice(&outpoint.txid.data);
@@ -70,7 +70,7 @@ fn load_address_set_read(
         .map_err(StryiStorageError::FjallError)?;
 
     match data_opt {
-        Some(slice) => decode_outpoints_set(&slice.to_vec()),
+        Some(slice) => decode_outpoints_set(&slice),
         None => Ok(HashSet::new()),
     }
 }
@@ -94,7 +94,7 @@ fn load_address_set_write(
         .map_err(StryiStorageError::FjallError)?;
 
     match data_opt {
-        Some(slice) => decode_outpoints_set(&slice.to_vec()),
+        Some(slice) => decode_outpoints_set(&slice),
         None => Ok(HashSet::new()),
     }
 }
@@ -137,14 +137,14 @@ impl UtxoStorage for StryiStorage {
             for (op, u) in utxos {
                 // insert into the UTXO partition
                 let key = encode_utxo_key(&op);
-                let bytes = bincode::serde::encode_to_vec(&u, standard())
+                let bytes = bincode::serde::encode_to_vec(u, standard())
                     .map_err(StryiStorageError::SerializationError)?;
                 tx.insert(&up, Slice::from(&key), Slice::from(bytes));
 
                 // record for the address index
                 addr_map
-                    .entry(u.owner.clone())
-                    .or_insert_with(HashSet::new)
+                    .entry(u.owner)
+                    .or_default()
                     .insert(op);
             }
 
@@ -194,8 +194,8 @@ impl UtxoStorage for StryiStorage {
                 tx.remove(&up, Slice::from(&key));
                 // Record for updating the address index
                 removal_map
-                    .entry(utxo.owner.clone())
-                    .or_insert_with(HashSet::new)
+                    .entry(utxo.owner)
+                    .or_default()
                     .insert(op);
             }
 

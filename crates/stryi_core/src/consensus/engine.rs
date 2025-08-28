@@ -1,7 +1,7 @@
 use std::sync::Arc;
-use tracing::{debug, info};
-use futures::future::{ready, BoxFuture};
-use tokio::sync::{RwLock, RwLockWriteGuard};
+use tracing::debug;
+use futures::future::BoxFuture;
+use tokio::sync::RwLock;
 use crate::{
     block::Block,
     consensus::{ConsensusEngine, ConsensusRules},

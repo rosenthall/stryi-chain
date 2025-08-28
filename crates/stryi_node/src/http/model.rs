@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
-use stryi_core::block::{Block, BlockHash};
+use stryi_core::block::BlockHash;
 
 
 

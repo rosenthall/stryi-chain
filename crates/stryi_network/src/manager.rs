@@ -1,17 +1,16 @@
 use crate::services::ServiceInfo;
 use crate::{
-    NetworkCommand, NetworkEvent, RendezvousMode, StryiNetworkManagerConfig, behaviour,
-    behaviour::{StryiBehaviour, StryiBehaviourConfig, StryiEvent},
+    NetworkCommand, NetworkEvent, RendezvousMode, StryiNetworkManagerConfig,
+    behaviour::{StryiBehaviour, StryiBehaviourConfig},
     error::StryiNetworkError,
 };
 use libp2p::core::transport::Boxed;
 use libp2p::gossipsub::IdentTopic;
-use libp2p::request_response::{ ProtocolSupport, ResponseChannel };
 use libp2p::{
     Multiaddr, PeerId, Transport,
     core::upgrade,
     identity::Keypair,
-    noise, ping, request_response,
+    noise,
     swarm::{Config as SwarmConfig, Swarm},
     tcp, yamux,
 };
@@ -21,10 +20,9 @@ use std::time::Duration;
 use futures::StreamExt;
 use rand::prelude::IteratorRandom;
 use stryi_core::mempool::MemPool;
-use tokio::sync::{Mutex, RwLock, broadcast, mpsc, RwLockReadGuard};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, trace, warn};
-use tracing::field::debug;
+use tracing::{debug, info, warn};
 use crate::peer::PeerInfo;
 
 /// StryiNetworkManager sets up the transport, constructs a swarm using our unified StryiBehaviour,
@@ -67,8 +65,8 @@ pub struct StryiNetworkManager {
 }
 
 // hard‑coded topic names that every node must agree on
-const BLOCKS_TOPIC_NAME: &str = "stryichain-blocks";
-const TRANSACTIONS_TOPIC_NAME: &str = "stryichain-txs";
+pub const BLOCKS_TOPIC_NAME: &str = "stryichain-blocks";
+pub const TRANSACTIONS_TOPIC_NAME: &str = "stryichain-txs";
 
 impl StryiNetworkManager {
     /// Creates a new StryiNetworkManager based on the provided configuration, Arc-ed mempool, and cancellation_token
@@ -199,7 +197,7 @@ impl StryiNetworkManager {
                     .cloned()
                     .map(|svc| (*id, svc))
             })
-            .choose(&mut rand::thread_rng())
+            .choose(&mut rand::rng())
     }
 
     /// Returns the configured keypair for this network manager.

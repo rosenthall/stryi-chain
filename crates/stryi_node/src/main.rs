@@ -62,7 +62,7 @@ use crate::error::StryiNodeError;
 use crate::genesis_manager::GenesisManager;
 use crate::http::StryiHttpServiceConfig;
 use crate::middleware::ReadyFlag;
-use crate::miner::{StryiMiner, StryiMinerConfig};
+use crate::miner::StryiMinerConfig;
 
 pub(crate) mod grpc_services {
     tonic::include_proto!("stryi.sync");
@@ -83,7 +83,7 @@ fn try_genesis_config_from_path(path : PathBuf) ->  Result<GenesisInitConfig, St
 
     // Try to deserialize
     serde_json::from_str(&buf)
-        .map_err(|e| StryiNodeError::other(format!("Cannot deserialize genesis configuration, error : {}", e.to_string())))
+        .map_err(|e| StryiNodeError::other(format!("Cannot deserialize genesis configuration, error : {}", e)))
 
 }
 

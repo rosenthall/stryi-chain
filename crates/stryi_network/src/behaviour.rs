@@ -105,7 +105,7 @@ pub struct StryiBehaviour {
 impl StryiBehaviour {
     /// Create a new `StryiBehaviour` from the given configuration.
     /// Returns an error if building the gossipsub configuration fails.
-    pub fn new(cfg: StryiBehaviourConfig, keypair: &Keypair, protocol_version : &usize) -> Result<Self, StryiNetworkError> {
+    pub fn new(cfg: StryiBehaviourConfig, keypair: &Keypair, _protocol_version : &usize) -> Result<Self, StryiNetworkError> {
         // Build configured Gossipsub
         let gossipsub = Self::build_gossipsub(&cfg, keypair)?;
         

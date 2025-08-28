@@ -7,6 +7,12 @@ use crate::transactions::{Transaction, TransactionKind, OutPoint, UTXO};
 // TODO: Add some configuration structs?
 pub struct UtxoProcessor;
 
+impl Default for UtxoProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UtxoProcessor {
     /// Creates a new UtxoProcessor instance.
     pub fn new() -> Self {

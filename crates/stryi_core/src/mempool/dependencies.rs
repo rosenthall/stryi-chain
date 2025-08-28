@@ -42,7 +42,7 @@ impl DependencyTracker {
     /// * `child_hash` - The transaction hash of the new child transaction.
     /// * `parent_hashes` - A list of known parent transaction hashes in the DAG.
     pub fn add_transaction(&mut self, child_hash: TransactionHash, parent_hashes: &[TransactionHash]) {
-        let child_idx = self.graph.add_node(child_hash.clone());
+        let child_idx = self.graph.add_node(child_hash);
         self.indices.insert(child_hash, child_idx);
 
         for phash in parent_hashes {
@@ -79,7 +79,7 @@ impl DependencyTracker {
                     // Check if nodes still exist in the graph
                     if self.graph.node_weight(*parent).is_some() && self.graph.node_weight(*child).is_some() {
                         // Avoid creating duplicate edges
-                        if !self.graph.edges_connecting(*parent, *child).next().is_some() {
+                        if self.graph.edges_connecting(*parent, *child).next().is_none() {
                             self.graph.add_edge(*parent, *child, ());
                         }
                     }
@@ -96,7 +96,7 @@ impl DependencyTracker {
         self.indices.clear();
         for idx in self.graph.node_indices() {
             if let Some(hash) = self.graph.node_weight(idx) {
-                self.indices.insert(hash.clone(), idx);
+                self.indices.insert(*hash, idx);
             }
         }
     }
@@ -121,7 +121,7 @@ impl DependencyTracker {
                 let child_idx = edge.target();
                 if visited.insert(child_idx) {
                     if let Some(child_hash) = self.graph.node_weight(child_idx) {
-                        result.push(child_hash.clone());
+                        result.push(*child_hash);
                     }
                     queue.push_back(child_idx);
                 }
@@ -149,7 +149,7 @@ impl DependencyTracker {
                 let parent_idx = edge.source();
                 if visited.insert(parent_idx) {
                     if let Some(parent_hash) = self.graph.node_weight(parent_idx) {
-                        result.push(parent_hash.clone());
+                        result.push(*parent_hash);
                     }
                     queue.push_back(parent_idx);
                 }

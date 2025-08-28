@@ -1,6 +1,5 @@
 use std::fmt;
 use crate::error::StryiCoreError;
-use hex;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::Visitor;
 

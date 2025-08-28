@@ -69,7 +69,7 @@ fn process_outputs(tx: &Transaction, created: &mut HashSet<OutPoint>) {
     let txid = tx.data.hash();
     for (index, _output) in tx.data.outputs.iter().enumerate() {
         let outpoint = OutPoint {
-            txid: txid.clone(),
+            txid,
             vout: index as u32,
         };
         created.insert(outpoint);

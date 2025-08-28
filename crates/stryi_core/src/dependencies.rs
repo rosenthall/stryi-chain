@@ -71,7 +71,7 @@ impl DependencyGraph {
                     );
                 } else {
                     // Track external UTXO dependency
-                    dep_graph.external_inputs.insert(input.previous_output.clone());
+                    dep_graph.external_inputs.insert(input.previous_output);
                 }
             }
         }
@@ -85,7 +85,7 @@ impl DependencyGraph {
         for (tx_idx, tx) in block_data.transactions.iter().enumerate() {
             for input in &tx.data.inputs {
                 // Prevent double spending of outputs
-                if !self.spent_outputs.insert(input.previous_output.clone()) {
+                if !self.spent_outputs.insert(input.previous_output) {
                     return Err(StryiCoreError::TransactionDependencyError {
                         msg: "Double spend detected".to_string(),
                     });

@@ -24,6 +24,7 @@ pub use fee_policy::*;
 use serde::{Deserialize, Serialize};
 
 use bincode::{self, config::standard};
+#[cfg(test)]
 use crate::address::AccountAddress;
 use crate::error::StryiCoreError;
 use crate::hash::HashKind;

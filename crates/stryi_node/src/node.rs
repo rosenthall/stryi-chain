@@ -6,26 +6,24 @@ use crate::middleware::{ReadyFlag, ReadyGateLayer};
 use crate::tls::NodeTlsIdentity;
 use std::sync::Arc;
 use std::time::Duration;
-use rustls::{ClientConfig, RootCertStore};
-use rustls_pki_types::pem::{PemObject, SectionKind};
+use rustls_pki_types::pem::PemObject;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::mempool::MemPool;
-use stryi_network::{BroadcastBlock, NetworkCommand, NetworkEvent, PeerId, ServiceInfo, StryiNetworkManager};
+use stryi_network::{NetworkCommand, NetworkEvent, PeerId, ServiceInfo, StryiNetworkManager};
 use stryi_storage::StryiStorage;
 use tokio::join;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time::{sleep, Instant};
 use tokio_stream::StreamExt;
-use tonic::transport::{Channel, ClientTlsConfig, Endpoint, Server, ServerTlsConfig};
+use tonic::transport::{Endpoint, Server, ServerTlsConfig};
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, info, trace};
 use stryi_network::ed25519::Keypair;
-use crate::{grpc, grpc_services};
 use crate::genesis_manager::GenesisManager;
 use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
-use crate::grpc_services::{BlockHashList, BlockHeightRange};
+use crate::grpc_services::BlockHashList;
 
 /// The main struct representing the Stryi node instance.
 /// This node will later integrate networking, consensus, gRPC sync, mempool and mining services.
@@ -207,7 +205,7 @@ impl StryiChainNode {
         // Connect to gRPC !
 
         // Parse the address into a tonic::transport::Uri
-        let formatted_addr = format!("http://{}", grpc_peer_service_info.address().to_string());
+        let formatted_addr = format!("http://{}", grpc_peer_service_info.address());
 
         let uri = formatted_addr
             .parse::<tonic::transport::Uri>()
@@ -295,7 +293,7 @@ impl StryiChainNode {
             keypair,
             services_info,
             tls_identity,
-            net_cmd,
+            
             sync_service_config,
             http_service_config,
             grpc_is_ready,

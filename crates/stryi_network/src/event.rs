@@ -1,19 +1,18 @@
-use std::time::SystemTime;
 use crate::mempool::{MempoolRequest, MempoolResponse};
 use crate::services::{ServicesInfoRequest, ServicesResponse};
-use crate::{BroadcastBlock, NetworkEvent, StryiBehaviour, StryiEvent, StryiNetworkError, StryiNetworkManager};
+use crate::{manager, BroadcastBlock, NetworkEvent, StryiBehaviour, StryiEvent, StryiNetworkError, StryiNetworkManager};
 use bincode::config::standard;
 use bincode::serde::decode_from_slice;
 use libp2p::request_response::{Event as ReqRespEvent, Message};
 use libp2p::identify::{Event as IdentifyEvent, Info as IdentifyInfo};
 use libp2p::request_response::{InboundRequestId, ResponseChannel};
 use libp2p::swarm::SwarmEvent;
-use libp2p::{Swarm, gossipsub, request_response, Multiaddr, PeerId, identity};
+use libp2p::{Swarm, gossipsub, request_response, Multiaddr};
 use libp2p::core::ConnectedPoint;
 use libp2p::ping::{Event as PingEvent};
 use stryi_core::transactions::Transaction;
 use tracing::{debug, error, info, trace, warn};
-use crate::peer::{PeerInfo, PeerMapExt};
+use crate::peer::PeerMapExt;
 
 const MAX_PING_FAILURES: usize = 10;
 
@@ -226,10 +225,6 @@ impl StryiNetworkManager {
                     StryiEvent::RzvServer(e) => debug!("Rendezvous Server event: {:?}", e),
                     StryiEvent::RzvClient(e) => debug!("Rendezvous Client event: {:?}", e),
 
-                    // Fallback
-                    other => {
-                        debug!("Got unhandled custom event: {:?}", other);
-                    }
                 }
             }
 
@@ -260,7 +255,7 @@ impl StryiNetworkManager {
                 // Check the topics name and define how to proceed message correspondingly
                 match message.topic.as_str() {
                     // Try to process everything from transactions topic as a transaction
-                    TRANSACTIONS_TOPIC_NAME => {
+                    manager::TRANSACTIONS_TOPIC_NAME => {
                         let tx: Transaction = decode_from_slice(&message.data, standard())
                             .map_err(StryiNetworkError::DecodeGossipsubMessageError)?
                             .0;
@@ -273,7 +268,7 @@ impl StryiNetworkManager {
                     }
 
                     // and from blocks topic as a block
-                    BLOCKS_TOPIC_NAME => {
+                    manager::BLOCKS_TOPIC_NAME => {
                         let broadcast_block: BroadcastBlock =
                             decode_from_slice(&message.data, standard())
                                 .map_err(StryiNetworkError::DecodeGossipsubMessageError)?
@@ -327,7 +322,7 @@ impl StryiNetworkManager {
                 behaviour
                     .services_info
                     .send_response(channel, response)
-                    .map_err(|_| StryiNetworkError::other("failed to send ServicesInfo response"))?;;
+                    .map_err(|_| StryiNetworkError::other("failed to send ServicesInfo response"))?;
             }
         }
 

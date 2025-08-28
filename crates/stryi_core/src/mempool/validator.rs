@@ -100,22 +100,22 @@ impl MempoolTxValidator {
                     if outpoint.vout < mem_tx.transaction.data.outputs.len() as u32 {
                         let output = &mem_tx.transaction.data.outputs[outpoint.vout as usize];
                         UTXO {
-                            txid: outpoint.txid.clone(),
+                            txid: outpoint.txid,
                             vout: outpoint.vout,
                             value: output.value,
-                            owner: output.recipient.clone(),
+                            owner: output.recipient,
                         }
                     } else {
-                        return Err(MempoolValidationError::InvalidOutpointIndex(outpoint.clone()));
+                        return Err(MempoolValidationError::InvalidOutpointIndex(*outpoint));
                     }
                 } else {
-                    return Err(MempoolValidationError::MissingOutPoint(outpoint.clone()));
+                    return Err(MempoolValidationError::MissingOutPoint(*outpoint));
                 }
             } else {
                 // Try external UTXO lookup
                 let utxo_lookup = &self.utxo_lookup;
-                utxo_lookup(outpoint).await.ok_or_else(|| {
-                    MempoolValidationError::MissingOutPoint(outpoint.clone())
+                utxo_lookup(outpoint).await.ok_or({
+                    MempoolValidationError::MissingOutPoint(*outpoint)
                 })?
             };
 
@@ -123,8 +123,8 @@ impl MempoolTxValidator {
             if utxo.owner != recovered_addr {
                 return Err(MempoolValidationError::OwnershipMismatch {
                     input_index: i,
-                    expected: recovered_addr.clone(),
-                    actual: utxo.owner.clone(),
+                    expected: recovered_addr,
+                    actual: utxo.owner,
                 });
             }
 
