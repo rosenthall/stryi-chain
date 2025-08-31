@@ -19,9 +19,6 @@ pub type MempoolSyncBehaviour =  RequestResponseBehaviour<MempoolRequest, Mempoo
 
 
 /// Definition of an inbound request or response for mempool
-pub type MempoolMessage = Message<MempoolRequest, MempoolResponse>;
-
-/// Definition of an inbound request or response for mempool
 pub type MempoolEvent  = ReqRespEvent<MempoolRequest,  MempoolResponse>;
 
 impl From<MempoolEvent> for StryiEvent {

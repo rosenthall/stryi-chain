@@ -6,10 +6,9 @@ use crate::middleware::{ReadyFlag, ReadyGateLayer};
 use crate::tls::NodeTlsIdentity;
 use std::sync::Arc;
 use std::time::Duration;
-use rustls_pki_types::pem::PemObject;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::mempool::MemPool;
-use stryi_network::{NetworkCommand, NetworkEvent, PeerId, ServiceInfo, StryiNetworkManager};
+use stryi_network::{NetworkCommand, NetworkEvent, PeerId, ServiceRecord, SignedServiceRecord, StryiNetworkManager};
 use stryi_storage::StryiStorage;
 use tokio::join;
 use tokio::sync::{broadcast, mpsc, RwLock};
@@ -45,7 +44,7 @@ pub struct StryiChainNode {
     pub(crate) keypair: Keypair,
 
     /// A list of services that this node runs
-    pub(crate) services_info: Arc<RwLock<Vec<ServiceInfo>>>,
+    pub(crate) services_info: Arc<RwLock<Vec<SignedServiceRecord>>>,
 
     /// A node's tls identity (based on PeerKey)
     pub(crate) tls_identity: NodeTlsIdentity,
@@ -129,7 +128,7 @@ impl StryiChainNode {
 
 
         let started = Instant::now();
-        let mut candidates: Vec<(PeerId, ServiceInfo)> = Vec::new();
+        let mut candidates: Vec<(PeerId, ServiceRecord)> = Vec::new();
 
         // First, discover peers that offer the gRPC sync service with the compatible version
         // not fail instantly if none found - retry for up to DISCOVERY_TIMEOUT
@@ -173,10 +172,13 @@ impl StryiChainNode {
 
         // convert to ed25519 public key
         let peer_pubkey = peer_pubkey.try_into_ed25519().expect("peer public key is not ed25519");
-
+        
+        
+        /*
         if !svc.verify_signature(&peer_pubkey) {
             return Err(StryiNodeError::other("TLS certificate signature invalid"));
         }
+        */
 
         info!("Using gRPC sync service at {} (version {})", svc.address(), svc.version());
 
@@ -211,11 +213,7 @@ impl StryiChainNode {
             .parse::<tonic::transport::Uri>()
             .map_err(|e| StryiNodeError::other(format!("Failed to parse URI: {e}")))?;
 
-        // ServiceInfo already validated; its PEM can become the CA directly.
-        let peer_ca = tonic::transport::Certificate::from_pem(
-            svc.cert_pem()
-                .ok_or_else(|| StryiNodeError::other("service missing certificate"))?,
-        );
+
 
         // Extract host part for SNI / domain verification
         // let tls_cfg = ClientTlsConfig::new()
@@ -281,7 +279,7 @@ impl StryiChainNode {
 
 
     /// Starts the node instance and basic services, like mempool, grpc sync server, mining-loop (if set in the config), handles network events
-    /// Meant to be called after `connect()` and `synchronize()`. 
+    /// Meant to be called after `connect()` and `synchronize()`.
     pub async fn start_services(self) -> Result<(), Box<dyn std::error::Error>> {
 
         // Destructure to avoid partial borrows
@@ -357,7 +355,7 @@ impl StryiChainNode {
                 .await
         };
 
-
+/*
         // Register gRPC and HTTP service in ServiceInfos
         {
             let grpc_service_info = ServiceInfo::new_signed(
@@ -370,18 +368,18 @@ impl StryiChainNode {
 
             
             // TODO: Not all of the node's services need to be TLS-ed (e.g high-level http api)
-            /*
+
             let http_service_info = ServiceInfo::new(
                 "http".to_owned(),
                 http_service_config.address,
                 http_service_config.api_version
             );
-            */
+
 
             services_info.write().await.push(grpc_service_info);
             // services_info.write().await.push(http_service_info);
         }
-
+*/
 
         // run all the services concurrently
         let (grpc_res, _http_res) = join!(grpc_fut, http_fut);

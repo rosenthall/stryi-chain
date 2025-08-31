@@ -1,6 +1,6 @@
 use crate::mempool::{MempoolRequest, MempoolResponse};
-use crate::services::{ServicesInfoRequest, ServicesResponse};
-use crate::{manager, BroadcastBlock, NetworkEvent, StryiBehaviour, StryiEvent, StryiNetworkError, StryiNetworkManager};
+use crate::services::{filter_verified_records, ServicesInfoRequest, ServicesResponse};
+use crate::{manager, BroadcastBlock, NetworkEvent, ServiceRecord, StryiBehaviour, StryiEvent, StryiNetworkError, StryiNetworkManager};
 use bincode::config::standard;
 use bincode::serde::decode_from_slice;
 use libp2p::request_response::{Event as ReqRespEvent, Message};
@@ -116,13 +116,28 @@ impl StryiNetworkManager {
                                 message: Message::Response { response, .. },
                                 ..
                             } => {
-                                let ServicesResponse { services } = response;
+                                let ServicesResponse { services } = response;  // services = Vec<SignedServiceRecord>
+
+                                // 1. Store the signed list (single source of truth).
                                 {
                                     let mut peers = self.connected_peers.write().await;
-                                    peers.upsert_services(peer, services);     // helper stores + timestamps
+                                    peers.set_signed_services(peer, services.clone());
                                 }
-                                trace!("cached services for peer {}", peer);
+
+                                // 2. verify now only to log the number of valid entries.
+                                if let Some(pk_generic) = {
+                                    let peers = self.connected_peers.read().await;
+                                    peers.get(&peer).and_then(|pi| pi.public_key.clone())
+                                } {
+                                    if let Ok(pk_ed) = pk_generic.try_into_ed25519() {
+                                        let verified_cnt = filter_verified_records(services, &pk_ed).len();
+                                        trace!("cached {verified_cnt} verified services for peer {peer}");
+                                    }
+                                } else {
+                                    debug!("peer {peer} has no public key yet; stored signed services, will verify after Identify");
+                                }
                             }
+
 
 
                             // Channel failures (just diagnostics)
@@ -312,17 +327,22 @@ impl StryiNetworkManager {
 
 
         match request {
-            // If the request is to get the list of services, we will respond with the current services info.
+            // If the request is to get the list of services, we respond with the
+            // current registry (signed form, ready for re-distribution).
             ServicesInfoRequest::ListServices => {
-                // Build response from local services' registry.
+                // Build response from this node’s service registry.
+                // self.services_info: Arc<RwLock<Vec<SignedServiceRecord>>>
                 let services = self.services_info.read().await.clone();
+
                 let response = ServicesResponse { services };
 
                 // Send response back to the requester.
                 behaviour
                     .services_info
                     .send_response(channel, response)
-                    .map_err(|_| StryiNetworkError::other("failed to send ServicesInfo response"))?;
+                    .map_err(|_| {
+                        StryiNetworkError::other("failed to send ServicesInfo response")
+                    })?;
             }
         }
 

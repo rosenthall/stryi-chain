@@ -13,13 +13,13 @@ mod peer;
 pub use behaviour::*;
 pub use error::StryiNetworkError;
 pub use manager::*;
-pub use services::ServiceInfo;
 pub use crate::model::BroadcastBlock;
 pub use libp2p::{Multiaddr, PeerId};
 
 pub use libp2p::identity::{Keypair, ed25519, SigningError, DecodingError};
 use libp2p::identity::PublicKey;
 use stryi_core::transactions::Transaction;
+pub use crate::services::{ServiceRecord, SignedServiceRecord};
 
 /// Indicates whether we run as a Rendezvous **Server** or a **Client** node.
 #[derive(Debug, Clone)]
@@ -86,9 +86,10 @@ pub enum NetworkCommand {
     PublishTransaction(Transaction),
 
     /// Get the current network status, including connected peers and their addresses.
+    /// This returns only service-records that was signed and already validated.
     QueryPeersWithService {
         service: String,
-        respond_to: tokio::sync::oneshot::Sender<Vec<(PeerId, ServiceInfo)>>,
+        respond_to: tokio::sync::oneshot::Sender<Vec<(PeerId, ServiceRecord)>>,
     },
     
     /// Get the public key of a peer by its PeerId.

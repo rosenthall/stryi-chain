@@ -1,34 +1,37 @@
+use crate::services::{filter_verified_records, ServiceRecord, SignedServiceRecord};
 use std::collections::HashMap;
 use std::time::SystemTime;
 use libp2p::{Multiaddr, PeerId, identity::PublicKey};
-use crate::ServiceInfo;
 
 type PeerMap = HashMap<PeerId, PeerInfo>;
 
-#[derive(Clone, Debug)]
+/// Per-peer state tracked by the network layer.
+#[derive(Clone, Debug, Default)]
 pub struct PeerInfo {
     /// Time the connection was established, if known.
     pub established_at: Option<SystemTime>,
-    
+
     /// Most recent time the peer was seen or updated.
     pub last_seen: Option<SystemTime>,
-    
-    /// All known addresses for this peer. TODO: Is storing more than 1 address of single peer is necessary for design?
+
+    /// All known addresses for this peer.  
+    /// TODO: Is storing >1 address for a single peer necessary for design?
     pub addresses: Vec<Multiaddr>,
 
-    /// Cached answer of `ServicesInfoRequest` for this peer.
-    pub services:  Vec<ServiceInfo>,
-    
+    /// Cached answer of `ServicesInfoRequest` for this peer – **signed blobs**,
+    /// ready for retransmission.
+    pub services: Vec<SignedServiceRecord>,
+
     /// Public key of the peer (if known).
     pub public_key: Option<PublicKey>,
-    
-    /// Number of consecutive ping failures for this peer.
+
+    /// Number of consecutive ping failures for this peer.  
     /// This is used to detect unresponsive peers and potentially disconnect them.
     pub consecutive_ping_failures: usize,
-
 }
 
 impl PeerInfo {
+    /// Constructor used when a new connection is observed.
     pub fn new_now(remote: Option<Multiaddr>) -> Self {
         Self {
             established_at: Some(SystemTime::now()),
@@ -40,49 +43,65 @@ impl PeerInfo {
         }
     }
 
+    /// Update `last_seen` timestamp.
     pub fn mark_seen(&mut self) {
         self.last_seen = Some(SystemTime::now());
     }
 
+    /// Add a single address if it is not already known.
     pub fn add_address(&mut self, addr: Multiaddr) {
         if !self.addresses.iter().any(|a| a == &addr) {
             self.addresses.push(addr);
         }
     }
 
+    /// Merge multiple addresses.
     pub fn merge_addresses<I: IntoIterator<Item = Multiaddr>>(&mut self, addrs: I) {
         for a in addrs {
             self.add_address(a);
         }
     }
 
-    pub fn set_services(&mut self, services: Vec<ServiceInfo>) {
-        self.services = services;
+    /// Replace the signed service list, update `last_seen`.
+    pub fn set_signed_services(&mut self, signed: Vec<SignedServiceRecord>) {
+        self.services = signed;
         self.mark_seen();
     }
 
+    /// Reset ping-failure counter.
     pub fn ping_ok(&mut self) {
         self.consecutive_ping_failures = 0;
         self.mark_seen();
     }
 
+    /// Increment ping-failure counter.
     pub fn ping_fail(&mut self) -> usize {
         self.consecutive_ping_failures += 1;
         self.consecutive_ping_failures
     }
 }
 
-
-
-
+/// Helper methods operating on `PeerMap`.
 pub trait PeerMapExt {
     /// Update or insert a peer as connected, setting the established_at time if not already set.
     fn upsert_connected(&mut self, peer: PeerId, remote: Multiaddr);
+
     /// Update or insert a peer with identify information, merging listen addresses and observed address.
-    fn upsert_identify(&mut self, peer: PeerId, listen_addrs: Vec<Multiaddr>, observed: Option<Multiaddr>, public_key: PublicKey,);
-    /// Update or insert a peer with services information.
-    fn upsert_services(&mut self, peer: PeerId, services: Vec<ServiceInfo>);
-    
+    fn upsert_identify(
+        &mut self,
+        peer: PeerId,
+        listen_addrs: Vec<Multiaddr>,
+        observed: Option<Multiaddr>,
+        public_key: PublicKey,
+    );
+
+    /// Store signed service announcements as-is (single source of truth).
+    fn set_signed_services(&mut self, peer: PeerId, signed: Vec<SignedServiceRecord>);
+
+    /// Return verified `ServiceRecord` list.  
+    /// The list is re-validated every call; invalid entries are silently dropped.
+    fn current_services(&self, peer: &PeerId) -> Option<Vec<ServiceRecord>>;
+
     /// Record a successful ping – returns the new consecutive-failure count (always 0).
     fn ping_success(&mut self, peer: PeerId) -> usize;
 
@@ -109,7 +128,7 @@ impl PeerMapExt for PeerMap {
     ) {
         let pi = self.entry(peer).or_insert_with(|| PeerInfo::new_now(None));
 
-        // merge addresses
+        // merge listen + observed addresses
         pi.merge_addresses(listen_addrs);
         if let Some(obs) = observed {
             pi.add_address(obs);
@@ -120,7 +139,7 @@ impl PeerMapExt for PeerMap {
             None => pi.public_key = Some(public_key),
             Some(pk) if pk != &public_key => {
                 tracing::warn!(
-                    "Peer {} presented a different public key (possible mis-configuration)",
+                    "Peer {} presented a different public key (possible misconfiguration)",
                     peer
                 );
             }
@@ -130,11 +149,19 @@ impl PeerMapExt for PeerMap {
         pi.mark_seen();
     }
 
-    fn upsert_services(&mut self, peer: PeerId, services: Vec<ServiceInfo>) {
+    fn set_signed_services(&mut self, peer: PeerId, signed: Vec<SignedServiceRecord>) {
+        const MAX_SERVICES: usize = 32; // simple abuse-resistance guard
+        let bounded = signed.into_iter().take(MAX_SERVICES).collect();
+
         let pi = self.entry(peer).or_insert_with(|| PeerInfo::new_now(None));
-        pi.set_services(services);
+        pi.set_signed_services(bounded);
     }
 
+    fn current_services(&self, peer: &PeerId) -> Option<Vec<ServiceRecord>> {
+        let pi = self.get(peer)?;
+        let pk = pi.public_key.as_ref()?;
+        Some(filter_verified_records(pi.clone().services, &pk.clone().try_into_ed25519().unwrap()))
+    }
 
     fn ping_success(&mut self, peer: PeerId) -> usize {
         let pi = self.entry(peer).or_insert_with(|| PeerInfo::new_now(None));
@@ -147,4 +174,3 @@ impl PeerMapExt for PeerMap {
         pi.ping_fail()
     }
 }
-

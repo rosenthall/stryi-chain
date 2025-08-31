@@ -40,7 +40,7 @@ use std::time::Duration;
 use colored::Colorize;
 use tokio::io;
 use tokio::time::sleep;
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -50,7 +50,7 @@ use stryi_core::address::AccountAddress;
 use stryi_core::mempool::{MemPool, MemPoolConfig, RbfPolicy, UtxoLookup};
 use stryi_core::storage::{StorageStats, UtxoStorage};
 use stryi_core::transactions::{FeePolicy, OutPoint};
-use stryi_network::{StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig, RendezvousMode, ServiceInfo};
+use stryi_network::{StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig, RendezvousMode, ServiceRecord, PeerId, SignedServiceRecord};
 use stryi_storage::{GenesisInitConfig, StryiStorage};
 use crate::cli::NodeStartMode;
 use crate::grpc::{StryiSyncServiceConfig};
@@ -165,9 +165,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         max_blocks_range_per_request: cfg.sync_max_blocks_per_request,
     };
 
-    let http_service_config = StryiHttpServiceConfig {
+    let mut http_service_config = StryiHttpServiceConfig {
         address: cfg.http_service_address.parse()?,
         chain_name: cfg.chain_name,
+        peer_id: PeerId::random(), // Setup it later
         api_version: cfg.http_service_version,
     };
 
@@ -253,6 +254,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let keypair = peer_key.inner().clone(); // clone to hand over to NetworkManager
 
+    // -- get peer_id --
+    let peer_id = PeerId::from_public_key(&keypair.public());
+    http_service_config.peer_id = peer_id;
+    trace!("This node's peer id from keypair: {}", peer_id);
 
     // Generate TLS identity for node services.
     let mut sans_vec: Vec<&str> = cfg.tls_sans.iter().map(String::as_str).collect();
@@ -312,7 +317,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let network_manager_cancellation_token = CancellationToken::new();
 
     // An initially empty list – we'll fill it later when services start.
-    let services_info: Arc<RwLock<Vec<ServiceInfo>>> = Arc::new(RwLock::new(Vec::new()));
+    let services_info: Arc<RwLock<Vec<SignedServiceRecord>>> = Arc::new(RwLock::new(Vec::new()));
 
     let network_manager = StryiNetworkManager::new(
         &network_manager_config,

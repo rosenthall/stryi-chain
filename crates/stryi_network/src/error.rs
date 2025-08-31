@@ -44,6 +44,9 @@ pub enum StryiNetworkError {
     #[error("Stryi-NetworkManager cannot send NetworkEvent, error: {0}")]
     CannotSendEvent(SendError<NetworkEvent>),
     
+    #[error("Error while signing: {0}")]
+    SigningError(libp2p::identity::SigningError),
+    
     /// Catch-all fallback.
     #[error("Other networking error: {0}")]
     Other(String),

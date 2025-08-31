@@ -1,4 +1,3 @@
-use crate::services::ServiceInfo;
 use crate::{
     NetworkCommand, NetworkEvent, RendezvousMode, StryiNetworkManagerConfig,
     behaviour::{StryiBehaviour, StryiBehaviourConfig},
@@ -24,6 +23,7 @@ use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use crate::peer::PeerInfo;
+use crate::services::{filter_verified_records, ServiceRecord, SignedServiceRecord};
 
 /// StryiNetworkManager sets up the transport, constructs a swarm using our unified StryiBehaviour,
 /// and runs the event loop.
@@ -52,7 +52,7 @@ pub struct StryiNetworkManager {
     /// Thread-safe, mutable registry of this node’s active services.
     /// Wrapped in an `RwLock` to allow concurrent reads and real-time updates
     /// (e.g. when a service starts, stops, or changes its listening port).
-    pub(crate) services_info: Arc<RwLock<Vec<ServiceInfo>>>,
+    pub(crate) services_info: Arc<RwLock<Vec<SignedServiceRecord>>>,
 
     /// Connected peers tracking TODO : Actually track peers
     pub(crate) connected_peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
@@ -73,7 +73,7 @@ impl StryiNetworkManager {
     pub fn new(
         config: &StryiNetworkManagerConfig,
         mempool: Arc<RwLock<MemPool>>,
-        services_info: Arc<RwLock<Vec<ServiceInfo>>>,
+        services_info: Arc<RwLock<Vec<SignedServiceRecord>>>,
         cancel_token: CancellationToken,
     ) -> Result<Self, StryiNetworkError> {
         // Use provided key or generate one.
@@ -180,25 +180,34 @@ impl StryiNetworkManager {
         self.command_tx.clone()
     }
 
-    /// Returns a random peer that has a service of the specified kind.
+    /// Returns a random peer that exposes a service of the requested `kind`.
+    /// The helper verifies each signed record (signature / owner / TTL) on-the-fly.
     /// `None` is returned if no peer currently matches.
     pub async fn random_peer_with_service(
         &self,
         kind: &str,
-    ) -> Option<(PeerId, ServiceInfo)> {
+    ) -> Option<(PeerId, ServiceRecord)> {
+
         let peers = self.connected_peers.read().await;
+        let mut rng = rand::rng();
 
         peers
             .iter()
-            .filter_map(|(id, info)| {
-                info.services
-                    .iter()
+            .filter_map(|(peer_id, info)| {
+                let pk = info.public_key.as_ref()?; // Identify not finished -> skip
+
+                // Convert the *signed* list into verified `ServiceRecord`s.
+                let verified = filter_verified_records(info.services.clone(), &pk.clone().try_into_ed25519().unwrap());
+
+                // Pick the first record that matches `kind`.
+                verified
+                    .into_iter()
                     .find(|s| s.kind() == kind)
-                    .cloned()
-                    .map(|svc| (*id, svc))
+                    .map(|svc| (*peer_id, svc))
             })
-            .choose(&mut rand::rng())
+            .choose(&mut rng)
     }
+
 
     /// Returns the configured keypair for this network manager.
     pub fn get_keypair(&self) -> Keypair {
@@ -257,63 +266,80 @@ impl StryiNetworkManager {
                 command = self.command_rx.recv() => {
                     // TODO: Implement NetworkCommands handler in network-manager loop
 
-                match command {
-                    // -- QueryPeersWithService command --
-                    Some(NetworkCommand::QueryPeersWithService { service, respond_to }) => {
-                        debug!("NetworkManager: Got QueryPeersWithService command.");
-            
-                        // Read the current peer map atomically
-                        // self.connected_peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>
-                        let mut discovered_services: Vec<(PeerId, ServiceInfo)> = {
-                            let guard = self.connected_peers.read().await;
-                            guard
-                                .iter()
-                                .flat_map(|(peer_id, info)| {
-                                    info.services
-                                        .iter()
-                                        .filter(|svc| svc.kind() == service)
-                                        .cloned()
-                                        .map(|svc| (*peer_id, svc))
-                                })
-                                .collect()
-                        };
-            
-                        // Add services of this very peer
-                        let own_services = self.services_info.read().await;
-                        for own_service in own_services.iter().filter(|svc| svc.kind() == service) {
-                            discovered_services.push((self.peer_id, own_service.clone()));
+                    match command {
+                        // -- QueryPeersWithService command --
+                        Some(NetworkCommand::QueryPeersWithService { service, respond_to }) => {
+                            debug!("NetworkManager: Got QueryPeersWithService command.");
+
+                            // Read the current peer map atomically
+                            let mut discovered_services: Vec<(PeerId, ServiceRecord)> = {
+                                let guard = self.connected_peers.read().await;
+                                let mut out = Vec::new();
+
+                                for (peer_id, info) in guard.iter() {
+                                    // We can verify only if the peer has already sent its public key.
+                                    let Some(pk_generic) = &info.public_key else { continue };
+
+                                    // Convert generic `PublicKey` -> concrete ed25519 key expected by the helper.
+                                    let Ok(pk_ed) = pk_generic.clone().try_into_ed25519() else { continue };
+
+                                    // Verify signatures → decode `ServiceRecord`s.
+                                    let verified = filter_verified_records(info.services.clone(), &pk_ed);
+
+                                    // Retain only the requested kind.
+                                    for svc in verified.into_iter().filter(|s| s.kind() == service) {
+                                        out.push((*peer_id, svc));
+                                    }
+                                }
+                                out
+                            };
+
+
+                            // Add services of this very peer
+                            let own_signed = self.services_info.read().await.clone();
+                            let own_pk_ed  = self
+                                .get_keypair()
+                                .public()
+                                .try_into_ed25519()
+                                .expect("local node must use an ed25519 key");
+                        
+                            let own_verified = filter_verified_records(own_signed, &own_pk_ed);
+                        
+                            for svc in own_verified.into_iter().filter(|s| s.kind() == service) {
+                                discovered_services.push((self.peer_id, svc));
+                            }
+                        
+                            info!(
+                                "NetworkManager: Found {} peers with service '{}'.",
+                                discovered_services.len(),
+                                service
+                            );
+                            debug!("Discovered services: {:?}", debug(&discovered_services));
+                        
+                            // reply (ignore if receiver is gone)
+                            let _ = respond_to.send(discovered_services);
                         }
-            
-                        info!(
-                            "NetworkManager: Found {} peers with service '{}'.",
-                            discovered_services.len(),
-                            service
-                        );
-                        debug!("Discovered services: {:?}", debug(&discovered_services));
-            
-                        //  reply (ignore if receiver is gone)
-                        let _ = respond_to.send(discovered_services);
+
+
+                        // -- QueryPeerPublicKey command --
+                        Some(NetworkCommand::QueryPeerPublicKey { peer, respond_to }) => {
+                            debug!("NetworkManager: Got QueryPeerPublicKey command.");
+
+                            // Look up the peer's public key
+                            let public_key = {
+                                let guard = self.connected_peers.read().await;
+                                guard.get(&peer).and_then(|info| info.public_key.clone())
+                            };
+
+                            // Reply (ignore if receiver is gone)
+                            let _ = respond_to.send(public_key);
+                        }
+
+                        // Anything else (including `None` when the channel closes) is safely ignored
+                        _ => {}
+
+                        }
                     }
-            
-                    // -- QueryPeerPublicKey command --
-                    Some(NetworkCommand::QueryPeerPublicKey { peer, respond_to }) => {
-                        debug!("NetworkManager: Got QueryPeerPublicKey command.");
-            
-                        // Look up the peer's public key
-                        let public_key = {
-                            let guard = self.connected_peers.read().await;
-                            guard.get(&peer).and_then(|info| info.public_key.clone())
-                        };
-            
-                        // Reply (ignore if receiver is gone)
-                        let _ = respond_to.send(public_key);
-                    }
-            
-                    // Anything else (including `None` when the channel closes) is safely ignored
-                    _ => {}
-                    
-                    }
-                }
 
                 
                 // --- libp2p events ---
