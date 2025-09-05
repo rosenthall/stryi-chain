@@ -1,7 +1,7 @@
 use crate::error::StryiNodeError;
-use crate::grpc::{StryiSyncService, StryiSyncServiceConfig, GRPC_PEER_SERVICE};
+use crate::grpc::{StryiSyncService, StryiSyncServiceConfig, GRPC_SERVICE_TAG};
 use crate::grpc_services::blockchain_sync_server::BlockchainSyncServer;
-use crate::http::StryiHttpServiceConfig;
+use crate::http::{StryiHttpServiceConfig, HTTP_SERVICE_TAG};
 use crate::middleware::{ReadyFlag, ReadyGateLayer};
 use crate::tls::NodeTlsIdentity;
 use std::sync::Arc;
@@ -20,7 +20,7 @@ use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info, trace};
 use stryi_network::ed25519::Keypair;
-use crate::genesis_manager::GenesisManager;
+use crate::genesis_manager::{GenesisChoice, GenesisManager};
 use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
 use crate::grpc_services::BlockHashList;
 
@@ -43,8 +43,11 @@ pub struct StryiChainNode {
     /// The node's identity keypair (ed25519) from NetworkManager
     pub(crate) keypair: Keypair,
 
+    /// The peer id of this node.
+    pub(crate) peer_id: PeerId,
+
     /// A list of services that this node runs
-    pub(crate) services_info: Arc<RwLock<Vec<SignedServiceRecord>>>,
+    pub(crate) services_records: Arc<RwLock<Vec<SignedServiceRecord>>>,
 
     /// A node's tls identity (based on PeerKey)
     pub(crate) tls_identity: NodeTlsIdentity,
@@ -135,7 +138,7 @@ impl StryiChainNode {
         loop {
             let (tx, rx) = tokio::sync::oneshot::channel();
             net_cmd.send(NetworkCommand::QueryPeersWithService {
-                service: GRPC_PEER_SERVICE.to_owned(),
+                service: GRPC_SERVICE_TAG.to_owned(),
                 respond_to: tx,
             }).await.map_err(|_| StryiNodeError::other("network command channel closed"))?;
 
@@ -172,8 +175,8 @@ impl StryiChainNode {
 
         // convert to ed25519 public key
         let peer_pubkey = peer_pubkey.try_into_ed25519().expect("peer public key is not ed25519");
-        
-        
+
+
         /*
         if !svc.verify_signature(&peer_pubkey) {
             return Err(StryiNodeError::other("TLS certificate signature invalid"));
@@ -184,7 +187,7 @@ impl StryiChainNode {
 
 
         debug!("{:#?}", candidates);
-        
+
 
         let (grpc_peer_id, grpc_peer_service_info) = candidates
             .into_iter()
@@ -215,10 +218,6 @@ impl StryiChainNode {
 
 
 
-        // Extract host part for SNI / domain verification
-        // let tls_cfg = ClientTlsConfig::new()
-        //    .accept_invalid_hostnames(true);
-
         // create TLS channel and gRPC client
         let channel = Endpoint::from(uri)
         //  .tls_config(tls_cfg)
@@ -235,7 +234,7 @@ impl StryiChainNode {
             svc.address()
         );
 
-        let genesis_block: Block = {
+        let external_genesis_block: Block = {
             let response = grpc_client
                 .get_blocks_by_hash(BlockHashList {
                     block_hashes: vec![BlockHash::empty().to_string()],
@@ -269,10 +268,46 @@ impl StryiChainNode {
 
 
 
-        trace!("Received genesis block: {:?}", genesis_block);
+        trace!("Received genesis block: {:?}", external_genesis_block);
 
-        self.genesis_manager.prompt_and_cache_block(&genesis_block)?;
-        
+        // Decide how to proceed with genesis
+        match self.genesis_manager.load_saved() {
+            // No local genesis: ask user to accept the network one
+            None => {
+                info!("No local genesis found; prompting user to accept the network genesis.");
+                // If user refuses, return an actionable error
+                self.genesis_manager
+                    .prompt_and_cache_block(&external_genesis_block)?;
+                info!("Network genesis accepted and cached.");
+            }
+
+            // Local genesis exists
+            Some(local_genesis) => {
+                info!("Comparing local genesis with the one received from the network...");
+                if local_genesis == external_genesis_block {
+                    // Match: good scenario
+                    info!("[OK]: Genesis blocks are identical.");
+                } else {
+                    // Mismatch: let user choose which one to use
+                    info!("[MISMATCH]: Genesis blocks differ.");
+                    let choice = self
+                        .genesis_manager
+                        .prompt_choose_between(&local_genesis, &external_genesis_block)?;
+
+                    match choice {
+                        GenesisChoice::Local => {
+                            info!("User chose LOCAL genesis. Proceeding with local chain rules.");
+                            // Nothing to change on disk; keep existing file.
+                        }
+                        GenesisChoice::Network => {
+                            info!("User chose NETWORK genesis. Replacing local genesis atomically.");
+                            self.genesis_manager.save_block(&external_genesis_block)?;
+                        }
+                    }
+                }
+            }
+        }
+
 
         Ok(())
     }
@@ -289,7 +324,8 @@ impl StryiChainNode {
             storage,
             network_manager,
             keypair,
-            services_info,
+            peer_id,
+            services_records,
             tls_identity,
             
             sync_service_config,
@@ -355,31 +391,36 @@ impl StryiChainNode {
                 .await
         };
 
-/*
-        // Register gRPC and HTTP service in ServiceInfos
+
+
+        // Register gRPC and HTTP service in ServiceRecords
         {
-            let grpc_service_info = ServiceInfo::new_signed(
-                GRPC_PEER_SERVICE.to_owned(),
+            let grpc_record = ServiceRecord::new(
                 sync_service_config.address,
-                sync_service_config.protocol_version as u32,
-                tls_identity.cert_pem.clone(),
-                &keypair,
+                peer_id,
+                GRPC_SERVICE_TAG.to_string(),
+                sync_service_config.protocol_version as u32
             );
 
-            
-            // TODO: Not all of the node's services need to be TLS-ed (e.g high-level http api)
 
-            let http_service_info = ServiceInfo::new(
-                "http".to_owned(),
+            let signed_grpc_record = SignedServiceRecord::sign(keypair.clone(), grpc_record)?;
+
+            info!("Successfully signed node's gRPC service with own keypair!");
+
+            let http_record = ServiceRecord::new(
                 http_service_config.address,
+                peer_id,
+                HTTP_SERVICE_TAG.to_string(),
                 http_service_config.api_version
             );
+            let signed_http_record = SignedServiceRecord::sign(keypair.clone(), http_record)?;
 
+            info!("Successfully signed node's http service with own keypair!");
 
-            services_info.write().await.push(grpc_service_info);
-            // services_info.write().await.push(http_service_info);
+            services_records.write().await.push(signed_grpc_record);
+            services_records.write().await.push(signed_http_record);
         }
-*/
+
 
         // run all the services concurrently
         let (grpc_res, _http_res) = join!(grpc_fut, http_fut);

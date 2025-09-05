@@ -11,7 +11,7 @@ use crate::merkletree::{MerkleHash, MerkleTree};
 use crate::transactions::{StryiSignature, Transaction, TransactionData, TransactionKind, TransactionOut};
 
 /// BlockData holds a list of transactions of block
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BlockData {
     /// List of transactions included in this block
     pub transactions: Vec<Transaction>,
@@ -19,7 +19,7 @@ pub struct BlockData {
 
 
 /// Block header contains essential metadata for a blockchain block.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BlockHeader {
     /// Protocol/format version
     pub version: u16,
@@ -50,7 +50,7 @@ pub struct BlockHeader {
 
 
 /// Block ties together BlockHeader and BlockData.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Block {
     /// The block header
     pub header: BlockHeader,

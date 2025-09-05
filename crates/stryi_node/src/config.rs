@@ -2,6 +2,7 @@
 //!
 //! Precedence: hard-coded defaults < TOML file < explicit CLI flags.
 
+use std::path::Path;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use figment::{Figment, providers::{Toml, Serialized}};
@@ -105,8 +106,16 @@ impl Default for NodeConfig {
 
 impl NodeConfig {
     /// Merge defaults  <  TOML file  <  explicit CLI flags.
+    /// Will return error if config_path was provided in CLI parameters but does not exist
     pub fn load() -> Result<Self, StryiNodeError> {
         let cli = CliArgs::parse();
+
+        // assert that config_path exists
+        let path = Path::new(&cli.config_path);
+        if !path.is_file() {
+            return Err(StryiNodeError::Other(format!("The provided config path is not a file! Provided path : {}", path.to_str().unwrap())));
+        }
+
 
         let figment = Figment::new()
             // (3) built-in defaults, lowest priority

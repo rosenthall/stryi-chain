@@ -36,9 +36,14 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 use stryi_core::mempool::MemPool;
 use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
+use stryi_network::PeerId;
 use crate::error::StryiNodeError;
 use crate::http::tx::send_tx;
 use crate::middleware::{NotReadyResponder, ReadyFlag, ReadyGateLayer};
+
+
+/// Fixed value for the http service name to register in the network.
+pub const HTTP_SERVICE_TAG: &str = "http-user";
 
 #[derive(Clone)]
 pub struct StryiHttpService<DB>
@@ -62,6 +67,10 @@ pub struct StryiHttpServiceConfig {
 
     /// Name of this exact chain
     pub(crate) chain_name: String,
+
+    /// PeerID of the node which hosts this http service.
+    /// This value will be added to each response header so user can identify peer.
+    pub(crate) peer_id: PeerId,
 
     /// Numeric version of this http API
     pub(crate) api_version: u32,
@@ -116,6 +125,7 @@ where
 
     // build the router
     // TODO: Consider using OpenApiRouter instead of regular one
+    // TODO: Add new middleware layer for http for owner node identification: Stryi-PeerId, Stryi-Timestamp and Stryi-Response-Signature
     let app = Router::new()
 
         // -- Router settings --

@@ -317,12 +317,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let network_manager_cancellation_token = CancellationToken::new();
 
     // An initially empty list – we'll fill it later when services start.
-    let services_info: Arc<RwLock<Vec<SignedServiceRecord>>> = Arc::new(RwLock::new(Vec::new()));
+    let services_records: Arc<RwLock<Vec<SignedServiceRecord>>> = Arc::new(RwLock::new(Vec::new()));
 
     let network_manager = StryiNetworkManager::new(
         &network_manager_config,
         mempool.clone(),
-        services_info.clone(),
+        services_records.clone(),
         network_manager_cancellation_token)?;
 
     let network_manager = Some(network_manager);
@@ -339,7 +339,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         storage,
         network_manager,
         keypair,
-        services_info,
+        peer_id,
+        services_records,
         tls_identity,
         grpc_tls_root,
         net_cmd: None,
@@ -357,6 +358,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 
     // -- Initialize the miner manager --
+
+    // Construct boxed closure that will
     let get_tip = {
         let storage = node.storage.clone();
         // Closure captures Arc-ed storage

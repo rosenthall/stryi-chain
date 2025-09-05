@@ -51,7 +51,7 @@ pub struct SendTransactionRequest {
     pub raw_tx : String,
 }
 
-/// Payload returned by `/api/blocks/{height/hash)` endpoint.
+/// Payload returned by `/api/blocks/{height}/hash` endpoint.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[schema(title = "BlockResponse", description = "Full block including header and transactions.")]
 pub struct BlockResponse {
