@@ -39,7 +39,7 @@ use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 use stryi_network::PeerId;
 use crate::error::StryiNodeError;
 use crate::http::tx::send_tx;
-use crate::middleware::{NotReadyResponder, ReadyFlag, ReadyGateLayer};
+use crate::middleware::ready::{NotReadyResponder, ReadyFlag, ReadyGateLayer};
 
 
 /// Fixed value for the http service name to register in the network.

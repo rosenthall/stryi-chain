@@ -21,8 +21,7 @@ use crate::grpc_services::{
     BlockHeightRange, BlockHashList, SerializedBlockBody
 };
 use crate::grpc_services::blockchain_sync_server::BlockchainSyncServer;
-use crate::middleware::NotReadyResponder;
-
+use crate::middleware::ready::NotReadyResponder;
 
 /// Fixed value for the gRPC service name to register in the network.
 pub const GRPC_SERVICE_TAG: &str = "grpc-sync";
@@ -346,7 +345,7 @@ impl TryFrom<PbBlock> for Block {
     fn try_from(value: PbBlock) -> Result<Self, Self::Error> {
         
         // Try to extract the header from the PbBlock
-        let header: stryi_core::block::BlockHeader = {
+        let header: BlockHeader = {
             let grpc_header = value.header.ok_or(StryiCoreError::other("Got block with no header!"))?;
             
             BlockHeader {

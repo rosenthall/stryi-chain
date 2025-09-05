@@ -2,7 +2,6 @@ use crate::error::StryiNodeError;
 use crate::grpc::{StryiSyncService, StryiSyncServiceConfig, GRPC_SERVICE_TAG};
 use crate::grpc_services::blockchain_sync_server::BlockchainSyncServer;
 use crate::http::{StryiHttpServiceConfig, HTTP_SERVICE_TAG};
-use crate::middleware::{ReadyFlag, ReadyGateLayer};
 use crate::tls::NodeTlsIdentity;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,6 +22,7 @@ use stryi_network::ed25519::Keypair;
 use crate::genesis_manager::{GenesisChoice, GenesisManager};
 use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
 use crate::grpc_services::BlockHashList;
+use crate::middleware::ready::{ReadyFlag, ReadyGateLayer};
 
 /// The main struct representing the Stryi node instance.
 /// This node will later integrate networking, consensus, gRPC sync, mempool and mining services.

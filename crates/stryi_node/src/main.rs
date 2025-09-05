@@ -61,7 +61,7 @@ use crate::config::NodeConfig;
 use crate::error::StryiNodeError;
 use crate::genesis_manager::GenesisManager;
 use crate::http::StryiHttpServiceConfig;
-use crate::middleware::ReadyFlag;
+use crate::middleware::ready::ReadyFlag;
 use crate::miner::StryiMinerConfig;
 
 pub(crate) mod grpc_services {
@@ -353,8 +353,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         grpc_is_ready: ReadyFlag::new(RwLock::new(true)),
         http_is_ready: ReadyFlag::new(RwLock::new(true)),
     };
-
-
 
 
     // -- Initialize the miner manager --

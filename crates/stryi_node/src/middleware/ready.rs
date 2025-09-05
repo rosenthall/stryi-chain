@@ -5,7 +5,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use http::{Request as HttpRequest};
+use http::Request as HttpRequest;
 use tokio::sync::RwLock;
 use tonic::server::NamedService;
 use tower::{Layer, Service};
