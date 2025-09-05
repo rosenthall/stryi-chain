@@ -220,7 +220,6 @@ impl From<SignedServiceRecord> for Vec<u8> {
     }
 }
 
-// If you need a borrowed form (`&SignedServiceRecord`)
 impl From<&SignedServiceRecord> for Vec<u8> {
     fn from(ssr: &SignedServiceRecord) -> Self {
         ssr.clone().inner.into_protobuf_encoding().to_vec()
@@ -262,30 +261,27 @@ mod tests {
     use super::*;
     use libp2p::identity::ed25519;
 
-
-    // helper
-    fn sample_record() -> ServiceRecord {
+    // Helper: build a ServiceRecord bound to a specific owner PeerId
+    fn sample_record_for_owner(owner: PeerId) -> ServiceRecord {
         ServiceRecord::new(
             "127.0.0.1:6001".parse().unwrap(),
-            PeerId::random(),
+            owner,
             "grpc-sync".to_string(),
             1,
         )
     }
 
-
     #[test]
     fn signed_service_record_serialise_roundtrip() {
         let kp = ed25519::Keypair::generate();
-        let rec   = sample_record();
-        let signed = SignedServiceRecord::sign(kp, rec)
-            .expect("sign");
+        let owner = PeerId::from_public_key(&kp.public().into());
+        let rec = sample_record_for_owner(owner);
+        let signed = SignedServiceRecord::sign(kp, rec).expect("sign");
 
-        // JSON round-trip via serde_json
+        // bincode round-trip via bincode::serde
         let vec = bincode::serde::encode_to_vec(&signed, standard()).unwrap();
         let de: SignedServiceRecord =
             bincode::serde::decode_from_slice(&vec, standard()).unwrap().0;
-
 
         // protobuf bytes must match
         assert_eq!(Vec::<u8>::from(signed.clone()), Vec::<u8>::from(de));
@@ -294,25 +290,21 @@ mod tests {
     #[test]
     fn signed_service_full_cycle_sign_serialize_verify_decode() {
         // a) node A
-        let kp_a= ed25519::Keypair::generate();
-        let rec_a    = sample_record();
-        let signed_a = SignedServiceRecord::sign(kp_a.clone(), rec_a.clone())
-            .expect("sign");
+        let kp_a = ed25519::Keypair::generate();
+        let owner_a = PeerId::from_public_key(&kp_a.public().into());
+        let rec_a = sample_record_for_owner(owner_a);
+        let signed_a = SignedServiceRecord::sign(kp_a.clone(), rec_a.clone()).expect("sign");
 
         // serialize to the wire
         let wire: Vec<u8> = signed_a.clone().into();
 
         // b) node B receives
-        let ssr_b = SignedServiceRecord::try_from(wire.as_slice())
-            .expect("proto decode");
+        let ssr_b = SignedServiceRecord::try_from(wire.as_slice()).expect("proto decode");
 
         let pubkey_a = kp_a.public(); // expected signing key
 
         // verify signature + domain + payload-type
-        let decoded = ssr_b
-            .verify_and_decode(&pubkey_a)
-            .expect("verify+decode");
-
+        let decoded = ssr_b.verify_and_decode(&pubkey_a).unwrap();
         // record must match original
         assert_eq!(decoded, rec_a);
     }
@@ -321,13 +313,16 @@ mod tests {
     fn filter_verifies_and_discards_bad_records() {
         let kp = ed25519::Keypair::generate();
         let pk = kp.public();
-        let good_rec = sample_record();
 
+        // Good record: owner derived from kp
+        let good_owner = PeerId::from_public_key(&pk.clone().into());
+        let good_rec = sample_record_for_owner(good_owner);
         let good_signed = SignedServiceRecord::sign(kp.clone(), good_rec.clone()).unwrap();
 
-        // fake "bad" message: signed by a different key
+        // Bad record: signed by a different key (and owner bound to that key)
         let other_kp = ed25519::Keypair::generate();
-        let bad_rec  = sample_record();
+        let bad_owner = PeerId::from_public_key(&other_kp.public().into());
+        let bad_rec = sample_record_for_owner(bad_owner);
         let bad_signed = SignedServiceRecord::sign(other_kp, bad_rec).unwrap();
 
         let vec = vec![good_signed, bad_signed];
@@ -335,6 +330,4 @@ mod tests {
 
         assert_eq!(out, vec![good_rec]);
     }
-
 }
-
