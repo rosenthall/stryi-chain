@@ -11,7 +11,7 @@ use serde_with::skip_serializing_none;
 
 
 /// Represents the behavior of the node at startup.
-#[derive(Debug, Deserialize, Default, Serialize)]
+#[derive(Debug, Deserialize, Default, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")] // "bootstrap" | "join" | "auto"
 pub enum NodeStartMode {
     /// In this mode, the node starts from the provided genesis block and builds the chain from scratch.

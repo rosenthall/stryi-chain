@@ -18,8 +18,9 @@ use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info, trace};
+use stryi_core::storage::BlockStorage;
 use stryi_network::ed25519::Keypair;
-use crate::genesis_manager::{GenesisChoice, GenesisManager};
+use crate::bootstrap::GenesisBootstrap;
 use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
 use crate::grpc_services::BlockHashList;
 use crate::middleware::ready::{ReadyFlag, ReadyGateLayer};
@@ -62,8 +63,8 @@ pub struct StryiChainNode {
     /// The network events channel, used to receive events from the network manager.
     pub(crate) net_events: Option<broadcast::Receiver<NetworkEvent>>,
 
-    /// The genesis manager, responsible for loading/initializing the genesis block and UTXO set.
-    pub(crate) genesis_manager: GenesisManager,
+    /// Genesis bootstrap orchestrator
+    pub(crate) genesis_bootstrap: GenesisBootstrap,
 
     /// Configuration for the gRPC-based synchronization service.
     pub(crate) sync_service_config: StryiSyncServiceConfig,
@@ -269,45 +270,38 @@ impl StryiChainNode {
 
 
         trace!("Received genesis block: {:?}", external_genesis_block);
+        
+        // If storage has no genesis yet, save meta first, then commit the exact same block.
+        // This keeps a single source of truth and crash-safety (meta before state).
+        let need_genesis = {
+            let s = self.storage.read().await;
+            // Expect a storage API able to check height 0 presence; adjust if your API differs.
+            s.get_block_by_height(0)
+                .await
+                .map_err(|e| StryiNodeError::other(format!("failed to query storage for genesis: {e}")))?
+                .is_none()
+        };
 
-        // Decide how to proceed with genesis
-        match self.genesis_manager.load_saved() {
-            // No local genesis: ask user to accept the network one
-            None => {
-                info!("No local genesis found; prompting user to accept the network genesis.");
-                // If user refuses, return an actionable error
-                self.genesis_manager
-                    .prompt_and_cache_block(&external_genesis_block)?;
-                info!("Network genesis accepted and cached.");
+        if need_genesis {
+            // Save meta (single place to "save" the network binding).
+            self.genesis_bootstrap
+                .confirm_and_save(
+                    &external_genesis_block,
+                    &self.sync_service_config.chain_name,
+                    self.sync_service_config.protocol_version as u64,
+                )
+                .map_err(|e| StryiNodeError::other(format!("confirm_and_save failed: {e}")))?;
+
+            // Commit the exact same block to storage.
+            {
+                let mut s = self.storage.write().await;
+                s.put_block(&external_genesis_block)
+                    .await
+                    .map_err(|e| StryiNodeError::other(format!("failed to commit genesis block: {e}")))?;
             }
 
-            // Local genesis exists
-            Some(local_genesis) => {
-                info!("Comparing local genesis with the one received from the network...");
-                if local_genesis == external_genesis_block {
-                    // Match: good scenario
-                    info!("[OK]: Genesis blocks are identical.");
-                } else {
-                    // Mismatch: let user choose which one to use
-                    info!("[MISMATCH]: Genesis blocks differ.");
-                    let choice = self
-                        .genesis_manager
-                        .prompt_choose_between(&local_genesis, &external_genesis_block)?;
-
-                    match choice {
-                        GenesisChoice::Local => {
-                            info!("User chose LOCAL genesis. Proceeding with local chain rules.");
-                            // Nothing to change on disk; keep existing file.
-                        }
-                        GenesisChoice::Network => {
-                            info!("User chose NETWORK genesis. Replacing local genesis atomically.");
-                            self.genesis_manager.save_block(&external_genesis_block)?;
-                        }
-                    }
-                }
-            }
+            info!("Genesis saved in meta and committed to storage (height=0).");
         }
-
 
         Ok(())
     }

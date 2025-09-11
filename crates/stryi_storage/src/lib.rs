@@ -72,8 +72,10 @@ use std::collections::HashMap;
 mod stats;
 mod undo;
 mod index;
+mod meta;
+pub use meta::*;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use fjall::{Config as FjallConfig, PartitionCreateOptions, TxKeyspace, TxPartition};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
@@ -146,13 +148,26 @@ impl GenesisInitConfig {
 
 
 impl StryiStorage {
+
     /// Creates (or opens) the database at the given `path`.
     ///
-    /// If path database doesn't exist yet - it must be initialized with `genesis_config`
-    /// If database is not initialized and no initialization config is provided - returns `NoInitializationConfigProvided`
+    /// Behavior:
+    /// - Always opens/creates the Fjall keyspace and the seven partitions (blocks, heights, utxo,
+    ///   addresses, stats, undo, block_indexes) in transactional mode.
+    /// - If the `stats` partition already contains state, the storage is treated as initialized
+    ///   and returned as-is (the `genesis_config` argument is ignored).
+    /// - If no state is found (brand-new database):
+    ///     - When `genesis_config` is Some(..): build and insert the genesis block, initialize stats, return the handle.
+    ///     - When `genesis_config` is None: create an empty layout with initial stats and return the handle
+    ///       without inserting a genesis block; the caller may commit genesis later (e.g., after network sync).
     ///
-    /// We open it in transactional mode so we can do atomic writes across multiple partitions.
-    pub async fn initialize_in_path(path: PathBuf, genesis_config: Option<GenesisInitConfig>) -> Result<Self, StryiStorageError> {
+    /// Notes:
+    /// - This function performs no network I/O.
+    /// - Callers that defer genesis should ensure it is committed before exposing chain-dependent services.
+    pub async fn initialize_in_path(
+        path: PathBuf,
+        genesis_config: Option<GenesisInitConfig>
+    ) -> Result<Self, StryiStorageError> {
         info!("Trying to access Stryi storage at path {}", &path.display());
 
         // Create or open the KeySpace
@@ -171,7 +186,6 @@ impl StryiStorage {
         let undo_partition = keyspace.open_partition("undo", PartitionCreateOptions::default())?;
         let block_index_partition = keyspace.open_partition("block_indexes", PartitionCreateOptions::default())?;
 
-
         // Create storage instance
         let mut storage = Self {
             blocks_partition,
@@ -185,25 +199,26 @@ impl StryiStorage {
         };
 
         // Attempt to load existing chain state
-
         if let Err(StryiStorageError::NoStorageStatsFound(_)) = storage.get_current_storage_state() {
-
-            // Initialize very first state
+            // Create an empty, pre-genesis state so callers can commit genesis later
             storage.initialize_storage_state()?;
 
-
-            // Insert genesis block if genesis_config was provided
             if let Some(gconfig) = genesis_config {
-                info!("Inserting genesis block!");
+                info!("Inserting genesis block (bootstrap mode)...");
                 storage.init_with_genesis(gconfig.clone()).await?;
-                info!("Successfully inserted genesis block with {} predefined balances, {} basic difficulty bits and version {}", &gconfig.wanted_balances.len(), &gconfig.difficulty_bits, &gconfig.version);
+                info!(
+            "Genesis inserted: {} allocations, difficulty_bits={}, version={}",
+            gconfig.wanted_balances.len(),
+            gconfig.difficulty_bits,
+            gconfig.version
+        );
             } else {
-                // if user didn't provide config, but the DB is brand new - return error
-                error!("Database is not initialized and no genesis config provided!");
-                return Err(StryiStorageError::NoInitializationConfigProvided);
+                // Pre-Genesis: partitions + initial stats exist; no block yet.
+                info!("Initialized storage in Pre-Genesis mode (no genesis block). The caller must commit genesis later.");
             }
         }
-
+        
+        
         Ok(storage)
     }
 

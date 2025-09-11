@@ -37,7 +37,10 @@ pub enum StryiStorageError {
 
     #[error("Cannot find value with such key in data base: {0}")]
     NotFound(String),
-    
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
     #[error("Cannot construct undo object for the block: {msg}")]
     UndoCreationError { msg: String },
 }

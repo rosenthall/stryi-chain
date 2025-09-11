@@ -28,15 +28,16 @@ mod miner;
 /// Simple estimation of the node's hashrate
 mod hashrate;
 
-/// Tools to let user choose genesis configuration (e.g. from file, another node, etc.)
-mod genesis_manager;
+/// Tools for proper bootstraping of the chain and genesis acquring.
+mod bootstrap;
+
 
 use std::error::Error;
 use std::io::{ErrorKind, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use colored::Colorize;
 use tokio::io;
 use tokio::time::sleep;
@@ -47,11 +48,13 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use stryi_core::address::AccountAddress;
+use stryi_core::block::Block;
 use stryi_core::mempool::{MemPool, MemPoolConfig, RbfPolicy, UtxoLookup};
-use stryi_core::storage::{StorageStats, UtxoStorage};
+use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 use stryi_core::transactions::{FeePolicy, OutPoint};
 use stryi_network::{StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig, RendezvousMode, ServiceRecord, PeerId, SignedServiceRecord};
-use stryi_storage::{GenesisInitConfig, StryiStorage};
+use stryi_storage::{GenesisInitConfig, StorageStatus, StryiStorage};
+use crate::bootstrap::GenesisBootstrap;
 use crate::cli::NodeStartMode;
 use crate::grpc::{StryiSyncServiceConfig};
 use crate::keys::PeerKey;
@@ -59,7 +62,6 @@ use crate::node::StryiChainNode;
 use crate::tls::cert_and_key_from_peer;
 use crate::config::NodeConfig;
 use crate::error::StryiNodeError;
-use crate::genesis_manager::GenesisManager;
 use crate::http::StryiHttpServiceConfig;
 use crate::middleware::ready::ReadyFlag;
 use crate::miner::StryiMinerConfig;
@@ -167,7 +169,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut http_service_config = StryiHttpServiceConfig {
         address: cfg.http_service_address.parse()?,
-        chain_name: cfg.chain_name,
+        chain_name: cfg.chain_name.clone(),
         peer_id: PeerId::random(), // Setup it later
         api_version: cfg.http_service_version,
     };
@@ -184,23 +186,77 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     info!("Start mode = {:?}", start_mode);
 
-    // Try to get genesis config by path if we are in Bootstrap mode.
-    let genesis_config = match start_mode {
-        NodeStartMode::Bootstrap => {
-            let p = cfg.genesis_config_path
+
+    // Setup bootstrap helper
+    let genesis_bootstrap = GenesisBootstrap::new(cfg.storage_path.clone().into());
+
+    // Initializing storage in configured provided path
+
+
+    // probe storage meta information
+    let storage_status = StorageStatus::from_path(&cfg.storage_path).map_err(|e| {
+        error!("Failed to probe storage at {}: {e}", &cfg.storage_path);
+        StryiNodeError::other(format!("probe storage: {e}"))
+    })?;
+    info!("Storage status at {} => {:?}", &cfg.storage_path, storage_status);
+
+
+    let storage: Arc<RwLock<StryiStorage>> = match (start_mode, &storage_status) {
+        // Already initialized - just openn
+        (_, StorageStatus::Initialized { .. }) => {
+            let st = StryiStorage::initialize_in_path(PathBuf::from(&cfg.storage_path), None).await?;
+            Arc::new(RwLock::new(st))
+        }
+
+        // Bootstrap + empty datadir:
+        // 1. read local genesis config
+        // 2. build the preview block deterministically
+        // 3. confirm_and_save(meta)
+        // 4. initialize storage with the same config (commits the block)
+        (NodeStartMode::Bootstrap, StorageStatus::NoGenesis) => {
+            let p = cfg
+                .genesis_config_path
                 .as_deref()
                 .ok_or_else(|| StryiNodeError::other("Bootstrap mode requires `genesis_config_path`"))?;
-            Some(try_genesis_config_from_path(PathBuf::from(p))?)
-        },
-        NodeStartMode::Join => None,
-        NodeStartMode::Auto => unreachable!(),
+            let genesis_cfg = try_genesis_config_from_path(PathBuf::from(p))?;
+
+            let preview_block = Block::new_genesis(
+                genesis_cfg.version,
+                genesis_cfg.difficulty_bits,
+                genesis_cfg.wanted_balances.clone(),
+            );
+
+            genesis_bootstrap
+                .clone()
+                .confirm_and_save(&preview_block, &cfg.chain_name, cfg.sync_protocol_version as u64)
+                .map_err(|e| {
+                    error!("confirm_and_save failed: {e}");
+                    e
+                })?;
+
+            let st = StryiStorage::initialize_in_path(PathBuf::from(&cfg.storage_path), Some(genesis_cfg)).await?;
+            Arc::new(RwLock::new(st))
+        }
+
+        // Join + empty datadir: Pre-Genesis layout (genesis will be fetched)
+        (NodeStartMode::Join, StorageStatus::NoGenesis) => {
+            let st = StryiStorage::initialize_in_path(PathBuf::from(&cfg.storage_path), None).await?;
+            Arc::new(RwLock::new(st))
+        }
+
+        // Corrupted meta -> hard stop
+        (_, StorageStatus::Corrupted { reason }) => {
+            return Err(StryiNodeError::other(format!("Storage meta corrupted: {reason}")).into());
+        }
+
+        _ => panic!("unexpected (start_mode, storage_status) state"),
     };
 
 
-    // Initializing storage in configured provided path
+    /*
     let storage = StryiStorage::initialize_in_path(PathBuf::from(cfg.storage_path.clone()), genesis_config).await?;
     let storage = Arc::new(RwLock::new(storage));
-
+    */
 
     // TODO: Improve mempool configurability, make possible configure FeePolicy, RbfPolicy and set RbfPolicy::disabled from config
     let mempool_config = MemPoolConfig::new(
@@ -330,9 +386,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let keypair = keypair.clone().try_into_ed25519().expect("Keypair is not Ed25519");
 
 
-    // setup genesis manager
-    let genesis_manager = GenesisManager::new(cfg.storage_path.clone().into());
-
     // Instantiate the StryiChainNode
     let mut node = StryiChainNode {
         mempool,
@@ -345,7 +398,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         grpc_tls_root,
         net_cmd: None,
         net_events: None,
-        genesis_manager,
+        genesis_bootstrap : genesis_bootstrap.clone(),
         sync_service_config,
         http_service_config,
 
@@ -396,7 +449,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // let (net_events_tx, net_events_rx) = tokio::sync::broadcast::channel(100);
 
         // Initialize the miner with the provided configuration
-        let miner = StryiMinerConfig::new(
+        let _miner = StryiMinerConfig::new(
             cfg.miner_tx_threshold,
             cfg.block_header_version,
             cfg.miner_max_delay_secs,
@@ -426,11 +479,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
     match start_mode {
         NodeStartMode::Bootstrap => {
             info!("Bootstrap: skipping synchronize(); this node is the source of genesis.");
-        },
+        }
 
         NodeStartMode::Join => {
             info!("Join: running synchronize() to fetch genesis/chain from peers.");
             node.synchronize().await?;
+
+            // If we started with NoGenesis, the sync should have committed height=0.
+            if matches!(storage_status, StorageStatus::NoGenesis) {
+                // Expect a storage API that can retrieve block by height.
+                let genesis_block = {
+                    let s = node.storage.read().await;
+                    s.get_block_by_height(0).await
+                        .map_err(|e| StryiNodeError::other(format!("failed to read genesis from storage: {e}")))?
+                        .ok_or_else(|| StryiNodeError::other("genesis block not found after synchronize()"))?
+                };
+
+                genesis_bootstrap.clone()
+                    .clone()
+                    .confirm_and_save(&genesis_block, &cfg.chain_name, cfg.sync_protocol_version as u64)
+                    .map_err(|e| {
+                        error!("confirm_and_save failed: {e}");
+                        e
+                    })?;
+            }
         }
 
         NodeStartMode::Auto => unreachable!(),
@@ -444,6 +516,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 
     // Keep the node running indefinitely.
+    // TODO: Graceful stop for the node
     loop {
         sleep(Duration::from_secs(60)).await;
     }

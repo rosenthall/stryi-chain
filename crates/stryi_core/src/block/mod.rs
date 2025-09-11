@@ -206,7 +206,10 @@ impl Block {
     /// with the `merkle_root_hash` stored in the block header.
     ///
     /// # Returns
-    pub fn validate_merkle_root(&self) -> bool {
+    /// 
+    /// * `true` if root is valid
+    /// * `false` otherwise.
+    pub fn is_merkle_root_valid(&self) -> bool {
         let computed_root = Self::compute_merkle_root(&self.data.transactions);
         computed_root == self.header.merkle_root_hash
     }
