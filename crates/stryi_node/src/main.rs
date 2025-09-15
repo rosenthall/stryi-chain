@@ -34,6 +34,8 @@ mod bootstrap;
 /// Helpers for performing Initial Block Download and some related functions
 mod ibd;
 
+/// Last Common Ancestor detecting utils.
+mod lca;
 
 use std::error::Error;
 use std::io::{ErrorKind, Read};
