@@ -24,7 +24,7 @@ use crate::storage::StryiInMemoryStorage;
 /// - `DB` (database) that implements the `UtxoStorage`, `BlockStorage` and `StorageStats` traits. This enables the engine
 /// to work with any storage backend that conforms to the interface (e.g. InMemoryUtxoStorage, StryiStorage, etc.).
 /// - `FS` (Stands for Forks Storage) that implements `ForkStorage` trait. It allows engine use different backends
-///  for storing and maintaining forks tree.
+/// for storing and maintaining forks tree.
 pub struct StryiConsensusEngine<DB> where
     DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage {
     /// Consensus rules object defining parameters like current difficulty and adjustment intervals.
@@ -92,7 +92,7 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage> StryiConsensus
     async fn build_chain_index(db: Arc<RwLock<DB>>) -> Result<ChainIndex, StryiCoreError> {
 
         // Hold lock on db
-        let db = db.blocking_read();
+        let db = db.read().await; // block_read?
         
         debug!("Starting collecting chain index");
         

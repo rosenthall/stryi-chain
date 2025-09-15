@@ -13,9 +13,12 @@ use std::error::Error;
 use std::fmt::Debug;
 use futures::future::BoxFuture;
 use crate::block::{Block, BlockHash};
+use crate::error::StryiCoreError;
+
+// --- exports ---
 pub use rules::ConsensusRules;
 pub use engine::StryiConsensusEngine;
-use crate::error::StryiCoreError;
+pub use validator::BlockValidator;
 
 /// Reply message type for ConsensusEngine.
 /// See ConsensusEngine::on_block method for more details.

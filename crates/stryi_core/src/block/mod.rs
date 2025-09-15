@@ -41,13 +41,23 @@ pub struct BlockHeader {
 
     /// Nonce (in Bitcoin it's 32 bits so it's enough much for StryiChain)
     pub nonce: u32,
-    
+
     /// Boolean value proves that block is the genesis in the chain
-    // TODO: Maybe replace is_genesis field by something like genesis_consensus_config : Option<GenesisConsensusConfig> for better flexibility? And add method is_genesis() for compatibility with an old field. 
+    // TODO: Maybe replace is_genesis field by something like genesis_consensus_config : Option<GenesisConsensusConfig> for better flexibility? And add method is_genesis() for compatibility with an old field.
     pub is_genesis : bool,
 }
 
 
+
+/// Configuration, the entire later chain relies on.
+/// Stored in genesis, never changes.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GenesisChainConfig {
+    
+    /// Any description of this genesis, its origin, whatever
+    /// You also may include your favourite joke right in the genesis
+    genesis_message : String,
+}
 
 /// Block ties together BlockHeader and BlockData.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,10 +99,10 @@ impl Block {
     /// @AccountAddress => 10000
     ///
     /// Function converts TxOuts from this hashmap `balances`
-    /// 
+    ///
     /// This function calculates the Merkle root from the provided transactions.
     pub fn new_genesis(version: u16, difficulty_bits : u8, wanted_balances: HashMap<AccountAddress, u64>) -> Self {
-        
+
         // convert balances to TxOuts
         let mut tx_outs: Vec<TransactionOut> = vec!();
 
@@ -102,7 +112,7 @@ impl Block {
                 value: balance,
             })
         }
-        
+
         // Constructs single transaction with all required UTXOs
         let tx_data = TransactionData {
             version,
@@ -114,14 +124,14 @@ impl Block {
             data: tx_data,
             signature: StryiSignature(Box::new([0u8; 65])) // Use an empty bytes as a signature
         };
-        
-        
+
+
         // Compute the Merkle root from the transactions
         let merkle_hash = Self::compute_merkle_root(&[transaction.clone()]);
-        
+
         let empty_block_hash = BlockHash::empty();
-        let header = BlockHeader { 
-            
+        let header = BlockHeader {
+
             merkle_root_hash: merkle_hash,
 
             // Use provided values for chain version and difficulty bits
@@ -133,14 +143,14 @@ impl Block {
             nonce: 0,
             height : 0,
             timestamp: 0,
-            
+
             is_genesis: true,
         };
 
         let data = BlockData {
             transactions: vec![transaction],
         };
-        
+
         Self { header, data }
     }
 
@@ -183,8 +193,8 @@ impl Block {
     ///
     /// This method computes the hash of the block using the block's header
     /// and then checks if it meets the difficulty target specified in the header's `bits` field.
-    /// If block kind is genesis - returns `true` immediately. 
-    /// 
+    /// If block kind is genesis - returns `true` immediately.
+    ///
     /// # Returns
     ///
     /// * `true` if the block hash satisfies the required difficulty.
@@ -206,7 +216,7 @@ impl Block {
     /// with the `merkle_root_hash` stored in the block header.
     ///
     /// # Returns
-    /// 
+    ///
     /// * `true` if root is valid
     /// * `false` otherwise.
     pub fn is_merkle_root_valid(&self) -> bool {
@@ -238,7 +248,7 @@ mod tests {
         // Sign transaction data
         let signed_tx = tx_data.sign(&signing_key);
 
-        
+
         // Create a block
         let prev_hash = BlockHash::empty(); // Some placeholder
         let mut block = Block::new(vec![signed_tx], prev_hash, 42, 16, 1_700_000_000, 1);

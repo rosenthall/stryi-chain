@@ -31,6 +31,9 @@ mod hashrate;
 /// Tools for proper bootstraping of the chain and genesis acquring.
 mod bootstrap;
 
+/// Helpers for performing Initial Block Download and some related functions
+mod ibd;
+
 
 use std::error::Error;
 use std::io::{ErrorKind, Read};
@@ -41,7 +44,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use colored::Colorize;
 use tokio::io;
 use tokio::time::sleep;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -49,16 +52,17 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use stryi_core::address::AccountAddress;
 use stryi_core::block::Block;
+use stryi_core::consensus::{BlockValidator, ConsensusRules, StryiConsensusEngine};
 use stryi_core::mempool::{MemPool, MemPoolConfig, RbfPolicy, UtxoLookup};
 use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
-use stryi_core::transactions::{FeePolicy, OutPoint};
+use stryi_core::transactions::{FeePolicy, OutPoint, UtxoProcessor};
 use stryi_network::{StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig, RendezvousMode, ServiceRecord, PeerId, SignedServiceRecord};
 use stryi_storage::{GenesisInitConfig, StorageStatus, StryiStorage};
 use crate::bootstrap::GenesisBootstrap;
 use crate::cli::NodeStartMode;
 use crate::grpc::{StryiSyncServiceConfig};
 use crate::keys::PeerKey;
-use crate::node::StryiChainNode;
+use crate::node::{build_consensus_rules, StryiChainNode};
 use crate::tls::cert_and_key_from_peer;
 use crate::config::NodeConfig;
 use crate::error::StryiNodeError;
@@ -388,8 +392,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Instantiate the StryiChainNode
     let mut node = StryiChainNode {
+        storage: storage.clone(),
         mempool,
-        storage,
+        consensus_engine: None, // Note: Consensus engine will be created when synchronizing.
         network_manager,
         keypair,
         peer_id,
@@ -410,21 +415,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // -- Initialize the miner manager --
 
-    // Construct boxed closure that will
-    let get_tip = {
-        let storage = node.storage.clone();
-        // Closure captures Arc-ed storage
-        Box::new(move || {
-            // Clone storage for the async block
-            let storage = storage.clone();
-            // Return boxed async future that reads tip
-            Box::pin(async move { storage.read().await.tip().await })
-        })
-    };
-    
     if cfg.miner_enabled {
+
         info!("Mining is enabled, initializing the miner...");
 
+        // Construct boxed closure that will get tip for the miner.
+        let _get_tip = {
+            let storage = node.storage.clone();
+            // Closure captures Arc-ed storage
+            Box::new(move || {
+                // Clone storage for the async block
+                let storage = storage.clone();
+                // Return boxed async future that reads tip
+                Box::pin(async move { storage.read().await.tip().await })
+            })
+        };
+
+
+        // Try to get reward address
         let reward_address = if let Ok(addr) = AccountAddress::from_hash_string(&cfg.miner_reward_address) {
             addr
         } else {
@@ -435,10 +443,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // Pretty print the miner reward address so user will not miss it
         println!("{}", "==================================MINER==================================".blue().bold());
         println!("{} {}", "Miner reward address is set to:".purple(), reward_address.to_string().green().bold());
+
         // Run the hashrate bench if enabled in config
         if cfg.miner_hashrate_bench {
             hashrate::warm_up();
         }
+
         println!("{}", "=========================================================================".blue().bold());
 
 
@@ -457,7 +467,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
 
 
-        // Create the miner instance
+        // Create the miner instance and run its loop
         // .....
 
 
@@ -479,6 +489,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     match start_mode {
         NodeStartMode::Bootstrap => {
             info!("Bootstrap: skipping synchronize(); this node is the source of genesis.");
+
+            // Construct ConsensusEngine instance and set the field.
+            debug!("No synchronizing required, building ConsensusEngine immediately.");
+            let rules = build_consensus_rules(&storage.clone()).await?;
+            let block_validator = BlockValidator::new(rules.clone());
+            let utxo_processor = UtxoProcessor::new();
+            trace!(rules = ?rules);
+            let engine = StryiConsensusEngine::new(
+                rules,
+                block_validator,
+                utxo_processor,
+                storage.clone(),
+            ).await.map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
+            // set it.
+            node.set_consensus_engine(engine);
+            info!("Success!");
         }
 
         NodeStartMode::Join => {

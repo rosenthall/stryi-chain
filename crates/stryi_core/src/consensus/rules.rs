@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 /// Global consensus parameters, covering proof‑of‑work difficulty adjustment and block‑reward emission.
 #[derive(Serialize, Deserialize, Debug, Clone)]
+// TODO: Refactor `ConsensusRules`, shall be no current_difficulty as fixed number. Maybe consider using `UtxoLookup`-like pattern as a getter for current state?
 pub struct ConsensusRules {
 
     /// Current PoW difficulty, representing the number of leading zero bits required for a block to be considered valid.
@@ -34,14 +35,35 @@ pub struct ConsensusRules {
 }
 
 
+
+
+
+
 impl ConsensusRules {
+    
+    
+    /// *TEMPORARY API*
+    /// Constructs new instance of ConsensusRules with provided current_difficulty and other fields are set to some reasonable values.
+    /// In the future, this will be deleted and refactored as well as ConsensusRules by itself
+    // TODO: Delete `default_with_difficulty()` method for the ConsensusRules, make genesis block actually store basic parameters and chain's settings.
+    pub fn default_with_difficulty(current_difficulty: u8) -> Self {
+        Self {
+            current_difficulty,
+            difficulty_adjustment_interval_blocks: 100,
+            initial_subsidy: 1000,
+            decay_interval: 10,
+            decay_step: 10,
+        }
+    }
+    
+    
     /// Creates a new set of global consensus parameters.
     ///
     /// # Parameters
     /// * `current_difficulty` – initial PoW difficulty (leading‑zero bits).  
     /// * `difficulty_adjustment_interval_blocks` – how many blocks between difficulty retargets.  
     /// * `initial_subsidy` – reward for block height 0, expressed in the chain’s base units.  
-    /// * `decay_interval` – number of blocks between linear reward drops (0 ⇒ no decay).  
+    /// * `decay_interval` – number of blocks between linear reward drops (0 => no decay).
     /// * `decay_step` – amount subtracted from the subsidy each time `decay_interval` is reached.
     pub fn new(
         current_difficulty: u8,
