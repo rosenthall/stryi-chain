@@ -32,24 +32,24 @@
 //!    that address. When inserting or removing UTXOs, we keep this index in sync. Then, for lookups such
 //!    as `get_utxos_for_address`, we can quickly retrieve the relevant outpoints without scanning all
 //!    UTXOs.
-//! 5. **Stats** 
+//! 5. **Stats**
 //!     - Key  : 32 zero bytes
 //!     - Value : A `bincode`-serialized `StorageStateInformation`.
 //!
-//!     The only goal of this partition is to hold current information about storage state. We will 
+//!     The only goal of this partition is to hold current information about storage state. We will
 //!    update stats after each new block. This allows us to perform some consensus-related logic of comparing different chains.
 //! 6. **Undo**
 //!     - Key : `stryi_core::block::BlockHash` (32 bytes of the block hash)
 //!     - Value : A `bincode`-serialized `stryi_core::BlockUndo` object
 //!     
-//!     This partition is our per-block backup data. The thing allows us easily restore pre-block state, by just keeping 
-//!    `BlockUndo` in base. Restoration is just simple as deleting all the new outputs and restoring all the existing ones. 
+//!     This partition is our per-block backup data. The thing allows us easily restore pre-block state, by just keeping
+//!    `BlockUndo` in base. Restoration is just simple as deleting all the new outputs and restoring all the existing ones.
 //!    High-level struct for implementing this functionality is `ChainReorganizer`
 //!
 //! 7. **Block Indexes**
 //!     - Key : `stryi_core::block::BlockHash` (32 bytes of the block hash)
-//!     - Value : A `bincode`-serialized `stryi_storage::index::BlockIndexData` object 
-//! 
+//!     - Value : A `bincode`-serialized `stryi_storage::index::BlockIndexData` object
+//!
 //! By maintaining these 7 partitions, we get efficient lookups for blocks, block heights, UTXOs by
 //! outpoint, addresses to outpoint sets and will be able to correctly and safely reorganize chain for consensus purposes.
 
@@ -58,34 +58,32 @@
 #![feature(generic_const_exprs)]
 #![feature(new_range_api)]
 
-mod error;
 mod blocks;
+mod error;
 mod utxo;
-
 
 #[cfg(test)]
 mod tests;
 
-
 use std::collections::HashMap;
 
-mod stats;
-mod undo;
 mod index;
 mod meta;
+mod stats;
+mod undo;
 pub use meta::*;
 
-use std::path::{Path, PathBuf};
 use fjall::{Config as FjallConfig, PartitionCreateOptions, TxKeyspace, TxPartition};
 use serde::{Deserialize, Serialize};
-use tracing::{error, info};
+use std::path::PathBuf;
+use tracing::info;
 
 pub use crate::error::StryiStorageError;
 use stryi_core::address::AccountAddress;
 
-use stryi_core::block::{Block, BlockHash};
-use stryi_core::storage::BlockStorage;
 use crate::stats::StorageStateInformation;
+use stryi_core::block::{Block, BlockHash, GenesisState};
+use stryi_core::storage::BlockStorage;
 
 /// `StryiStorage` manages seven partitions within a single Fjall keyspace:
 /// - `blocks_partition`: For storing blocks keyed by hash
@@ -109,27 +107,25 @@ pub struct StryiStorage {
 
     /// Partition storing address → set of OutPoints referencing that address
     pub(crate) addresses_partition: TxPartition,
-    
+
     /// Partition stores only one value - current chain state, must be updated after each new block or a reorganization
     pub(crate) stats_partition: TxPartition,
 
-    /// Partition storing block hash → `stryi_core::undo::UndoData` 
+    /// Partition storing block hash → `stryi_core::undo::UndoData`
     pub(crate) undo_partition: TxPartition,
-    
+
     /// Partition storing block hash → `stryi_storage::index::BlockIndexData`
     pub(crate) block_index_partition: TxPartition,
-    
+
     /// Keyspace for the entire database
     pub keyspace: TxKeyspace,
 }
-
-
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 // This struct stores the data needed to create a custom genesis block: balances for each address, plus block header fields.
 pub struct GenesisInitConfig {
     pub wanted_balances: HashMap<AccountAddress, u64>,
-    pub difficulty_bits: u8,
+    pub genesis_state: GenesisState,
     pub version: u16,
 }
 
@@ -138,17 +134,14 @@ impl GenesisInitConfig {
     /// Creates new GenesisBlockConfig with some reasonable parameters for tests
     pub fn new_test() -> Self {
         Self {
-            wanted_balances : HashMap::new(),
-            difficulty_bits : 0, // disabled difficulty checking
-            version: 0
+            wanted_balances: HashMap::new(),
+            genesis_state: GenesisState::default(), // Use default for testing.
+            version: 0,
         }
     }
 }
 
-
-
 impl StryiStorage {
-
     /// Creates (or opens) the database at the given `path`.
     ///
     /// Behavior:
@@ -166,7 +159,7 @@ impl StryiStorage {
     /// - Callers that defer genesis should ensure it is committed before exposing chain-dependent services.
     pub async fn initialize_in_path(
         path: PathBuf,
-        genesis_config: Option<GenesisInitConfig>
+        genesis_config: Option<GenesisInitConfig>,
     ) -> Result<Self, StryiStorageError> {
         info!("Trying to access Stryi storage at path {}", &path.display());
 
@@ -175,16 +168,24 @@ impl StryiStorage {
         let keyspace = cfg.open_transactional()?;
 
         info!("Successfully initialized key space!");
-        info!("Current database disk usage is : {} bytes", keyspace.disk_space());
+        info!(
+            "Current database disk usage is : {} bytes",
+            keyspace.disk_space()
+        );
 
         // Open or create the seven partitions with default options
-        let blocks_partition = keyspace.open_partition("blocks", PartitionCreateOptions::default())?;
-        let heights_partition = keyspace.open_partition("heights", PartitionCreateOptions::default())?;
+        let blocks_partition =
+            keyspace.open_partition("blocks", PartitionCreateOptions::default())?;
+        let heights_partition =
+            keyspace.open_partition("heights", PartitionCreateOptions::default())?;
         let utxo_partition = keyspace.open_partition("utxo", PartitionCreateOptions::default())?;
-        let addresses_partition = keyspace.open_partition("addresses", PartitionCreateOptions::default())?;
-        let stats_partition = keyspace.open_partition("stats", PartitionCreateOptions::default())?;
+        let addresses_partition =
+            keyspace.open_partition("addresses", PartitionCreateOptions::default())?;
+        let stats_partition =
+            keyspace.open_partition("stats", PartitionCreateOptions::default())?;
         let undo_partition = keyspace.open_partition("undo", PartitionCreateOptions::default())?;
-        let block_index_partition = keyspace.open_partition("block_indexes", PartitionCreateOptions::default())?;
+        let block_index_partition =
+            keyspace.open_partition("block_indexes", PartitionCreateOptions::default())?;
 
         // Create storage instance
         let mut storage = Self {
@@ -199,7 +200,8 @@ impl StryiStorage {
         };
 
         // Attempt to load existing chain state
-        if let Err(StryiStorageError::NoStorageStatsFound(_)) = storage.get_current_storage_state() {
+        if let Err(StryiStorageError::NoStorageStatsFound(_)) = storage.get_current_storage_state()
+        {
             // Create an empty, pre-genesis state so callers can commit genesis later
             storage.initialize_storage_state()?;
 
@@ -207,21 +209,21 @@ impl StryiStorage {
                 info!("Inserting genesis block (bootstrap mode)...");
                 storage.init_with_genesis(gconfig.clone()).await?;
                 info!(
-            "Genesis inserted: {} allocations, difficulty_bits={}, version={}",
-            gconfig.wanted_balances.len(),
-            gconfig.difficulty_bits,
-            gconfig.version
-        );
+                    "Genesis inserted: {} allocations, genesis's chain statics ={:?}, version={}",
+                    gconfig.wanted_balances.len(),
+                    gconfig.genesis_state,
+                    gconfig.version
+                );
             } else {
                 // Pre-Genesis: partitions + initial stats exist; no block yet.
-                info!("Initialized storage in Pre-Genesis mode (no genesis block). The caller must commit genesis later.");
+                info!(
+                    "Initialized storage in Pre-Genesis mode (no genesis block). The caller must commit genesis later."
+                );
             }
         }
-        
-        
+
         Ok(storage)
     }
-
 
     /// Inserts a genesis block if the database is empty, using the user-provided config.
     ///
@@ -229,15 +231,10 @@ impl StryiStorage {
     /// 2) Calls self.put_block to store it and update the chain stats
     pub async fn init_with_genesis(
         &mut self,
-        cfg: GenesisInitConfig
+        cfg: GenesisInitConfig,
     ) -> Result<(), StryiStorageError> {
-
         // Build the genesis block from user config
-        let genesis_block = Block::new_genesis(
-            cfg.version,
-            cfg.difficulty_bits,
-            cfg.wanted_balances,
-        );
+        let genesis_block = Block::new_genesis(cfg.version, cfg.wanted_balances, cfg.genesis_state);
 
         // try store it via put_block
         self.put_block(&genesis_block).await
@@ -261,5 +258,4 @@ impl StryiStorage {
         // Store initial state
         self.update_storage_state(initial_state)
     }
-
 }

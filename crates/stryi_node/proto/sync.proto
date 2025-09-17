@@ -1,3 +1,19 @@
+/*
+Note: this proto defines some structures partially:
+ some of defined structures contain fields that are basically bincode-serialized bytes.
+
+Which structures:
+1. Serialized body of block.
+2. `genesis_data` field of the block's header.
+
+ Some reasoning:
+- That's simple and allows us to reduce complexity of the network layer
+- No real need of being able to use this in different languages for now.
+- While in dev, I`m constantly changing some fields and thus it is easier to keep like that.
+
+As far as I know there are several bincode implementations for other languages/platforms, so it is still possible.
+*/
+
 syntax = "proto3";
 
 package stryi.sync;
@@ -51,25 +67,22 @@ message Block {
 message BlockHeader {
   uint32 version             = 1;
 
-  string  merkle_root_hash   = 2;
+  string merkle_root_hash    = 2;
   string previous_block_hash = 3;
 
   uint64 height              = 4;
   uint32 difficulty_bits     = 5;
   uint64 timestamp           = 6;
   uint32 nonce               = 7;
-  bool   is_genesis          = 8;
+
+  // Optional bincode-serialized genesis state; present only for the genesis block
+  bytes  genesis_data        = 9;
 }
 
 //---------------------------------------------
 // Serialized body of block.
 // Body content is serialized using `bincode` (Rust binary serialization),
 // chosen for simplicity and performance.
-// Some reasoning:
-// That's simple and allows us to reduce complexity of the network layer
-// No real need of being able to use this in different languages for now.
-// Note: As far as I know there are several bincode implementations for other languages/platforms, so it is still possible,
-// but no protobuf definitions are provided
 //---------------------------------------------
 message SerializedBlockBody {
   bytes serialized = 1;

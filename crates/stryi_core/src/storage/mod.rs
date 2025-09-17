@@ -1,9 +1,9 @@
-
 #[cfg(test)]
 mod in_memory;
 #[cfg(test)]
-pub use in_memory::{StryiInMemoryStorage, InMemoryStorageError};
+pub use in_memory::{InMemoryStorageError, StryiInMemoryStorage};
 
+use crate::BlockUndo;
 use crate::address::AccountAddress;
 use crate::block::{Block, BlockHash};
 use crate::transactions::{OutPoint, UTXO};
@@ -12,7 +12,6 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
 use std::range::RangeInclusive;
-use crate::BlockUndo;
 
 /// Trait representing a storage backend for UTXOs.
 ///
@@ -87,8 +86,6 @@ pub trait UtxoStorage: Send + Sync {
     }
 }
 
-
-
 /// Common type for incorrect ranges
 #[derive(Debug)]
 pub enum RangeError {
@@ -133,7 +130,10 @@ pub trait BlockStorage: Send + Sync {
     /// Returns all blocks whose heights lie in the **inclusive** range, keyed by their height.
     /// Must be `range.start < range.end`.
     /// Shall return error if any of block in this range is unavailable or if range is incorrect.
-    fn blocks_range(&self, range: RangeInclusive<usize>) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>>;
+    fn blocks_range(
+        &self,
+        range: RangeInclusive<usize>,
+    ) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>>;
 
     /// Checks whether a block with the given hash exists.
     /// Returns Ok(false) the block is absent.
@@ -145,7 +145,10 @@ pub trait BlockStorage: Send + Sync {
     /// Retrieves a block by its hash.
     /// Returns `Ok(None)` if not found.
     /// By default, this just forwards to [`batch_get_by_hashes`]. Override if you need
-    fn get_block_by_hash(&self, hash: BlockHash) -> BoxFuture<Result<Option<Block>, Self::StorageError>> {
+    fn get_block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> BoxFuture<Result<Option<Block>, Self::StorageError>> {
         Box::pin(async move {
             match self.batch_get_blocks_by_hashes(vec![hash]).await {
                 Ok(mut map) => Ok(map.remove(&hash)),
@@ -157,7 +160,10 @@ pub trait BlockStorage: Send + Sync {
     /// Retrieves a block by its height.
     /// Returns `Ok(None)` if not found.
     /// By default, this just forwards to [`batch_get_by_heights`]. Override if you need
-    fn get_block_by_height(&self, height: u64) -> BoxFuture<Result<Option<Block>, Self::StorageError>> {
+    fn get_block_by_height(
+        &self,
+        height: u64,
+    ) -> BoxFuture<Result<Option<Block>, Self::StorageError>> {
         Box::pin(async move {
             match self.batch_get_blocks_by_heights([height]).await {
                 Ok(map) => Ok(map.get(&height).map(|b| b.to_owned())),
@@ -166,7 +172,7 @@ pub trait BlockStorage: Send + Sync {
         })
     }
 
-    /// Default ranges validation method. 
+    /// Default ranges validation method.
     /// Returns common Err(Self::StorageError::RangeError) error if `start` is bigger then `end`
     fn validate_range(range: RangeInclusive<usize>) -> Result<(), Self::StorageError>
     where
@@ -200,7 +206,6 @@ pub trait StorageStats: Sync + Sync {
     fn chain_difficulty(&self) -> BoxFuture<Result<u128, Self::StorageError>>;
 }
 
-
 /// Storage contract for persisting and retrieving `BlockUndo`.
 ///
 /// *The consensus engine relies on these methods when it calls
@@ -224,8 +229,5 @@ pub trait UndoStorage {
     ) -> BoxFuture<'_, Result<Option<BlockUndo>, Self::StorageError>>;
 
     /// Deletes undo data once a block becomes *final* (optional).
-    fn delete_block_undo(
-        &self,
-        hash: BlockHash,
-    ) -> BoxFuture<'_, Result<(), Self::StorageError>>;
+    fn delete_block_undo(&self, hash: BlockHash) -> BoxFuture<'_, Result<(), Self::StorageError>>;
 }

@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::block::{Block, BlockHash};
+use std::collections::HashMap;
 
 /// Metadata stored for **each** block that currently belongs to the
 /// active (canonical) chain.  Only lightweight fields – no full UTXO.
@@ -7,14 +7,14 @@ use crate::block::{Block, BlockHash};
 struct ChainIndexEntry {
     parent: BlockHash,
     height: u64,
-    work:   u128, // cumulative work up to *this* block
+    work: u128, // cumulative work up to *this* block
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct TipInfo {
     height: u64,
-    hash:   BlockHash,
-    work:   u128,
+    hash: BlockHash,
+    work: u128,
 }
 
 /// In‑memory index of the *active* chain.
@@ -24,7 +24,7 @@ struct TipInfo {
 #[derive(Clone, PartialEq, Default, Debug)]
 pub struct ChainIndex {
     entries: HashMap<BlockHash, ChainIndexEntry>,
-    tip:     Option<TipInfo>,
+    tip: Option<TipInfo>,
 }
 
 impl ChainIndex {
@@ -40,7 +40,7 @@ impl ChainIndex {
             ChainIndexEntry {
                 parent: block.header.previous_block_hash,
                 height: block.header.height,
-                work:   cumulative_work,
+                work: cumulative_work,
             },
         );
 
@@ -144,15 +144,19 @@ impl ChainIndex {
             .max_by_key(|(_, e)| e.work)
             .map(|(h, e)| (*h, e.clone()))
             .unwrap();
-        self.tip = Some(TipInfo { height: entry.height, hash, work: entry.work });
+        self.tip = Some(TipInfo {
+            height: entry.height,
+            hash,
+            work: entry.work,
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::merkletree::MerkleHash;
     use super::*;
-    use crate::block::{BlockData, BlockHeader};
+    use crate::block::{BlockData, BlockHeader, GenesisState};
+    use crate::merkletree::MerkleHash;
 
     fn make_block(parent: BlockHash, height: u64, difficulty_bits: u8) -> Block {
         let mut block = Block {
@@ -164,9 +168,11 @@ mod tests {
                 difficulty_bits,
                 timestamp: 0,
                 nonce: 0,
-                is_genesis: height == 0,
+                genesis_state: (height == 0).then(GenesisState::default),
             },
-            data: BlockData { transactions: vec![] },
+            data: BlockData {
+                transactions: vec![],
+            },
         };
         block.update_merkle_root();
         block
@@ -195,7 +201,10 @@ mod tests {
         assert_eq!(idx.tip().unwrap(), (1, a.block_hash(), w_a));
 
         // ancestor lookup A → genesis
-        assert_eq!(idx.ancestor_of_height(a.block_hash(), 0).unwrap(), g.block_hash());
+        assert_eq!(
+            idx.ancestor_of_height(a.block_hash(), 0).unwrap(),
+            g.block_hash()
+        );
     }
 
     #[test]

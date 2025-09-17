@@ -1,4 +1,3 @@
-
 use crate::hash::{Hash, HashKind};
 use blake3;
 

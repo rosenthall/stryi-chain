@@ -1,11 +1,11 @@
 //! DependencyTracker is responsible for maintaining a directed acyclic graph (DAG)
 //! of mempool transactions, where edges indicate dependencies (parent -> child).
 
+use crate::transactions::TransactionHash;
+use petgraph::Direction;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
-use petgraph::Direction;
 use std::collections::{HashMap, HashSet, VecDeque};
-use crate::transactions::TransactionHash;
 
 /// DependencyTracker stores a DAG of mempool transactions and provides
 /// methods to add, remove, and gather descendants or ancestors.
@@ -41,7 +41,11 @@ impl DependencyTracker {
     /// # Arguments
     /// * `child_hash` - The transaction hash of the new child transaction.
     /// * `parent_hashes` - A list of known parent transaction hashes in the DAG.
-    pub fn add_transaction(&mut self, child_hash: TransactionHash, parent_hashes: &[TransactionHash]) {
+    pub fn add_transaction(
+        &mut self,
+        child_hash: TransactionHash,
+        parent_hashes: &[TransactionHash],
+    ) {
         let child_idx = self.graph.add_node(child_hash);
         self.indices.insert(child_hash, child_idx);
 
@@ -61,11 +65,13 @@ impl DependencyTracker {
     pub fn remove_transaction(&mut self, tx_hash: &TransactionHash) {
         if let Some(idx) = self.indices.remove(tx_hash) {
             // Identify affected nodes before removal
-            let parents: Vec<NodeIndex> = self.graph
+            let parents: Vec<NodeIndex> = self
+                .graph
                 .neighbors_directed(idx, Direction::Incoming)
                 .collect();
 
-            let children: Vec<NodeIndex> = self.graph
+            let children: Vec<NodeIndex> = self
+                .graph
                 .neighbors_directed(idx, Direction::Outgoing)
                 .collect();
 
@@ -77,9 +83,16 @@ impl DependencyTracker {
             for parent in &parents {
                 for child in &children {
                     // Check if nodes still exist in the graph
-                    if self.graph.node_weight(*parent).is_some() && self.graph.node_weight(*child).is_some() {
+                    if self.graph.node_weight(*parent).is_some()
+                        && self.graph.node_weight(*child).is_some()
+                    {
                         // Avoid creating duplicate edges
-                        if self.graph.edges_connecting(*parent, *child).next().is_none() {
+                        if self
+                            .graph
+                            .edges_connecting(*parent, *child)
+                            .next()
+                            .is_none()
+                        {
                             self.graph.add_edge(*parent, *child, ());
                         }
                     }
@@ -190,7 +203,12 @@ impl DependencyTracker {
     }
 
     /// A recursive depth-first search helper for topological ordering.
-    fn dfs_topo(&self, node: NodeIndex, visited: &mut HashSet<NodeIndex>, stack: &mut Vec<NodeIndex>) {
+    fn dfs_topo(
+        &self,
+        node: NodeIndex,
+        visited: &mut HashSet<NodeIndex>,
+        stack: &mut Vec<NodeIndex>,
+    ) {
         visited.insert(node);
         for edge in self.graph.edges_directed(node, Direction::Outgoing) {
             let target = edge.target();

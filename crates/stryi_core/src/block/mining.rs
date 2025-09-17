@@ -1,7 +1,5 @@
-use crate::{
-    block::block_hash::{BlockHash},
-};
 use crate::block::Block;
+use crate::block::block_hash::BlockHash;
 
 /// Checks if the provided block hash meets the given difficulty (bits) requirement.
 ///
@@ -32,9 +30,7 @@ pub fn meets_difficulty(block_hash: &BlockHash, bits: u8) -> bool {
     true
 }
 
-
-
-/// Mines the given block in parallel by generating random 32-bit nonce's. 
+/// Mines the given block in parallel by generating random 32-bit nonce's.
 /// Note: This function is designed for testing purposes and should not be used in production.
 /// Note: The max_attempts parameter is used to prevent infinite loops during testing.
 ///
@@ -43,10 +39,9 @@ pub fn meets_difficulty(block_hash: &BlockHash, bits: u8) -> bool {
 /// - Returns `true` if a solution is found (and updates the block's nonce),
 ///   otherwise returns `false`.
 pub(crate) fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bool {
-
     use rand::Rng;
-    use rayon::prelude::*;
     use rand::rng;
+    use rayon::prelude::*;
 
     let bits = block.header.difficulty_bits;
     // We use `find_any` over a parallel iterator so that if ANY thread finds a valid nonce,
@@ -63,10 +58,9 @@ pub(crate) fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bo
             local_header.nonce = candidate_nonce;
 
             // Serialize the header
-            let header_bytes = bincode::serde::encode_to_vec(
-                local_header,
-                bincode::config::standard(),
-            ).expect("Failed to serialize block header");
+            let header_bytes =
+                bincode::serde::encode_to_vec(local_header, bincode::config::standard())
+                    .expect("Failed to serialize block header");
 
             // Compute the hash
             let candidate_hash = BlockHash::new(&header_bytes);
@@ -89,17 +83,17 @@ pub(crate) fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bo
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
+    use crate::address::AccountAddress;
+    use crate::block::mining::{meets_difficulty, mine_block_in_parallel};
+    use crate::block::{Block, BlockHash};
+    use crate::transactions::{
+        OutPoint, TransactionData, TransactionHash, TransactionIn, TransactionKind, TransactionOut,
+    };
     use k256::ecdsa::SigningKey;
     use k256::elliptic_curve::rand_core::OsRng;
     use rand::random;
-    use crate::address::AccountAddress;
-    use crate::block::{Block, BlockHash};
-    use crate::block::mining::{meets_difficulty, mine_block_in_parallel};
-    use crate::transactions::{OutPoint, TransactionData, TransactionHash, TransactionIn, TransactionKind, TransactionOut};
 
     #[test]
     fn test_parallel_mining_small_bits() {
@@ -137,7 +131,7 @@ mod tests {
                 0,                  // height
                 4,                  // bits (only 4 leading zero bits)
                 1_700_000_000,      // timestamp
-                1                   // version
+                1,                  // version
             );
             // Make sure Merkle root is correct after adding the transaction
             b.update_merkle_root();
@@ -152,11 +146,8 @@ mod tests {
             println!("Final nonce = {}", block.header.nonce);
 
             // 6) Verify difficulty on the final block
-            let header_bytes = bincode::serde::encode_to_vec(
-                block.header,
-                bincode::config::standard(),
-            )
-                .unwrap();
+            let header_bytes =
+                bincode::serde::encode_to_vec(block.header, bincode::config::standard()).unwrap();
 
             let block_hash = BlockHash::new(&header_bytes);
             assert!(

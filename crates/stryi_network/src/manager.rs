@@ -1,8 +1,11 @@
+use crate::peer::PeerInfo;
+use crate::services::{ServiceRecord, SignedServiceRecord, filter_verified_records};
 use crate::{
     NetworkCommand, NetworkEvent, RendezvousMode, StryiNetworkManagerConfig,
     behaviour::{StryiBehaviour, StryiBehaviourConfig},
     error::StryiNetworkError,
 };
+use futures::StreamExt;
 use libp2p::core::transport::Boxed;
 use libp2p::gossipsub::IdentTopic;
 use libp2p::{
@@ -13,17 +16,14 @@ use libp2p::{
     swarm::{Config as SwarmConfig, Swarm},
     tcp, yamux,
 };
+use rand::prelude::IteratorRandom;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use futures::StreamExt;
-use rand::prelude::IteratorRandom;
 use stryi_core::mempool::MemPool;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
-use crate::peer::PeerInfo;
-use crate::services::{filter_verified_records, ServiceRecord, SignedServiceRecord};
 
 /// StryiNetworkManager sets up the transport, constructs a swarm using our unified StryiBehaviour,
 /// and runs the event loop.
@@ -183,11 +183,7 @@ impl StryiNetworkManager {
     /// Returns a random peer that exposes a service of the requested `kind`.
     /// The helper verifies each signed record (signature / owner / TTL) on-the-fly.
     /// `None` is returned if no peer currently matches.
-    pub async fn random_peer_with_service(
-        &self,
-        kind: &str,
-    ) -> Option<(PeerId, ServiceRecord)> {
-
+    pub async fn random_peer_with_service(&self, kind: &str) -> Option<(PeerId, ServiceRecord)> {
         let peers = self.connected_peers.read().await;
         let mut rng = rand::rng();
 
@@ -197,7 +193,10 @@ impl StryiNetworkManager {
                 let pk = info.public_key.as_ref()?; // Identify not finished -> skip
 
                 // Convert the *signed* list into verified `ServiceRecord`s.
-                let verified = filter_verified_records(info.services.clone(), &pk.clone().try_into_ed25519().unwrap());
+                let verified = filter_verified_records(
+                    info.services.clone(),
+                    &pk.clone().try_into_ed25519().unwrap(),
+                );
 
                 // Pick the first record that matches `kind`.
                 verified
@@ -208,12 +207,10 @@ impl StryiNetworkManager {
             .choose(&mut rng)
     }
 
-
     /// Returns the configured keypair for this network manager.
     pub fn get_keypair(&self) -> Keypair {
         self.config.keypair.clone()
     }
-    
 
     /// Helper function to build a transport (TCP + Noise + Yamux).
     pub(crate) fn build_transport(
@@ -230,7 +227,6 @@ impl StryiNetworkManager {
         Ok(transport)
     }
 
-    
     /// Runs the main event loop of the StryiNetworkManager.
     /// This loop handles incoming network events, processes commands, and manages subscriptions.
     pub async fn run_loop(&mut self) {
@@ -302,20 +298,20 @@ impl StryiNetworkManager {
                                 .public()
                                 .try_into_ed25519()
                                 .expect("local node must use an ed25519 key");
-                        
+
                             let own_verified = filter_verified_records(own_signed, &own_pk_ed);
-                        
+
                             for svc in own_verified.into_iter().filter(|s| s.kind() == service) {
                                 discovered_services.push((self.peer_id, svc));
                             }
-                        
+
                             info!(
                                 "NetworkManager: Found {} peers with service '{}'.",
                                 discovered_services.len(),
                                 service
                             );
                             debug!("Discovered services: {:?}", debug(&discovered_services));
-                        
+
                             // reply (ignore if receiver is gone)
                             let _ = respond_to.send(discovered_services);
                         }
@@ -341,7 +337,7 @@ impl StryiNetworkManager {
                         }
                     }
 
-                
+
                 // --- libp2p events ---
                 event = swarm.select_next_some() => {
                     self.process_event(&mut swarm, event).await;
@@ -352,5 +348,4 @@ impl StryiNetworkManager {
 
         info!("StryiNetworkManager run loop terminated gracefully.");
     }
-
 }

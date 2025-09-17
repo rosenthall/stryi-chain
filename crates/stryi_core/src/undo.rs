@@ -1,8 +1,8 @@
-use std::collections::HashSet;
-use serde::{Deserialize, Serialize};
 use crate::block::Block;
 use crate::error::StryiCoreError;
-use crate::transactions::{OutPoint, UTXO, Transaction};
+use crate::transactions::{OutPoint, Transaction, UTXO};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// BlockUndo stores the aggregated state changes made by a block.
 /// It contains a set of spent UTXOs (with full details) and a set of created outpoints.
@@ -52,12 +52,13 @@ where
     Fut: Future<Output = Option<UTXO>>,
 {
     for input in &tx.data.inputs {
-        let utxo = utxo_lookup(&input.previous_output)
-            .await
-            .ok_or(StryiCoreError::TxMissingUtxo {
-                txid: input.previous_output.txid,
-                vout: input.previous_output.vout,
-            })?;
+        let utxo =
+            utxo_lookup(&input.previous_output)
+                .await
+                .ok_or(StryiCoreError::TxMissingUtxo {
+                    txid: input.previous_output.txid,
+                    vout: input.previous_output.vout,
+                })?;
 
         spent.insert((input.previous_output, utxo));
     }
@@ -78,11 +79,13 @@ fn process_outputs(tx: &Transaction, created: &mut HashSet<OutPoint>) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::address::AccountAddress;
     use crate::block::{BlockData, BlockHash, BlockHeader};
     use crate::merkletree::MerkleHash;
-    use crate::transactions::{TransactionData, TransactionHash, TransactionIn, TransactionKind, TransactionOut};
-    use super::*;
+    use crate::transactions::{
+        TransactionData, TransactionHash, TransactionIn, TransactionKind, TransactionOut,
+    };
 
     #[tokio::test]
     async fn test_create_undo_success() {
@@ -104,7 +107,7 @@ mod tests {
 
         // Define async lookup closure - now using clone inside async block
         let lookup = |op: &OutPoint| {
-            let op = *op;  // Clone the input parameter
+            let op = *op; // Clone the input parameter
             async move {
                 if op == dummy_outpoint {
                     Some(dummy_utxo)
@@ -113,9 +116,10 @@ mod tests {
                 }
             }
         };
-        
+
         // Call create_undo with await
-        let undo = block.create_undo(lookup)
+        let undo = block
+            .create_undo(lookup)
             .await
             .expect("Undo creation should succeed");
 
@@ -127,12 +131,9 @@ mod tests {
 
         // Verify created outpoints
         let txid = block.data.transactions[0].data.hash();
-        let expected_outpoint0 = OutPoint {
-            txid,
-            vout: 0,
-        };
+        let expected_outpoint0 = OutPoint { txid, vout: 0 };
         let expected_outpoint1 = OutPoint {
-            txid: txid,
+            txid,
             vout: 1,
         };
 
@@ -145,8 +146,16 @@ mod tests {
             "Second created outpoint should be present"
         );
 
-        assert_eq!(undo.spent_utxos.len(), 1, "There should be exactly one spent UTXO recorded");
-        assert_eq!(undo.created_outpoints.len(), 2, "There should be exactly two created outpoints");
+        assert_eq!(
+            undo.spent_utxos.len(),
+            1,
+            "There should be exactly one spent UTXO recorded"
+        );
+        assert_eq!(
+            undo.created_outpoints.len(),
+            2,
+            "There should be exactly two created outpoints"
+        );
     }
 
     #[tokio::test]
@@ -214,7 +223,7 @@ mod tests {
                 difficulty_bits: 1,
                 timestamp: 0,
                 nonce: 0,
-                is_genesis: false,
+                genesis_state: None,
             },
             data: BlockData {
                 transactions: vec![transaction],

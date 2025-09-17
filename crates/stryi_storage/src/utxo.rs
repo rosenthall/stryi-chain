@@ -16,12 +16,12 @@
 //!    this index in sync whenever we add or remove a UTXO in the main partition, so that
 //!    `get_utxos_for_address` does not require scanning all UTXOs.
 
-use std::collections::{HashMap, HashSet};
-use bincode::config::standard;
-use fjall::{Slice, WriteTransaction, ReadTransaction};
-use futures::future::BoxFuture;
-use crate::error::StryiStorageError;
 use crate::StryiStorage;
+use crate::error::StryiStorageError;
+use bincode::config::standard;
+use fjall::{ReadTransaction, Slice, WriteTransaction};
+use futures::future::BoxFuture;
+use std::collections::{HashMap, HashSet};
 
 use stryi_core::address::AccountAddress;
 use stryi_core::storage::UtxoStorage;
@@ -47,10 +47,8 @@ fn decode_outpoints_set(bytes: &[u8]) -> Result<HashSet<OutPoint>, StryiStorageE
 
 /// Encodes a `HashSet<OutPoint>` into bytes using bincode.
 fn encode_outpoints_set(ops: &HashSet<OutPoint>) -> Result<Vec<u8>, StryiStorageError> {
-    bincode::serde::encode_to_vec(ops, standard())
-        .map_err(StryiStorageError::SerializationError)
+    bincode::serde::encode_to_vec(ops, standard()).map_err(StryiStorageError::SerializationError)
 }
-
 
 /// Loads an existing set of outpoints for a given `address` from the partition,
 /// using a read-only transaction (`ReadTransaction`).
@@ -63,7 +61,7 @@ fn encode_outpoints_set(ops: &HashSet<OutPoint>) -> Result<Vec<u8>, StryiStorage
 fn load_address_set_read(
     read_tx: &ReadTransaction,
     partition: &fjall::TxPartition,
-    address: &AccountAddress
+    address: &AccountAddress,
 ) -> Result<HashSet<OutPoint>, StryiStorageError> {
     let data_opt = read_tx
         .get(partition, Slice::from(&address.data[..]))
@@ -87,7 +85,7 @@ fn load_address_set_read(
 fn load_address_set_write(
     write_tx: &WriteTransaction,
     partition: &fjall::TxPartition,
-    address: &AccountAddress
+    address: &AccountAddress,
 ) -> Result<HashSet<OutPoint>, StryiStorageError> {
     let data_opt = write_tx
         .get(partition, Slice::from(&address.data[..]))
@@ -112,18 +110,20 @@ fn store_address_set_write(
     set: &HashSet<OutPoint>,
 ) -> Result<(), StryiStorageError> {
     let encoded = encode_outpoints_set(set)?;
-    write_tx.insert(partition, Slice::from(&address.data[..]), Slice::from(encoded));
+    write_tx.insert(
+        partition,
+        Slice::from(&address.data[..]),
+        Slice::from(encoded),
+    );
     Ok(())
 }
-
-
 
 impl UtxoStorage for StryiStorage {
     type StorageError = StryiStorageError;
 
     fn batch_put_utxos(
         &mut self,
-        utxos: Vec<(OutPoint, UTXO)>
+        utxos: Vec<(OutPoint, UTXO)>,
     ) -> BoxFuture<Result<(), Self::StorageError>> {
         // Do all the writes, map‐building, and commit in one synchronous block.
         let outcome: Result<(), Self::StorageError> = (|| {
@@ -142,10 +142,7 @@ impl UtxoStorage for StryiStorage {
                 tx.insert(&up, Slice::from(&key), Slice::from(bytes));
 
                 // record for the address index
-                addr_map
-                    .entry(u.owner)
-                    .or_default()
-                    .insert(op);
+                addr_map.entry(u.owner).or_default().insert(op);
             }
 
             // update each address’s set
@@ -164,8 +161,10 @@ impl UtxoStorage for StryiStorage {
         Box::pin(async move { outcome })
     }
 
-    fn batch_remove_utxos(&mut self, outpoints: Vec<OutPoint>) -> BoxFuture<Result<(), Self::StorageError>> {
-
+    fn batch_remove_utxos(
+        &mut self,
+        outpoints: Vec<OutPoint>,
+    ) -> BoxFuture<Result<(), Self::StorageError>> {
         // 1) Perform all removal logic synchronously
         let result: Result<(), Self::StorageError> = (|| {
             // Initialize write transaction and clone partitions we need.
@@ -185,18 +184,13 @@ impl UtxoStorage for StryiStorage {
                 let raw = raw_opt.ok_or_else(|| {
                     StryiStorageError::NotFound(format!("UTXO not found: {:?}", op))
                 })?;
-                let (utxo, _) = bincode::serde::decode_from_slice::<UTXO, _>(
-                    &raw,
-                    standard(),
-                ).map_err(StryiStorageError::DeserializationError)?;
+                let (utxo, _) = bincode::serde::decode_from_slice::<UTXO, _>(&raw, standard())
+                    .map_err(StryiStorageError::DeserializationError)?;
 
                 // Remove from the main partition
                 tx.remove(&up, Slice::from(&key));
                 // Record for updating the address index
-                removal_map
-                    .entry(utxo.owner)
-                    .or_default()
-                    .insert(op);
+                removal_map.entry(utxo.owner).or_default().insert(op);
             }
 
             // 2) Update each address’s outpoint set
@@ -217,11 +211,13 @@ impl UtxoStorage for StryiStorage {
         Box::pin(async move { result })
     }
 
-
-    fn batch_get_utxos<I>(&self, outpoints: I) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
+    fn batch_get_utxos<I>(
+        &self,
+        outpoints: I,
+    ) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
     where
-        I: IntoIterator<Item=OutPoint> + Send,
-        I::IntoIter: Send
+        I: IntoIterator<Item = OutPoint> + Send,
+        I::IntoIter: Send,
     {
         // start a single read‐only transaction
         let read_tx = self.keyspace.read_tx();
@@ -243,7 +239,7 @@ impl UtxoStorage for StryiStorage {
                 let raw = raw_opt.ok_or_else(|| {
                     StryiStorageError::NotFound(format!("UTXO not found for outpoint {:?}", op))
                 })?;
-                
+
                 // decode the UTXO
                 let (utxo, _) = bincode::serde::decode_from_slice::<UTXO, _>(&raw, standard())
                     .map_err(StryiStorageError::DeserializationError)?;
@@ -255,18 +251,21 @@ impl UtxoStorage for StryiStorage {
         })
     }
 
-    fn get_utxos_for_address(&self, address: AccountAddress) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>> {
-
+    fn get_utxos_for_address(
+        &self,
+        address: AccountAddress,
+    ) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>> {
         // Setup read transaction
         let read_tx = self.keyspace.read_tx();
 
         Box::pin(async move {
             // Load all the outputs from `address` partition
-            let outpoints_set = load_address_set_read(&read_tx, &self.addresses_partition, &address)?;
+            let outpoints_set =
+                load_address_set_read(&read_tx, &self.addresses_partition, &address)?;
 
             // batch read all utxos
             let utxos = self.batch_get_utxos(outpoints_set).await?;
-            
+
             Ok(utxos)
         })
     }

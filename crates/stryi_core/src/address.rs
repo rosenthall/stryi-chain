@@ -33,13 +33,12 @@ impl AccountAddress {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use k256::ecdsa::SigningKey;
-    use k256::elliptic_curve::rand_core::OsRng;
     use crate::address::{AccountAddress, AddressHasher};
     use crate::hash::HashKind;
+    use k256::ecdsa::SigningKey;
+    use k256::elliptic_curve::rand_core::OsRng;
 
     #[test]
     fn test_create_multiple_account_addresses() {
@@ -79,13 +78,11 @@ mod tests {
 
             // Must be the same
             assert_eq!(
-                account_address.data,
-                converted_account_address.data,
+                account_address.data, converted_account_address.data,
                 "Round-trip from string to address mismatch"
             );
 
             println!("Account Address {}: {}", i + 1, address_string);
         }
     }
-
 }

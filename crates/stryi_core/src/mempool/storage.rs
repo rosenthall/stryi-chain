@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use crate::mempool::current_timestamp;
-use crate::transactions::{Transaction, TransactionHash, OutPoint};
 use crate::mempool::types::MemPoolTx;
+use crate::transactions::{OutPoint, Transaction, TransactionHash};
 use bincode::config::standard;
+use std::collections::HashMap;
 
 /// TransactionStorage is a container for mempool transactions with
 /// separate indices for created and spent outpoints.
@@ -24,7 +24,6 @@ pub struct TransactionStorage {
     /// A map from outpoints to the transaction hash that spends them.
     input_spending_index: HashMap<OutPoint, TransactionHash>,
 }
-
 
 impl TransactionStorage {
     /// Inserts a transaction into the storage.
@@ -59,7 +58,8 @@ impl TransactionStorage {
 
         // Index inputs (this transaction SPENDS these outpoints)
         for input in &tx.data.inputs {
-            self.input_spending_index.insert(input.previous_output, tx_hash);
+            self.input_spending_index
+                .insert(input.previous_output, tx_hash);
         }
     }
 

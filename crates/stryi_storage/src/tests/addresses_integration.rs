@@ -3,8 +3,8 @@ use tokio::test;
 
 use stryi_core::{
     address::AccountAddress,
-    transactions::{OutPoint, UTXO, TransactionHash},
     storage::UtxoStorage,
+    transactions::{OutPoint, TransactionHash, UTXO},
 };
 
 use crate::{GenesisInitConfig, StryiStorage, StryiStorageError};
@@ -26,7 +26,7 @@ fn create_test_utxo(op: &OutPoint, owner: AccountAddress) -> UTXO {
     UTXO {
         txid: op.txid,
         vout: op.vout,
-        value: 123_456,  // Arbitrary test value
+        value: 123_456, // Arbitrary test value
         owner,
     }
 }
@@ -38,15 +38,16 @@ async fn test_addresses_integration() -> Result<(), StryiStorageError> {
     println!("=== Starting addresses integration test ===");
 
     // 1) Create a temp directory and initialize StryiStorage with default genesis config
-    
+
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let genesis_config = GenesisInitConfig::new_test();
-    let mut storage = StryiStorage::initialize_in_path(temp_dir.path().to_owned(), Some(genesis_config)).await?;
+    let mut storage =
+        StryiStorage::initialize_in_path(temp_dir.path().to_owned(), Some(genesis_config)).await?;
     println!("Initialized StryiStorage at: {:?}", temp_dir.path());
 
     // 2) Create distinct addresses
-    let alice_addr   = AccountAddress::new(&[0xA1; 20]);
-    let bob_addr     = AccountAddress::new(&[0xB2; 20]);
+    let alice_addr = AccountAddress::new(&[0xA1; 20]);
+    let bob_addr = AccountAddress::new(&[0xB2; 20]);
     let charlie_addr = AccountAddress::new(&[0xC3; 20]);
 
     println!("Created addresses for Alice, Bob, and Charlie");
@@ -56,8 +57,8 @@ async fn test_addresses_integration() -> Result<(), StryiStorageError> {
     let alice_op2 = make_test_outpoint(1, 1);
     let alice_op3 = make_test_outpoint(1, 2);
 
-    let bob_op1   = make_test_outpoint(2, 10);
-    let bob_op2   = make_test_outpoint(2, 11);
+    let bob_op1 = make_test_outpoint(2, 10);
+    let bob_op2 = make_test_outpoint(2, 11);
 
     let charlie_op1 = make_test_outpoint(3, 20);
 
@@ -67,18 +68,35 @@ async fn test_addresses_integration() -> Result<(), StryiStorageError> {
     // Step A: Single put for Alice
     // ------------------
     println!("Step A: Single put for Alice (alice_op1)");
-    storage.put_utxo(alice_op1, create_test_utxo(&alice_op1, alice_addr)).await?;
+    storage
+        .put_utxo(alice_op1, create_test_utxo(&alice_op1, alice_addr))
+        .await?;
     let alice_uts = storage.get_utxos_for_address(alice_addr).await?;
     println!("After put, Alice has {} UTXOs", alice_uts.len());
-    assert_eq!(alice_uts.len(), 1, "Alice should have 1 UTXO after first put");
-    assert!(storage.get_utxos_for_address(bob_addr).await?.is_empty(), "Bob is empty initially");
-    assert!(storage.get_utxos_for_address(charlie_addr).await?.is_empty(), "Charlie is empty initially");
+    assert_eq!(
+        alice_uts.len(),
+        1,
+        "Alice should have 1 UTXO after first put"
+    );
+    assert!(
+        storage.get_utxos_for_address(bob_addr).await?.is_empty(),
+        "Bob is empty initially"
+    );
+    assert!(
+        storage
+            .get_utxos_for_address(charlie_addr)
+            .await?
+            .is_empty(),
+        "Charlie is empty initially"
+    );
 
     // ------------------
     // Step B: Single put for Bob
     // ------------------
     println!("Step B: Single put for Bob (bob_op1)");
-    storage.put_utxo(bob_op1, create_test_utxo(&bob_op1, bob_addr)).await?;
+    storage
+        .put_utxo(bob_op1, create_test_utxo(&bob_op1, bob_addr))
+        .await?;
     let bob_uts = storage.get_utxos_for_address(bob_addr).await?;
     println!("After put, Bob has {} UTXOs", bob_uts.len());
     assert_eq!(bob_uts.len(), 1, "Bob should have 1 UTXO after first put");
@@ -92,7 +110,7 @@ async fn test_addresses_integration() -> Result<(), StryiStorageError> {
     let batch_put = vec![
         (alice_op2, create_test_utxo(&alice_op2, alice_addr)),
         (alice_op3, create_test_utxo(&alice_op3, alice_addr)),
-        (bob_op2,   create_test_utxo(&bob_op2,   bob_addr)),
+        (bob_op2, create_test_utxo(&bob_op2, bob_addr)),
         (charlie_op1, create_test_utxo(&charlie_op1, charlie_addr)),
     ];
     storage.batch_put_utxos(batch_put).await?;
@@ -117,7 +135,11 @@ async fn test_addresses_integration() -> Result<(), StryiStorageError> {
     storage.remove_utxo(bob_op2).await?;
     let bob_after = storage.get_utxos_for_address(bob_addr).await?;
     println!("Bob has {} UTXOs after removing bob_op2", bob_after.len());
-    assert_eq!(bob_after.len(), 1, "Bob should have 1 left after removing bob_op2");
+    assert_eq!(
+        bob_after.len(),
+        1,
+        "Bob should have 1 left after removing bob_op2"
+    );
     // Confirm bob_op2 is gone
     let bob_op2_check = storage.get_utxo(bob_op2).await;
     assert!(bob_op2_check.is_err(), "bob_op2 not found after removal");
@@ -126,12 +148,19 @@ async fn test_addresses_integration() -> Result<(), StryiStorageError> {
     // Step E: Batch remove for Alice (alice_op2, alice_op3)
     // ------------------
     println!("Step E: Batch removing alice_op2 and alice_op3");
-    storage.batch_remove_utxos(vec![alice_op2, alice_op3]).await?;
+    storage
+        .batch_remove_utxos(vec![alice_op2, alice_op3])
+        .await?;
     let alice_after = storage.get_utxos_for_address(alice_addr).await?;
-    println!("Alice has {} UTXOs after removing op2 and op3", alice_after.len());
+    println!(
+        "Alice has {} UTXOs after removing op2 and op3",
+        alice_after.len()
+    );
     assert_eq!(alice_after.len(), 1, "Alice should be back to 1 UTXO");
     // The only remaining is alice_op1
-    let only_op = &alice_after.get(&alice_op1).expect("Alice's outpoint 1 must exist at this point");
+    let only_op = &alice_after
+        .get(&alice_op1)
+        .expect("Alice's outpoint 1 must exist at this point");
     assert_eq!(only_op.vout, alice_op1.vout);
     assert_eq!(only_op.txid.data, alice_op1.txid.data);
 
@@ -141,12 +170,27 @@ async fn test_addresses_integration() -> Result<(), StryiStorageError> {
     println!("Step F: Attempt removing a nonexistent outpoint");
     let fake_op = make_test_outpoint(99, 999);
     let rem_result = storage.remove_utxo(fake_op).await;
-    assert!(rem_result.is_err(), "Removing nonexistent outpoint should fail");
+    assert!(
+        rem_result.is_err(),
+        "Removing nonexistent outpoint should fail"
+    );
 
     // Confirm no partial changes
-    assert_eq!(storage.get_utxos_for_address(alice_addr).await?.len(), 1, "Alice remains stable");
-    assert_eq!(storage.get_utxos_for_address(bob_addr).await?.len(), 1, "Bob remains stable");
-    assert_eq!(storage.get_utxos_for_address(charlie_addr).await?.len(), 1, "Charlie remains stable");
+    assert_eq!(
+        storage.get_utxos_for_address(alice_addr).await?.len(),
+        1,
+        "Alice remains stable"
+    );
+    assert_eq!(
+        storage.get_utxos_for_address(bob_addr).await?.len(),
+        1,
+        "Bob remains stable"
+    );
+    assert_eq!(
+        storage.get_utxos_for_address(charlie_addr).await?.len(),
+        1,
+        "Charlie remains stable"
+    );
 
     // ------------------
     // Step G: Final verification

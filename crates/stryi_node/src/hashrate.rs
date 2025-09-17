@@ -1,26 +1,26 @@
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use bincode::config::standard;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::ThreadPoolBuilder;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant},
 };
-use bincode::config::standard;
-use stryi_core::block::{meets_difficulty, BlockHash, BlockHeader};
+use stryi_core::block::{BlockHash, BlockHeader, meets_difficulty};
 use stryi_core::merkletree::MerkleHash;
 
 pub fn warm_up() {
-    const SECS: u64   = 10;
-    const STEPS: u64  = 40;            // progress-bar resolution
-    const BATCH: u64  = 10_000;        // <= 100 ms on most CPUs
-    const DIFFICULTY: u32 = 1;         // kept explicit
+    const SECS: u64 = 10;
+    const STEPS: u64 = 40; // progress-bar resolution
+    const BATCH: u64 = 10_000; // <= 100 ms on most CPUs
+    const DIFFICULTY: u32 = 1; // kept explicit
 
     println!("Starting hashrate benchmark for {} seconds...", SECS);
-    
+
     // Static header template
     let header = BlockHeader {
         version: 1,
@@ -30,7 +30,7 @@ pub fn warm_up() {
         timestamp: 0,
         merkle_root_hash: MerkleHash::empty(),
         nonce: 0,
-        is_genesis: false,
+        genesis_state: None,
     };
 
     // Pretty progress bar
@@ -39,18 +39,18 @@ pub fn warm_up() {
         ProgressStyle::with_template(
             "[{elapsed_precise}] {bar:40.cyan/blue} {percent}% | {eta_precise}",
         )
-            .unwrap()
-            .progress_chars("█▉▊▋▌▍▎▏  "), 
+        .unwrap()
+        .progress_chars("█▉▊▋▌▍▎▏  "),
     );
     let tick = Duration::from_secs_f64(SECS as f64 / STEPS as f64);
 
     // Shared stop flag & counter
-    let stop    = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(AtomicBool::new(false));
     let counter = Arc::new(AtomicU64::new(0));
 
     // Worker thread on a private Rayon pool
     let worker_handle = {
-        let stop    = Arc::clone(&stop);
+        let stop = Arc::clone(&stop);
         let counter = Arc::clone(&counter);
 
         thread::spawn(move || {
@@ -61,7 +61,9 @@ pub fn warm_up() {
                 while !stop.load(Ordering::Acquire) {
                     (0..BATCH).into_par_iter().for_each(|i| {
                         // fast exit once stop is raised
-                        if stop.load(Ordering::Relaxed) { return; }
+                        if stop.load(Ordering::Relaxed) {
+                            return;
+                        }
 
                         let mut hdr = header;
                         hdr.nonce = nonce_base.wrapping_add(i as u32);
@@ -92,8 +94,6 @@ pub fn warm_up() {
     // Final hashrate printout
     let hps = counter.load(Ordering::Relaxed) as f64 / start.elapsed().as_secs_f64();
     println!("Estimated hashrate: {}", fmt_hashrate(hps));
-
-
 }
 
 fn fmt_hashrate(hps: f64) -> String {
@@ -107,6 +107,6 @@ fn fmt_hashrate(hps: f64) -> String {
         x if x >= G => format!("{:.2} GH/s", x / G),
         x if x >= M => format!("{:.2} MH/s", x / M),
         x if x >= K => format!("{:.2} kH/s", x / K),
-        _           => format!("{:.0} H/s",  hps),
+        _ => format!("{:.0} H/s", hps),
     }
 }

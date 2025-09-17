@@ -1,43 +1,47 @@
-use std::time::Instant;
+use crate::error::StryiNodeError;
+use crate::grpc_services::BlockHeightRange;
+use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
 use futures_util::StreamExt;
-use tonic::transport::Channel;
-use tracing::{debug, error, info, trace, warn};
+use std::time::Instant;
+use stryi_core::StryiCoreError;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::consensus::{ConsensusEngine, ConsensusOnBlockVerdict};
-use stryi_core::StryiCoreError;
-use crate::error::StryiNodeError;
-use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
-use crate::grpc_services::BlockHeightRange;
+use tonic::transport::Channel;
+use tracing::{debug, error, info, trace, warn};
 
 // Fetch a contiguous batch [start_height ..= end_height] (subject to server-side cap).
 pub(crate) async fn fetch_blocks_batch(
     grpc: &mut BlockchainSyncClient<Channel>,
-    batch_size : usize,
+    batch_size: usize,
     start_height: u64,
     end_height: u64,
 ) -> Result<Vec<Block>, StryiNodeError> {
     let resp = grpc
-        .get_blocks_by_height(BlockHeightRange { start_height, end_height, max_blocks: batch_size as u32 })
+        .get_blocks_by_height(BlockHeightRange {
+            start_height,
+            end_height,
+            max_blocks: batch_size as u32,
+        })
         .await
-        .map_err(|e| StryiNodeError::other(format!(
-            "get_blocks_by_height({start_height}..={end_height}) failed: {e}"
-        )))?;
+        .map_err(|e| {
+            StryiNodeError::other(format!(
+                "get_blocks_by_height({start_height}..={end_height}) failed: {e}"
+            ))
+        })?;
 
     let mut stream = resp.into_inner();
     let mut batch: Vec<Block> = Vec::new();
 
     while let Some(item) = stream.next().await {
         let pb = item.map_err(|e| StryiNodeError::other(format!("stream error: {e}")))?;
-        let block: Block = pb.try_into().map_err(|e| {
-            StryiNodeError::other(format!("failed to convert wire Block: {e:?}"))
-        })?;
+        let block: Block = pb
+            .try_into()
+            .map_err(|e| StryiNodeError::other(format!("failed to convert wire Block: {e:?}")))?;
         batch.push(block);
     }
 
     Ok(batch)
 }
-
-
 
 /// IBD helper, feeds blocks to the consensus engine in-order
 /// and logs everything (batch start/end, per-block details, verdicts, and summary).
@@ -68,17 +72,26 @@ where
         let height: u64 = b.header.height;
         let prev: BlockHash = b.header.previous_block_hash;
         let bits: u8 = b.header.difficulty_bits;
-        let is_genesis: bool = b.header.is_genesis;
+        let is_genesis: bool = b.header.is_genesis();
         let tx_count: usize = b.data.transactions.len();
         let hash: BlockHash = b.block_hash();
 
         debug!(
             "IBD[{}/{}] on_block -> height={}, hash={}, prev={}, bits={}, is_genesis={}, txs={}",
-            i + 1, batch_len, height, hash, prev, bits, is_genesis, tx_count
+            i + 1,
+            batch_len,
+            height,
+            hash,
+            prev,
+            bits,
+            is_genesis,
+            tx_count
         );
 
         match engine.on_block(b).await? {
-            ConsensusOnBlockVerdict::Applied { new_chain_complexity } => { 
+            ConsensusOnBlockVerdict::Applied {
+                new_chain_complexity,
+            } => {
                 cnt_applied += 1;
                 info!(
                     "APPLIED: height={}, hash={}, new_chain_complexity={}",
@@ -129,7 +142,13 @@ where
     let elapsed = started_at.elapsed();
     info!(
         "IBD batch done: total={}, applied={}, buffered={}, already_in_chain={}, already_in_fork_tree={}, reorgs={}, elapsed_ms={}",
-        batch_len, cnt_applied, cnt_buffered, cnt_already_chain, cnt_already_fork, cnt_reorgs, elapsed.as_millis()
+        batch_len,
+        cnt_applied,
+        cnt_buffered,
+        cnt_already_chain,
+        cnt_already_fork,
+        cnt_reorgs,
+        elapsed.as_millis()
     );
 
     Ok(())

@@ -11,7 +11,7 @@ pub struct BroadcastBlock {
 
     /// Address of the miner who produced this block
     pub miner_address: AccountAddress,
-    
+
     /// Number of transactions in the block
     pub transactions_count: usize,
 
@@ -23,7 +23,7 @@ pub struct BroadcastBlock {
 }
 
 impl BroadcastBlock {
-    pub fn new(block : Block, miner_address : AccountAddress, first_seen : u64) -> Self {
+    pub fn new(block: Block, miner_address: AccountAddress, first_seen: u64) -> Self {
         let transactions_count = block.data.transactions.len();
         let total_fees = 10000; // TODO: Actually calculate blocks fees somehow
 

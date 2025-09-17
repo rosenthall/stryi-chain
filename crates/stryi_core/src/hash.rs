@@ -1,7 +1,7 @@
-use std::fmt;
 use crate::error::StryiCoreError;
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::Visitor;
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use std::fmt;
 
 /// Trait defines how a specific object in the blockchain should be hashed.
 pub trait HashKind: Default {
@@ -121,9 +121,6 @@ where
     }
 }
 
-
-
-
 /// Custom Serialize implementations for `Hash<K>`.
 /// We are serializing hash value as a string
 impl<K: HashKind> Serialize for Hash<K>
@@ -137,7 +134,6 @@ where
         serializer.serialize_str(&self.to_string())
     }
 }
-
 
 /// Custom Deserialize implementations for `Hash<K>`.
 impl<'de, K: HashKind> Deserialize<'de> for Hash<K>
@@ -155,7 +151,6 @@ where
             [u8; K::SIZE]:,
         {
             type Value = Hash<K>;
-
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str(&format!(
@@ -176,7 +171,6 @@ where
         deserializer.deserialize_str(HashVisitor::<K>(std::marker::PhantomData))
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -208,8 +202,8 @@ mod tests {
         }
     }
 
-    type TestHash = Hash<TestHashKind>; 
-    
+    type TestHash = Hash<TestHashKind>;
+
     /// Helper function to generate a vector of bytes of a specific length.
     fn generate_bytes(len: usize) -> Vec<u8> {
         (0..len).map(|i| i as u8).collect()
@@ -364,10 +358,8 @@ mod tests {
         let deserialized: TestHash =
             serde_json::from_str(&serialized).expect("Deserialization failed");
         assert_eq!(custom_hash, deserialized);
-            
     }
-    
-    
+
     #[test]
     fn test_hash_deserialization_invalid_data() {
         // Missing prefix
@@ -385,5 +377,4 @@ mod tests {
         let result: Result<TestHash, _> = serde_json::from_str(&json_str);
         assert!(result.is_err());
     }
-
 }

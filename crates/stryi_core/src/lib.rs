@@ -3,7 +3,7 @@
 #![feature(new_range_api)]
 
 /// `hash` module contains some higher-level abstractions for typed hashing
-/// There is a lot of stuff that has own hash format in the Stryi-Chain : 
+/// There is a lot of stuff that has own hash format in the Stryi-Chain :
 /// - `@{20_hex_bytes}` which stands for addresses. @ prefix is inspired by usernames in social networks.
 /// for example : `@b7e3a9c2d4f5061728394b5c6d7e8f9012345678`, `@faded2c4d5e60718293a4b5c6d7e8f9012345678`
 /// - `Bx{32_hex_bytes}` which stands for block hash (BlockHash structure) format.
@@ -30,7 +30,7 @@ pub mod transactions;
 /// Definitions of traits that we use as abstract layer for storing data. Exports 'UtxoStorage' and BlockStorage so far
 pub mod storage;
 
-/// Abstraction for consensus model of StryiChain. 
+/// Abstraction for consensus model of StryiChain.
 /// Provides a convenient way for all the nodes to follow the same, strict rules of consensus
 pub mod consensus;
 

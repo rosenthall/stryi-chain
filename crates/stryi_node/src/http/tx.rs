@@ -1,23 +1,21 @@
-use std::sync::Arc;
-use axum::{extract::State, Json};
-use axum::response::Response;
 use axum::body::Body;
-use base64::prelude::BASE64_STANDARD;
+use axum::response::Response;
+use axum::{Json, extract::State};
 use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use bincode::config::standard;
 use bincode::serde::decode_borrowed_from_slice;
 use http::StatusCode;
-use tracing::{debug, info};
+use std::sync::Arc;
 use stryi_core::address::AccountAddress;
 use stryi_core::mempool::{MemPoolError, MempoolValidationError};
 use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 use stryi_core::transactions::Transaction;
+use tracing::{debug, info};
 
 use crate::http::StryiHttpService;
+use crate::http::error::{BadTxReason, StryiNodeHttpApiError};
 use crate::http::model::{ApiErrorBody, SendTransactionRequest};
-use crate::http::error::{StryiNodeHttpApiError, BadTxReason};
-
-
 
 /// Send a bincode-encoded transaction wrapped in base64 to the node.
 ///
@@ -55,29 +53,39 @@ where
     DB: BlockStorage + UtxoStorage + StorageStats + Send + Sync + 'static,
 {
     // decode the base64-encoded transaction
-    let raw_tx = BASE64_STANDARD
-        .decode(req.raw_tx)
-        .map_err(|_| StryiNodeHttpApiError::BadTransaction {
-            reason: BadTxReason::Base64Decode,
-            message: Some("Cannot decode transaction (base64)".to_string()),
-        })?;
-    debug!("Successfully decoded transaction from base64, length: {}", raw_tx.len());
+    let raw_tx =
+        BASE64_STANDARD
+            .decode(req.raw_tx)
+            .map_err(|_| StryiNodeHttpApiError::BadTransaction {
+                reason: BadTxReason::Base64Decode,
+                message: Some("Cannot decode transaction (base64)".to_string()),
+            })?;
+    debug!(
+        "Successfully decoded transaction from base64, length: {}",
+        raw_tx.len()
+    );
 
     // Try to deserialize the raw transaction into a Transaction object from bincode format
-    let transaction: Transaction = decode_borrowed_from_slice(&raw_tx, standard())
-        .map_err(|_| StryiNodeHttpApiError::BadTransaction {
-            reason: BadTxReason::BincodeDeserialize,
-            message: Some("Cannot deserialize transaction (bincode)".to_string()),
+    let transaction: Transaction =
+        decode_borrowed_from_slice(&raw_tx, standard()).map_err(|_| {
+            StryiNodeHttpApiError::BadTransaction {
+                reason: BadTxReason::BincodeDeserialize,
+                message: Some("Cannot deserialize transaction (bincode)".to_string()),
+            }
         })?;
-    debug!("Successfully deserialized transaction, hash: {}", transaction.data.hash());
+    debug!(
+        "Successfully deserialized transaction, hash: {}",
+        transaction.data.hash()
+    );
 
     // Validate transaction's author
-    let author_verifying_key = transaction
-        .recover_public_key()
-        .map_err(|_| StryiNodeHttpApiError::BadTransaction {
-            reason: BadTxReason::RecoverPublicKey,
-            message: Some("Cannot recover public key from transaction".to_string()),
-        })?;
+    let author_verifying_key =
+        transaction
+            .recover_public_key()
+            .map_err(|_| StryiNodeHttpApiError::BadTransaction {
+                reason: BadTxReason::RecoverPublicKey,
+                message: Some("Cannot recover public key from transaction".to_string()),
+            })?;
     debug!("Recovered tx author public key!");
 
     // Verify the transaction's signature using the recovered public key
@@ -95,15 +103,17 @@ where
     let author_address = AccountAddress::new(&author_verifying_key.to_sec1_bytes());
     debug!("Transaction author address: {}", author_address);
 
-
     // Add the transaction to the mempool
     let mut mem = state.mempool.write().await;
     mem.add_transaction(transaction.clone())
         .await
         .map_err(map_mempool)?; // Map MemPoolError to StryiNodeHttpApiError if it occurs
 
-    
-    info!("Received and added to mempool transaction from {}: {}", author_address, transaction.data.hash());
+    info!(
+        "Received and added to mempool transaction from {}: {}",
+        author_address,
+        transaction.data.hash()
+    );
 
     // Return a success response
     Ok(Response::builder()
@@ -117,29 +127,39 @@ fn map_mempool(err: MemPoolError) -> StryiNodeHttpApiError {
     use BadTxReason::*;
     match err {
         // duplicate tx -> 400
-        MemPoolError::DuplicateTransaction { .. } => {
-            StryiNodeHttpApiError::BadTransaction { reason: DuplicateTx, message: Some("Such transaction already in mempool".into()) }
-        }
+        MemPoolError::DuplicateTransaction { .. } => StryiNodeHttpApiError::BadTransaction {
+            reason: DuplicateTx,
+            message: Some("Such transaction already in mempool".into()),
+        },
         // already-spent input -> 400
-        MemPoolError::DoubleSpend(outpoint) => {
-            StryiNodeHttpApiError::BadTransaction { reason: DoubleSpend, message: format!("Double spend detected: {:?}", outpoint).into() }
-        }
+        MemPoolError::DoubleSpend(outpoint) => StryiNodeHttpApiError::BadTransaction {
+            reason: DoubleSpend,
+            message: format!("Double spend detected: {:?}", outpoint).into(),
+        },
         // mempool size cap hit -> 400
-        MemPoolError::PoolFull { .. } => {
-            StryiNodeHttpApiError::BadTransaction { reason: PoolFull, message: Some("mempool is full".into()) }
-        }
+        MemPoolError::PoolFull { .. } => StryiNodeHttpApiError::BadTransaction {
+            reason: PoolFull,
+            message: Some("mempool is full".into()),
+        },
         // insufficient fee for RBF -> 400
         MemPoolError::InsufficientFee { required, actual } => {
             let msg = format!("required {required}, provided {actual}");
-            StryiNodeHttpApiError::BadTransaction { reason: InsufficientFee, message: Some(msg) }
+            StryiNodeHttpApiError::BadTransaction {
+                reason: InsufficientFee,
+                message: Some(msg),
+            }
         }
         // validation error -> map inner enum
         MemPoolError::ValidationError(inner) => match inner {
-            MempoolValidationError::SignatureFailed(_) => {
-                StryiNodeHttpApiError::BadTransaction { reason: InvalidSignature, message: None }
-            }
+            MempoolValidationError::SignatureFailed(_) => StryiNodeHttpApiError::BadTransaction {
+                reason: InvalidSignature,
+                message: None,
+            },
             // the rest fall back to generic invalid-signature bucket
-            _ => StryiNodeHttpApiError::BadTransaction { reason: InvalidSignature, message: Some(inner.to_string()) },
+            _ => StryiNodeHttpApiError::BadTransaction {
+                reason: InvalidSignature,
+                message: Some(inner.to_string()),
+            },
         },
         // anything else → 500
         other => StryiNodeHttpApiError::Unexpected(other.to_string()),

@@ -10,7 +10,7 @@ pub enum StryiNodeError {
     #[error(transparent)]
     KeyDecode(#[from] stryi_network::DecodingError),
 
-    // I/O layer 
+    // I/O layer
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
@@ -19,32 +19,29 @@ pub enum StryiNodeError {
 
     #[error("Got http server error : {0}")]
     HttpServer(String),
-    
+
     /// Single structured error for any chain-info mismatch during peer handshake.
     /// `field` is a stable key (e.g., "protocol_version", "chain_name", "tip_hash@same_height").
     /// Values are rendered as strings to avoid leaking types across layers.
     #[error("peer chain info mismatch: {field} (remote={remote}, local={local})")]
     PeerChainInfoMismatch {
-        field:  &'static str,
-        local:  String,
+        field: &'static str,
+        local: String,
         remote: String,
     },
-
 
     // fallback / misc
     #[error("unexpected error: {0}")]
     Other(String),
 }
 
-
 impl StryiNodeError {
     #[inline]
     /// Constructs simple `StryiNodeError::Other` instance with provided message
     pub fn other(msg: impl ToString) -> Self {
         StryiNodeError::Other(msg.to_string())
-    }    
-    
-    
+    }
+
     /// Constructs StryiNodeError::PeerChainInfoMismatch
     #[inline]
     pub fn chain_info_mismatch(
@@ -54,7 +51,7 @@ impl StryiNodeError {
     ) -> Self {
         StryiNodeError::PeerChainInfoMismatch {
             field,
-            local:  local.to_string(),
+            local: local.to_string(),
             remote: remote.to_string(),
         }
     }

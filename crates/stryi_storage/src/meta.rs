@@ -1,15 +1,15 @@
+use crate::StryiStorageError;
+use bincode::config::standard;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use bincode::config::standard;
-use serde::{Deserialize, Serialize};
-use crate::StryiStorageError;
 
 // Header of our binary meta file
 const META_MAGIC: &[u8; 8] = b"STRYIMBI"; // "Stryi Meta BIN"
 const META_VERSION: u32 = 1;
-const META_HEADER_SIZE: usize =  8 + 4 + 4 + 32;
+const META_HEADER_SIZE: usize = 8 + 4 + 4 + 32;
 
 /// The metadata we store about current chain.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -26,17 +26,13 @@ pub enum StorageStatus {
     Corrupted { reason: String },
 }
 
-
-
 // helper to build path to file with metainfo about storage
 fn meta_file_path(root: &Path) -> PathBuf {
     root.join("metainfo.bin")
 }
 
-
 impl StorageStatus {
-    pub fn from_path<P: AsRef<Path>>(root : P) -> Result<StorageStatus, StryiStorageError> {
-
+    pub fn from_path<P: AsRef<Path>>(root: P) -> Result<StorageStatus, StryiStorageError> {
         // Check if root even exists
         let root = root.as_ref();
         if !root.exists() {
@@ -53,9 +49,6 @@ impl StorageStatus {
     }
 }
 
-
-
-
 /// Atomically write metainfo.bin with a small header + bincode payload.
 pub fn write_status_atomic(root: &Path, status: StorageStatus) -> Result<(), StryiStorageError> {
     if !root.exists() {
@@ -65,7 +58,7 @@ pub fn write_status_atomic(root: &Path, status: StorageStatus) -> Result<(), Str
     let tmp = root.join("metainfo.bin.tmp");
     let dst = meta_file_path(root);
 
-    // Build payload 
+    // Build payload
     let payload = bincode::serde::encode_to_vec(&status, standard())
         .map_err(StryiStorageError::SerializationError)?;
 
@@ -88,36 +81,41 @@ pub fn write_status_atomic(root: &Path, status: StorageStatus) -> Result<(), Str
     Ok(())
 }
 
-
-
 /// reads the metafile
 pub fn read_status_bin(path: &Path) -> Result<StorageStatus, StryiStorageError> {
     let mut buf = Vec::new();
     let mut f = File::open(path).map_err(|e| StryiStorageError::IncorrectPath {
-        msg: format!("Cannot open meta file in the root of storage : {e}")
+        msg: format!("Cannot open meta file in the root of storage : {e}"),
     })?;
-    
-    f.read_to_end(&mut buf).map_err(|e| StryiStorageError::IncorrectPath {
-        msg: format!("Cannot read meta file in the root of storage : {e}")
-    })?;
+
+    f.read_to_end(&mut buf)
+        .map_err(|e| StryiStorageError::IncorrectPath {
+            msg: format!("Cannot read meta file in the root of storage : {e}"),
+        })?;
 
     // Minimum header length.
     if buf.len() < META_HEADER_SIZE {
-        return Ok(StorageStatus::Corrupted { reason: "truncated header".to_string() });
+        return Ok(StorageStatus::Corrupted {
+            reason: "truncated header".to_string(),
+        });
     }
 
     let mut off = 0usize;
 
     // MAGIC
     if &buf[off..off + 8] != META_MAGIC {
-        return Ok(StorageStatus::Corrupted { reason: "bad magic".to_string() });
+        return Ok(StorageStatus::Corrupted {
+            reason: "bad magic".to_string(),
+        });
     }
     off += 8;
 
     // VERSION
     let version = u32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
     if version != META_VERSION {
-        return Ok(StorageStatus::Corrupted { reason: format!("unsupported version {version}") });
+        return Ok(StorageStatus::Corrupted {
+            reason: format!("unsupported version {version}"),
+        });
     }
     off += 4;
 
@@ -127,7 +125,9 @@ pub fn read_status_bin(path: &Path) -> Result<StorageStatus, StryiStorageError> 
 
     // Check lengths
     if buf.len() < off + 32 + payload_len {
-        return Ok(StorageStatus::Corrupted { reason: "truncated payload".to_string() });
+        return Ok(StorageStatus::Corrupted {
+            reason: "truncated payload".to_string(),
+        });
     }
 
     // DIGEST
@@ -142,21 +142,18 @@ pub fn read_status_bin(path: &Path) -> Result<StorageStatus, StryiStorageError> 
     hasher.update(payload);
     let computed = hasher.finalize();
     if computed.as_bytes() != digest {
-        return Ok(StorageStatus::Corrupted { reason: "checksum mismatch".to_string() });
+        return Ok(StorageStatus::Corrupted {
+            reason: "checksum mismatch".to_string(),
+        });
     }
 
     // Decode bincode payload
     let cfg = standard();
-    let (meta, _consumed): (StorageStatus, usize) =
-        bincode::serde::decode_from_slice(payload, cfg)
-            .map_err(StryiStorageError::DeserializationError)?;
+    let (meta, _consumed): (StorageStatus, usize) = bincode::serde::decode_from_slice(payload, cfg)
+        .map_err(StryiStorageError::DeserializationError)?;
 
     Ok(meta)
 }
-
-
-
-
 
 #[cfg(test)]
 mod tests {
@@ -217,6 +214,10 @@ mod tests {
 
         // Additionally ensure the meta file physically exists
         let meta_path = super::meta_file_path(&sub);
-        assert!(meta_path.exists(), "meta file should exist at {}", meta_path.display());
+        assert!(
+            meta_path.exists(),
+            "meta file should exist at {}",
+            meta_path.display()
+        );
     }
 }

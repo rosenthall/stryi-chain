@@ -68,16 +68,17 @@ where
 {
     type Response = S::Response;
     type Error = S::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
-    
+    type Future =
+        Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
+
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
     fn call(&mut self, req: HttpRequest<B>) -> Self::Future {
-        let ready_flag  = self.flag.clone();
+        let ready_flag = self.flag.clone();
         let mut ready_call = self.inner.clone(); // normal request
-        let reject_call   = self.inner.clone(); // not-ready response
+        let reject_call = self.inner.clone(); // not-ready response
 
         Box::pin(async move {
             if !*ready_flag.read().await {

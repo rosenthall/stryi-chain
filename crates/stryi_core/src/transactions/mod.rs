@@ -1,11 +1,9 @@
 /// Definitions of basic primitives of transactions such as UTXO, OutPoint, etc.
 mod utxo;
-pub use crate::transactions::utxo::{
-    UTXO, OutPoint, TransactionIn, TransactionOut,
-};
+pub use crate::transactions::utxo::{OutPoint, TransactionIn, TransactionOut, UTXO};
 
 /// Definition of custom hash format for transactions based on Blake3.
-/// Note: Each transaction hash start with Tx... and contains 32 hex bytes. 
+/// Note: Each transaction hash start with Tx... and contains 32 hex bytes.
 mod hash;
 pub use crate::transactions::hash::{TransactionHash, TransactionHasher};
 
@@ -23,13 +21,13 @@ pub use fee_policy::*;
 
 use serde::{Deserialize, Serialize};
 
-use bincode::{self, config::standard};
 #[cfg(test)]
 use crate::address::AccountAddress;
 use crate::error::StryiCoreError;
 use crate::hash::HashKind;
 use crate::transactions::TransactionKind::{Coinbase, Genesis};
-use k256::ecdsa::{signature::hazmat::PrehashVerifier, SigningKey, VerifyingKey};
+use bincode::{self, config::standard};
+use k256::ecdsa::{SigningKey, VerifyingKey, signature::hazmat::PrehashVerifier};
 
 /// `TransactionKind` enum represents the exact kind of transaction.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Hash)]
@@ -48,16 +46,15 @@ pub enum TransactionKind {
     Payment,
 }
 
-
 /// `TransactionData` holds the *unsigned* transaction fields: version, inputs, outputs.
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, Hash, PartialEq)]
 pub struct TransactionData {
     /// Transaction version (arbitrary field for potential future upgrades)
     pub version: u16,
-    
+
     /// Transaction kind represents HOW the transaction should be processed.
-    pub kind : TransactionKind,
-    
+    pub kind: TransactionKind,
+
     /// Transaction inputs (what UTXOs we're spending)
     pub inputs: Vec<TransactionIn>,
 
@@ -119,32 +116,29 @@ impl Transaction {
     pub fn signature(&self) -> StryiSignature {
         self.signature.to_owned()
     }
-    
+
     /// Verifies the transaction's signature using the provided `VerifyingKey`.
     /// Returns `Ok(())` if the transaction has [`Genesis`] or [`Coinbase`] kind, because these two do not require such checking
     /// Returns `Ok(())` if the signature is valid, otherwise returns an error.
     pub fn verify_signature(&self, verifying_key: &VerifyingKey) -> Result<(), StryiCoreError> {
-        
         // If transaction kind is not payment - early return Ok(())
         if self.data.kind == Genesis || self.data.kind == Coinbase {
             return Ok(());
         }
-
 
         // Recompute the message hash from transaction data
         let msg_bytes = self.data.hash().data;
 
         let (_recovery_id, signature) = self.signature.extract_signature_parts()?;
 
-
         // Use the verifying key to check the signature against the message hash
-        verifying_key.verify_prehash(&msg_bytes, &signature).map_err(|e| {
-            StryiCoreError::InvalidSignature {
+        verifying_key
+            .verify_prehash(&msg_bytes, &signature)
+            .map_err(|e| StryiCoreError::InvalidSignature {
                 msg: format!("Signature verification failed: {e}"),
-            }
-        })
+            })
     }
-    
+
     /// Recovers the public key from the **recoverable** signature stored in `self.signature`.
     ///
     /// If the signature is invalid or the format is wrong, returns `InvalidSignature`.
@@ -152,19 +146,17 @@ impl Transaction {
         let msg_bytes = self.data.hash().data;
         let (recovery_id, signature) = self.signature.extract_signature_parts()?;
 
-        VerifyingKey::recover_from_prehash(&msg_bytes, &signature, recovery_id)
-            .map_err(|e| StryiCoreError::InvalidSignature {
+        VerifyingKey::recover_from_prehash(&msg_bytes, &signature, recovery_id).map_err(|e| {
+            StryiCoreError::InvalidSignature {
                 msg: format!("Cannot recover key from signature: {e:?}"),
-            })
+            }
+        })
     }
-
-
 
     #[cfg(test)]
     /// Verifies that this transaction's recoverable signature recovers to real public key of this account.
     /// Since AccountAddress is hashed public key we will check if recovered public key hash is identical with real AccountAddress.
     fn verify_transaction_author(&self, account_address: AccountAddress) -> bool {
-
         let recovered_key = self.recover_public_key();
 
         // If we cant recover key consider returning false.
@@ -172,42 +164,36 @@ impl Transaction {
             return false;
         }
 
-        let recovered_account_address = AccountAddress::new(&recovered_key.unwrap().to_sec1_bytes());
-
+        let recovered_account_address =
+            AccountAddress::new(&recovered_key.unwrap().to_sec1_bytes());
 
         recovered_account_address == account_address
-
     }
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::address::AccountAddress;
     use k256::ecdsa::SigningKey;
     use k256::elliptic_curve::rand_core::OsRng;
-    use crate::address::AccountAddress; 
 
     /// Helper function to create a dummy TransactionData with sample inputs/outputs.
     fn create_dummy_transaction_data() -> TransactionData {
         TransactionData {
             version: 1,
             kind: TransactionKind::Payment,
-            inputs: vec![
-                TransactionIn {
-                    previous_output: OutPoint {
-                        txid: TransactionHash::new(&[20u8; 32]),
-                        vout: 15,
-                    },
-                    sequence: 2,
-                }
-            ],
-            outputs: vec![
-                TransactionOut {
-                    value: 55_555,
-                    recipient: AccountAddress::new(&[20u8; 32]),
-                }
-            ],
+            inputs: vec![TransactionIn {
+                previous_output: OutPoint {
+                    txid: TransactionHash::new(&[20u8; 32]),
+                    vout: 15,
+                },
+                sequence: 2,
+            }],
+            outputs: vec![TransactionOut {
+                value: 55_555,
+                recipient: AccountAddress::new(&[20u8; 32]),
+            }],
         }
     }
 
@@ -226,7 +212,10 @@ mod tests {
 
         // Verify that the transaction's author matches the account address
         let is_verified = transaction.verify_transaction_author(account_address);
-        assert!(is_verified, "The transaction should be verified successfully.");
+        assert!(
+            is_verified,
+            "The transaction should be verified successfully."
+        );
     }
 
     #[test]
@@ -271,7 +260,10 @@ mod tests {
         // Attempt to recover the public key from the signature
         // (no argument needed now)
         let recovered_key_result = transaction.recover_public_key();
-        assert!(recovered_key_result.is_ok(), "Public key recovery should succeed");
+        assert!(
+            recovered_key_result.is_ok(),
+            "Public key recovery should succeed"
+        );
 
         let recovered_key = recovered_key_result.unwrap();
 

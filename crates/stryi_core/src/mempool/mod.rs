@@ -14,25 +14,26 @@ pub use error::MemPoolError;
 mod types;
 pub use types::{MemPoolConfig, MemPoolSyncData};
 
-mod storage;
 mod dependencies;
+mod storage;
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use petgraph::graph::NodeIndex;
-use tracing::warn;
 use crate::block::BlockData;
 use crate::mempool::dependencies::DependencyTracker;
 use crate::mempool::storage::TransactionStorage;
 use crate::mempool::validator::MempoolTxValidator;
 use crate::transactions::{OutPoint, Transaction, TransactionHash, UTXO};
+use petgraph::graph::NodeIndex;
+use tracing::warn;
 
 /// A type alias for the asynchronous UTXO lookup function.
 /// Given an OutPoint, returns a Future resolving to Option<UTXO>.
-pub type UtxoLookup = Box<dyn Fn(&OutPoint) -> Pin<Box<dyn Future<Output = Option<UTXO>> + Send>> + Send + Sync>;
+pub type UtxoLookup =
+    Box<dyn Fn(&OutPoint) -> Pin<Box<dyn Future<Output = Option<UTXO>> + Send>> + Send + Sync>;
 
 /// Main mempool structure.
 pub struct MemPool {
@@ -89,7 +90,9 @@ impl MemPool {
         }
 
         if self.storage.len() >= self.config.max_size {
-            return Err(MemPoolError::PoolFull { size: self.config.max_size });
+            return Err(MemPoolError::PoolFull {
+                size: self.config.max_size,
+            });
         }
 
         // 2. Validate the transaction (signatures, UTXO ownership, etc.)
@@ -123,19 +126,16 @@ impl MemPool {
 
         // 5. If there are conflicts, resolve them via RBF
         if !conflicts.is_empty() {
-
-
-            // Check if RBF is disabled, 
+            // Check if RBF is disabled,
             if self.config.rbf_policy.is_disabled() {
-                warn!("RBF is disabled, cannot resolve conflicts for transaction: {}", tx_hash);
-                
+                warn!(
+                    "RBF is disabled, cannot resolve conflicts for transaction: {}",
+                    tx_hash
+                );
+
                 // If RBF is disabled, we cannot resolve conflicts so just return any error
                 let first = conflicts.iter().next().unwrap();
-                return Err(MemPoolError::DuplicateTransaction {
-                    hash: *first 
-                });
-                
-                
+                return Err(MemPoolError::DuplicateTransaction { hash: *first });
             }
 
             // Process RBF conflicts using the actual fee
@@ -153,11 +153,9 @@ impl MemPool {
                     }
                     // Fallback for any other error
                     RbfConflictError::Other(msg) => {
-                        Err(MemPoolError::Storage(Box::new(
-                            std::io::Error::other(msg),
-                        )))
+                        Err(MemPoolError::Storage(Box::new(std::io::Error::other(msg))))
                     }
-                }
+                };
             }
         }
 
@@ -169,19 +167,26 @@ impl MemPool {
             .data
             .inputs
             .iter()
-            .filter_map(|input| self.storage.get_creating_tx(&input.previous_output).cloned())
+            .filter_map(|input| {
+                self.storage
+                    .get_creating_tx(&input.previous_output)
+                    .cloned()
+            })
             .collect();
 
-        self.dependency_tracker.add_transaction(tx_hash, &parent_hashes);
+        self.dependency_tracker
+            .add_transaction(tx_hash, &parent_hashes);
 
         Ok(())
     }
 
-    
     /// Removes a transaction (and its dependent transactions) from the mempool.
     ///
     /// Uses the DependencyTracker to obtain descendant transactions.
-    pub async fn remove_transaction(&mut self, tx_hash: TransactionHash) -> Result<(), MemPoolError> {
+    pub async fn remove_transaction(
+        &mut self,
+        tx_hash: TransactionHash,
+    ) -> Result<(), MemPoolError> {
         // Get descendants before removing the transaction
         let descendants = self.dependency_tracker.get_descendants(&tx_hash);
 
@@ -206,7 +211,10 @@ impl MemPool {
     pub async fn get_sync_state(&self) -> Result<MemPoolSyncData, MemPoolError> {
         let all_tx = self.storage.get_all();
         let sync_data = MemPoolSyncData {
-            transactions: all_tx.iter().map(|entry| entry.transaction.clone()).collect(),
+            transactions: all_tx
+                .iter()
+                .map(|entry| entry.transaction.clone())
+                .collect(),
             timestamp: current_timestamp(),
         };
 
@@ -217,9 +225,10 @@ impl MemPool {
     ///
     /// Clears current storage and dependency tracker, then re-inserts transactions from the snapshot.
     pub async fn restore_state(&mut self, data: Vec<u8>) -> Result<(), MemPoolError> {
-        let sync_data: MemPoolSyncData = bincode::serde::decode_from_slice(&data, bincode::config::standard())
-            .map_err(|e| MemPoolError::Storage(Box::new(e)))?
-            .0;
+        let sync_data: MemPoolSyncData =
+            bincode::serde::decode_from_slice(&data, bincode::config::standard())
+                .map_err(|e| MemPoolError::Storage(Box::new(e)))?
+                .0;
 
         self.storage.clear();
         self.dependency_tracker.clear();
@@ -234,10 +243,15 @@ impl MemPool {
                 .data
                 .inputs
                 .iter()
-                .filter_map(|input| self.storage.get_creating_tx(&input.previous_output).cloned())
+                .filter_map(|input| {
+                    self.storage
+                        .get_creating_tx(&input.previous_output)
+                        .cloned()
+                })
                 .collect();
 
-            self.dependency_tracker.add_transaction(tx_hash, &parent_hashes);
+            self.dependency_tracker
+                .add_transaction(tx_hash, &parent_hashes);
         }
 
         Ok(())
@@ -287,7 +301,10 @@ impl MemPool {
     /// - individual fee rate
     /// - dependency constraints
     /// Returns transactions in valid inclusion order (parents before children).
-    pub async fn get_best_transactions(&self, limit: usize) -> Result<Vec<Transaction>, MemPoolError> {
+    pub async fn get_best_transactions(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<Transaction>, MemPoolError> {
         // Get topological ordering of transactions
         let order = self.dependency_tracker.topological_order();
 
@@ -307,7 +324,8 @@ impl MemPool {
         }
 
         // Calculate ancestor package scores
-        let ancestor_scores = build_ancestor_scores(&order, &self.storage, &self.dependency_tracker);
+        let ancestor_scores =
+            build_ancestor_scores(&order, &self.storage, &self.dependency_tracker);
 
         // Create combined score using weighted approach
         let mut combined_scores: Vec<(NodeIndex, f64)> = Vec::new();
@@ -334,14 +352,15 @@ impl MemPool {
             if used_nodes.contains(&node_idx) || remaining_space == 0 {
                 continue;
             }
-            
+
             if let Some(tx_hash) = self.dependency_tracker.get_tx_by_node(node_idx) {
                 if self.storage.get(&tx_hash).is_some() {
                     // Get all required ancestors in topological order
                     let ancestors = self.dependency_tracker.gather_ancestors(node_idx);
 
                     // Count new transactions (not already selected)
-                    let new_txs: Vec<NodeIndex> = ancestors.into_iter()
+                    let new_txs: Vec<NodeIndex> = ancestors
+                        .into_iter()
                         .filter(|&anc| !used_nodes.contains(&anc))
                         .collect();
 
@@ -349,7 +368,9 @@ impl MemPool {
                     if new_txs.len() <= remaining_space {
                         for anc in new_txs {
                             if used_nodes.insert(anc) {
-                                if let Some(anc_tx_hash) = self.dependency_tracker.get_tx_by_node(anc) {
+                                if let Some(anc_tx_hash) =
+                                    self.dependency_tracker.get_tx_by_node(anc)
+                                {
                                     if let Some(anc_tx) = self.storage.get(&anc_tx_hash) {
                                         result.push(anc_tx.transaction.clone());
                                         remaining_space -= 1;
@@ -364,8 +385,7 @@ impl MemPool {
 
         Ok(result)
     }
-    
-    
+
     /// Returns the current number of transactions in the mempool.
     pub fn transaction_count(&self) -> usize {
         self.storage.len()
@@ -404,7 +424,11 @@ fn build_ancestor_scores(
             }
         }
 
-        let score = if total_size == 0 { 0.0 } else { total_fee as f64 / total_size as f64 };
+        let score = if total_size == 0 {
+            0.0
+        } else {
+            total_fee as f64 / total_size as f64
+        };
         scores.push((node, score));
     }
     scores

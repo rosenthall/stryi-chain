@@ -1,10 +1,10 @@
-use std::collections::{HashMap, HashSet};
-use petgraph::graph::{DiGraph, NodeIndex};
-use petgraph::Direction;
-use petgraph::visit::EdgeRef;
 use crate::block::BlockData;
 use crate::error::StryiCoreError;
 use crate::transactions::OutPoint;
+use petgraph::Direction;
+use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::EdgeRef;
+use std::collections::{HashMap, HashSet};
 
 /// DependencyGraph provides transaction validation and dependency analysis capabilities.
 /// It combines efficient hash-based validation with graph-based analytics to enable
@@ -12,13 +12,13 @@ use crate::transactions::OutPoint;
 #[derive(Debug)]
 pub struct DependencyGraph {
     // Core validation structures
-    pub(crate) output_index: HashMap<OutPoint, usize>,     // Maps transaction outputs to their position in block
-    spent_outputs: HashSet<OutPoint>,           // Tracks which outputs have been spent
-    external_inputs: HashSet<OutPoint>,         // Stores UTXOs from previous blocks that need verification
+    pub(crate) output_index: HashMap<OutPoint, usize>, // Maps transaction outputs to their position in block
+    spent_outputs: HashSet<OutPoint>,                  // Tracks which outputs have been spent
+    external_inputs: HashSet<OutPoint>, // Stores UTXOs from previous blocks that need verification
 
     // Graph structures for advanced analysis
-    graph: DiGraph<usize, ()>,                  // Directed graph representing transaction dependencies
-    node_indices: Vec<NodeIndex>,               // Maps transaction indices to graph nodes
+    graph: DiGraph<usize, ()>, // Directed graph representing transaction dependencies
+    node_indices: Vec<NodeIndex>, // Maps transaction indices to graph nodes
 }
 
 impl DependencyGraph {
@@ -67,7 +67,7 @@ impl DependencyGraph {
                     dep_graph.graph.add_edge(
                         dep_graph.node_indices[dep_tx_idx],
                         dep_graph.node_indices[tx_idx],
-                        ()
+                        (),
                     );
                 } else {
                     // Track external UTXO dependency

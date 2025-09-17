@@ -1,47 +1,49 @@
-use std::ops::DerefMut;
+use crate::bootstrap::GenesisBootstrap;
 use crate::error::StryiNodeError;
-use crate::grpc::{StryiSyncService, StryiSyncServiceConfig, GRPC_SERVICE_TAG};
+use crate::grpc::{GRPC_SERVICE_TAG, StryiSyncService, StryiSyncServiceConfig};
+use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
 use crate::grpc_services::blockchain_sync_server::BlockchainSyncServer;
-use crate::http::{StryiHttpServiceConfig, HTTP_SERVICE_TAG};
+use crate::grpc_services::{BlockHashList, ChainInfo};
+use crate::http::{HTTP_SERVICE_TAG, StryiHttpServiceConfig};
+use crate::ibd::{fetch_blocks_batch, ingest_ibd_batch};
+use crate::middleware::ready::{ReadyFlag, ReadyGateLayer};
 use crate::tls::NodeTlsIdentity;
+use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::Duration;
 use stryi_core::block::{Block, BlockHash};
+use stryi_core::consensus::{
+    BlockValidator, ConsensusConsts, ConsensusEngine, StryiConsensusEngine,
+};
 use stryi_core::mempool::MemPool;
-use stryi_network::{NetworkCommand, NetworkEvent, PeerId, ServiceRecord, SignedServiceRecord, StryiNetworkManager};
+use stryi_core::storage::{BlockStorage, StorageStats};
+use stryi_core::transactions::UtxoProcessor;
+use stryi_network::ed25519::Keypair;
+use stryi_network::{
+    NetworkCommand, NetworkEvent, PeerId, ServiceRecord, SignedServiceRecord, StryiNetworkManager,
+};
 use stryi_storage::StryiStorage;
 use tokio::join;
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
-use tokio::time::{sleep, Instant};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
+use tokio::time::{Instant, sleep};
 use tokio_stream::StreamExt;
 use tonic::transport::{Endpoint, Server, ServerTlsConfig};
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info, trace, warn};
-use stryi_core::consensus::{BlockValidator, ConsensusEngine, ConsensusRules, StryiConsensusEngine};
-use stryi_core::storage::{BlockStorage, StorageStats};
-use stryi_core::transactions::UtxoProcessor;
-use stryi_network::ed25519::Keypair;
-use crate::bootstrap::GenesisBootstrap;
-use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
-use crate::grpc_services::{BlockHashList, ChainInfo};
-use crate::ibd::{fetch_blocks_batch, ingest_ibd_batch};
-use crate::middleware::ready::{ReadyFlag, ReadyGateLayer};
 
 /// The main struct representing the Stryi node instance.
 /// This node will later integrate networking, consensus, gRPC sync, mempool and mining services.
 pub struct StryiChainNode {
-
     // TODO: Integrate consensus engine, mining loop manager, ...
-
     /// The blockchain storage (UTXO set, block storage, undo data etc.)
     pub(crate) storage: Arc<RwLock<StryiStorage>>,
 
     /// Consensus Engine instance.
     /// The `synchronize()` stage setups consensus engine.
     /// We need this, because before synchronization/connecting to the network we don't know some values we need
-    /// to build ConsensusRules instance.
+    /// to build ConsensusConstants instance.
     /// They're depended on genesis(which may be external), current chain state (that we don't have until sync is complete), etc.
     pub(crate) consensus_engine: Option<Mutex<StryiConsensusEngine<StryiStorage>>>,
 
@@ -70,7 +72,7 @@ pub struct StryiChainNode {
     // Lightweight handles that live after connect().
     /// The command channel for sending network commands to the network manager.
     pub(crate) net_cmd: Option<mpsc::Sender<NetworkCommand>>,
-    
+
     /// The network events channel, used to receive events from the network manager.
     pub(crate) net_events: Option<broadcast::Receiver<NetworkEvent>>,
 
@@ -81,8 +83,8 @@ pub struct StryiChainNode {
     pub(crate) sync_service_config: StryiSyncServiceConfig,
 
     /// Configuration for high-level http api service for node's users.
-    pub(crate) http_service_config : StryiHttpServiceConfig,
-    
+    pub(crate) http_service_config: StryiHttpServiceConfig,
+
     /// The readiness flag used by the gRPC middleware.
     pub(crate) grpc_is_ready: ReadyFlag,
 
@@ -90,15 +92,9 @@ pub struct StryiChainNode {
     pub(crate) http_is_ready: ReadyFlag,
 }
 
-
-
-
-
 impl StryiChainNode {
-
-
     /// Setter method for ConsensusEngine
-    pub(crate) fn set_consensus_engine(&mut self, engine : StryiConsensusEngine<StryiStorage>) {
+    pub(crate) fn set_consensus_engine(&mut self, engine: StryiConsensusEngine<StryiStorage>) {
         let tmp = Mutex::new(engine);
         self.consensus_engine = Some(tmp);
     }
@@ -107,7 +103,6 @@ impl StryiChainNode {
     /// It initializes the network manager and connects to the network.
     /// It must be called before any other operations, like synchronization or starting services.
     pub(crate) async fn connect(&mut self) -> Result<(), StryiNodeError> {
-
         info!("Connecting to the network...");
 
         let mut mgr = self
@@ -115,32 +110,26 @@ impl StryiChainNode {
             .take()
             .ok_or_else(|| StryiNodeError::other("network manager not initialized"))?;
 
-        let cmd= mgr.command_sender();
-        let events= mgr.subscribe_events();
-
+        let cmd = mgr.command_sender();
+        let events = mgr.subscribe_events();
 
         // run the network manager in a separate task
-        tokio::spawn(async move {
-            mgr.run_loop().await
-        });
+        tokio::spawn(async move { mgr.run_loop().await });
 
         // Store the command sender and events receiver in the node
-        self.net_cmd    = Some(cmd);
+        self.net_cmd = Some(cmd);
         self.net_events = Some(events);
 
         Ok(())
-
-
     }
 
     // Constants for peer discovery during synchronization
-    
+
     /// How many seconds try to discover peers with gRPC sync service
-    const DISCOVERY_TIMEOUT: Duration  = Duration::from_secs(10);
-    
+    const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+
     /// How often to poll the network for peers with gRPC sync service
     const DISCOVERY_INTERVAL: Duration = Duration::from_millis(250);
-
 
     /// synchronize() is the second step in the node's lifecycle.
     /// It is responsible for synchronizing the node with the network, fetching blocks, transactions,
@@ -149,8 +138,10 @@ impl StryiChainNode {
     pub(crate) async fn synchronize(&mut self) -> Result<(), StryiNodeError> {
         info!("Start synchronizing with the network...");
 
-        let net_cmd = self.net_cmd.as_ref().ok_or_else(|| StryiNodeError::other("network not connected"))?;
-
+        let net_cmd = self
+            .net_cmd
+            .as_ref()
+            .ok_or_else(|| StryiNodeError::other("network not connected"))?;
 
         let started = Instant::now();
         let mut candidates: Vec<(PeerId, ServiceRecord)> = Vec::new();
@@ -159,29 +150,39 @@ impl StryiChainNode {
         // not fail instantly if none found - retry for up to DISCOVERY_TIMEOUT
         loop {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            net_cmd.send(NetworkCommand::QueryPeersWithService {
-                service: GRPC_SERVICE_TAG.to_owned(),
-                respond_to: tx,
-            }).await.map_err(|_| StryiNodeError::other("network command channel closed"))?;
+            net_cmd
+                .send(NetworkCommand::QueryPeersWithService {
+                    service: GRPC_SERVICE_TAG.to_owned(),
+                    respond_to: tx,
+                })
+                .await
+                .map_err(|_| StryiNodeError::other("network command channel closed"))?;
 
             if let Ok(mut v) = rx.await {
-                v.retain(|(_, s)| s.version() as usize == self.sync_service_config.protocol_version);
-                if !v.is_empty() { candidates = v; break; }
+                v.retain(|(_, s)| {
+                    s.version() as usize == self.sync_service_config.protocol_version
+                });
+                if !v.is_empty() {
+                    candidates = v;
+                    break;
+                }
             }
 
-            if started.elapsed() >= Self::DISCOVERY_TIMEOUT { break; }
+            if started.elapsed() >= Self::DISCOVERY_TIMEOUT {
+                break;
+            }
             sleep(Self::DISCOVERY_INTERVAL).await;
         }
 
         if candidates.is_empty() {
-            return Err(StryiNodeError::other("No compatible gRPC sync service found"));
+            return Err(StryiNodeError::other(
+                "No compatible gRPC sync service found",
+            ));
         }
 
         debug!("Candidates: {:#?}", candidates);
 
-
         let (peer, svc) = candidates[0].clone();
-
 
         /*
         // TODO: Turn back service's validation in synchronization process
@@ -207,19 +208,23 @@ impl StryiChainNode {
         }
         */
 
-        info!("Using gRPC sync service at {} (version {})", svc.address(), svc.version());
-
-
-
+        info!(
+            "Using gRPC sync service at {} (version {})",
+            svc.address(),
+            svc.version()
+        );
 
         let (grpc_peer_id, grpc_peer_service_info) = candidates
             .into_iter()
-            .find(|(_peer, svc)|
-                      {
-                          trace!("peer's service info: {:?}", svc);
-                          trace!("Discovered service version: {}, required: {}", svc.version(), self.sync_service_config.protocol_version);
-                          svc.version() as usize == self.sync_service_config.protocol_version
-                      })
+            .find(|(_peer, svc)| {
+                trace!("peer's service info: {:?}", svc);
+                trace!(
+                    "Discovered service version: {}, required: {}",
+                    svc.version(),
+                    self.sync_service_config.protocol_version
+                );
+                svc.version() as usize == self.sync_service_config.protocol_version
+            })
             .ok_or_else(|| StryiNodeError::other("No compatible gRPC sync service found"))?;
 
         info!(
@@ -228,7 +233,6 @@ impl StryiChainNode {
             grpc_peer_service_info.address(),
             grpc_peer_service_info.version()
         );
-
 
         // Connect to gRPC !
 
@@ -239,34 +243,30 @@ impl StryiChainNode {
             .parse::<tonic::transport::Uri>()
             .map_err(|e| StryiNodeError::other(format!("Failed to parse URI: {e}")))?;
 
-
         // create TLS channel and gRPC client
         let channel = Endpoint::from(uri)
-        // .tls_config(tls_cfg)
-        // .map_err(|e| StryiNodeError::other(format!("TLS config error: {e}")))?
+            // .tls_config(tls_cfg)
+            // .map_err(|e| StryiNodeError::other(format!("TLS config error: {e}")))?
             .connect()
             .await
             .map_err(|e| StryiNodeError::other(format!("gRPC dial error: {e}")))?;
 
         let mut grpc_client = BlockchainSyncClient::new(channel);
 
-
-
         // get external peer's chain info
         info!("Requesting Chain Info from external peer so we can compare it with local one.");
         let external_chain_info = grpc_client
-            .get_chain_info( tonic::Request::new(())).await
-            .map_err(|e| StryiNodeError::other(
-                format!(
-                    "Failed to get chain info from gRPC service: {e}"
-                )
-            ))?;
+            .get_chain_info(tonic::Request::new(()))
+            .await
+            .map_err(|e| {
+                StryiNodeError::other(format!("Failed to get chain info from gRPC service: {e}"))
+            })?;
         let external_chain_info = external_chain_info.into_inner();
         debug!(external_chain_info = ?external_chain_info);
 
         // validate it
-        self.validate_peer_chain_info(external_chain_info.clone()).await?;
-
+        self.validate_peer_chain_info(external_chain_info.clone())
+            .await?;
 
         // request the genesis block from the gRPC sync service
         // if we already have genesis in local storage - we will compare it to external one
@@ -307,9 +307,6 @@ impl StryiChainNode {
             })?
         };
 
-
-
-
         trace!("Received genesis block: {:?}", external_genesis_block);
 
         // If storage has no genesis yet, save meta first, then commit the exact same block.
@@ -317,9 +314,9 @@ impl StryiChainNode {
         let maybe_local_genesis = {
             let s = self.storage.read().await;
             // Expect a storage API able to check height 0 presence; adjust if your API differs.
-            s.get_block_by_height(0)
-                .await
-                .map_err(|e| StryiNodeError::other(format!("failed to query storage for genesis: {e}")))?
+            s.get_block_by_height(0).await.map_err(|e| {
+                StryiNodeError::other(format!("failed to query storage for genesis: {e}"))
+            })?
         };
 
         let need_genesis = maybe_local_genesis.is_none();
@@ -337,20 +334,23 @@ impl StryiChainNode {
             // Commit the exact same block to storage.
             {
                 let mut s = self.storage.write().await;
-                s.put_block(&external_genesis_block)
-                    .await
-                    .map_err(|e| StryiNodeError::other(format!("failed to commit genesis block: {e}")))?;
+                s.put_block(&external_genesis_block).await.map_err(|e| {
+                    StryiNodeError::other(format!("failed to commit genesis block: {e}"))
+                })?;
             }
 
             info!("Genesis saved in meta and committed to storage (height=0).");
-        } else { // if genesis is already set - compare it to one we got from peer
+        } else {
+            // if genesis is already set - compare it to one we got from peer
             let local_genesis_block = maybe_local_genesis.expect("already checked");
             let external_genesis_block = external_genesis_block.clone();
 
             trace!(local_genesis = ?local_genesis_block, external_genesis = ?external_genesis_block);
-            assert_eq!(local_genesis_block, external_genesis_block, "different genesis blocks detected locally and in this peer! currently unsupported")
+            assert_eq!(
+                local_genesis_block, external_genesis_block,
+                "different genesis blocks detected locally and in this peer! currently unsupported"
+            )
         }
-
 
         /*
           ___ _   _ _ __   ___
@@ -362,27 +362,22 @@ impl StryiChainNode {
         github.com/rosenthall :>
         */
 
-
-
         // Build ConsensusEngine instance
 
         info!("Trying to instantize StryiConsensusEngine instance");
 
-        let rules = build_consensus_rules(&self.storage.clone()).await?;
+        let rules = build_consensus_constants(&self.storage.clone()).await?;
         let block_validator = BlockValidator::new(rules.clone());
-        let utxo_processor  = UtxoProcessor::new();
+        let utxo_processor = UtxoProcessor::new();
         trace!(rules = ?rules);
 
         // NOTE: after synchronizing complete, we shall set self.consensus_engine value.
-        let mut engine = StryiConsensusEngine::new(
-            rules,
-            block_validator,
-            utxo_processor,
-            self.storage.clone(),
-        ).await.map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
+        let mut engine =
+            StryiConsensusEngine::new(rules, block_validator, utxo_processor, self.storage.clone())
+                .await
+                .map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
 
         info!("Success!");
-
 
         // Now querying all the blocks we need from peer to have the same chain.
         let (local_tip_height, local_tip_hash) = {
@@ -396,35 +391,42 @@ impl StryiChainNode {
 
         trace!(local_tip_height = ?local_tip_height, local_tip_hash = ?local_tip_hash);
 
-
         // Firstly, ask peer if its chain already includes our TIP
         info!("Checking if peer has our local tip included in its chain.");
-        
+
         // note : I'm not sure how it will behave when only common block is genesis.
-        let peer_includes_local_tip = StryiChainNode::has_remote_block_by_hash(&mut grpc_client, local_tip_hash).await?;
+        let peer_includes_local_tip =
+            StryiChainNode::has_remote_block_by_hash(&mut grpc_client, local_tip_hash).await?;
         if peer_includes_local_tip {
-            info!("Success! peer {} knows block {} (which is our local tip)! Downloading the rest of the blocks..", peer, local_tip_hash);
+            info!(
+                "Success! peer {} knows block {} (which is our local tip)! Downloading the rest of the blocks..",
+                peer, local_tip_hash
+            );
 
             let external_height = external_chain_info.height;
 
-            let heights_differ = external_height.checked_sub(local_tip_height)
-                .expect("Local height cannot be higher than external one at this point.") as usize;
-
+            let heights_differ = external_height
+                .checked_sub(local_tip_height)
+                .expect("Local height cannot be higher than external one at this point.")
+                as usize;
 
             // calculate the maximal batch size for requesting blocks we need.
             // If we only need less blocks than `max_blocks_range_per_request` from config - set and download it all like that.
-            let batch_size = std::cmp::min(self.sync_service_config.max_blocks_range_per_request, heights_differ) as usize;
+            let batch_size = std::cmp::min(
+                self.sync_service_config.max_blocks_range_per_request,
+                heights_differ,
+            ) as usize;
 
             let (start_height, end_height) = (local_tip_height + 1, external_height);
 
-            let downloaded_blocks = fetch_blocks_batch(&mut grpc_client, batch_size, start_height, end_height)
-                .await?;
+            let downloaded_blocks =
+                fetch_blocks_batch(&mut grpc_client, batch_size, start_height, end_height).await?;
 
-
-            ingest_ibd_batch(&mut engine, downloaded_blocks).await
-                .map_err(|e| StryiNodeError::other(format!("Got critical error during IBD process : {e}")))?;
-
-
+            ingest_ibd_batch(&mut engine, downloaded_blocks)
+                .await
+                .map_err(|e| {
+                    StryiNodeError::other(format!("Got critical error during IBD process : {e}"))
+                })?;
 
             // put ConsensusEngine in place
             self.set_consensus_engine(engine);
@@ -438,10 +440,10 @@ impl StryiChainNode {
 
         // TODO: Integrate LCA implementation in sync()
 
-        todo!("Cannot perform IBD/sync process if another node has no our tip already included in its chain yet ");
+        todo!(
+            "Cannot perform IBD/sync process if another node has no our tip already included in its chain yet "
+        );
     }
-
-
 
     // simple helper to validate local values against ones from peer
     #[inline]
@@ -479,14 +481,14 @@ impl StryiChainNode {
         let remote_chain: &str = info.chain_name.as_str();
         Self::require_chain_info_eq("chain_name", local_chain, remote_chain)?;
 
-
         //  Parse remote tip hash
-        let remote_tip_hash = BlockHash::from_hash_string(&info.latest_block_hash).map_err(|e| {
-            StryiNodeError::other(format!(
-                "invalid remote tip hash '{}': {}",
-                info.latest_block_hash, e
-            ))
-        })?;
+        let remote_tip_hash =
+            BlockHash::from_hash_string(&info.latest_block_hash).map_err(|e| {
+                StryiNodeError::other(format!(
+                    "invalid remote tip hash '{}': {}",
+                    info.latest_block_hash, e
+                ))
+            })?;
 
         // if heights equal (>0), tip hashes must match.
         let (local_height, local_tip_hash) = {
@@ -495,7 +497,6 @@ impl StryiChainNode {
                 .await
                 .map_err(|e| StryiNodeError::other(format!("tip() failed: {e}")))?
         };
-
 
         if info.height == local_height && local_height > 0 && remote_tip_hash != local_tip_hash {
             return Err(StryiNodeError::chain_info_mismatch(
@@ -526,16 +527,22 @@ impl StryiChainNode {
         Ok((info.height, remote_tip_hash))
     }
 
-
     /// Starts the node instance and basic services, like mempool, grpc sync server, mining-loop (if set in the config), handles network events
     /// Meant to be called after `connect()` and `synchronize()`.
     pub async fn start_services(self) -> Result<(), Box<dyn std::error::Error>> {
-
         // Some asserts, just in case.
-        assert!(&self.consensus_engine.is_some(), "ConsensusEngine must be initialized before start_services()");
-        assert!(&self.network_manager.is_none(), "NetworkManager's loop must be spawned in connect(), so it must be unaccessable in start_services()");
-        assert!(self.net_cmd.is_some() && self.net_events.is_some(), "net_cmd and net_events fields shall be initialized before start_services()");
-
+        assert!(
+            &self.consensus_engine.is_some(),
+            "ConsensusEngine must be initialized before start_services()"
+        );
+        assert!(
+            &self.network_manager.is_none(),
+            "NetworkManager's loop must be spawned in connect(), so it must be unaccessable in start_services()"
+        );
+        assert!(
+            self.net_cmd.is_some() && self.net_events.is_some(),
+            "net_cmd and net_events fields shall be initialized before start_services()"
+        );
 
         // Destructure to avoid partial borrows
         // After this - there will be no more "self" itself, but just all the fields/values separated
@@ -547,42 +554,40 @@ impl StryiChainNode {
             peer_id,
             services_records,
             tls_identity,
-            
+
             sync_service_config,
             http_service_config,
             grpc_is_ready,
-            http_is_ready, ..
+            http_is_ready,
+            ..
         } = self;
-
-
 
         // clone once per task
         let storage_for_http = Arc::clone(&storage);
         let storage_for_grpc = Arc::clone(&storage);
-        
+
         // http server future
         let http_fut = async {
-            
             crate::http::start_http_server(
                 storage_for_http,
                 http_service_config.clone(),
                 mempool.clone(),
-                http_is_ready
-            ).await
+                http_is_ready,
+            )
+            .await
         };
-        
-        
-        // gRPC server future
-        // TODO: Make gRPC really use tls based on provider peer's identity keys 
-        let grpc_fut = async {
 
+        // gRPC server future
+        // TODO: Make gRPC really use tls based on provider peer's identity keys
+        let grpc_fut = async {
             // Create the sync service instance
             let service_impl = StryiSyncService {
                 config: sync_service_config.clone(),
                 storage: storage_for_grpc,
             };
 
-            let tonic_identity = tonic::transport::Identity::from_pem(&tls_identity.cert_pem, &tls_identity.key_pem);
+            let tonic_identity =
+                tonic::transport::Identity::from_pem(&tls_identity.cert_pem, &tls_identity.key_pem);
             let tls_config = ServerTlsConfig::new().identity(tonic_identity);
 
             // Wrap the instance in Tonic’s generated server
@@ -590,13 +595,14 @@ impl StryiChainNode {
 
             // Build the readiness layer middleware.
             let readiness_layer = ReadyGateLayer::new(grpc_is_ready.clone());
-            
-            // wrap it up
-            let svc = ServiceBuilder::new()
-                .layer(readiness_layer)
-                .service(svc);
 
-            info!("Starting gRPC sync service on {}", &sync_service_config.address);
+            // wrap it up
+            let svc = ServiceBuilder::new().layer(readiness_layer).service(svc);
+
+            info!(
+                "Starting gRPC sync service on {}",
+                &sync_service_config.address
+            );
 
             // Start serving the sync service on the configured port
             Server::builder()
@@ -610,17 +616,14 @@ impl StryiChainNode {
                 .await
         };
 
-
-
         // Register gRPC and HTTP service in ServiceRecords
         {
             let grpc_record = ServiceRecord::new(
                 sync_service_config.address,
                 peer_id,
                 GRPC_SERVICE_TAG.to_string(),
-                sync_service_config.protocol_version as u32
+                sync_service_config.protocol_version as u32,
             );
-
 
             let signed_grpc_record = SignedServiceRecord::sign(keypair.clone(), grpc_record)?;
 
@@ -630,10 +633,9 @@ impl StryiChainNode {
                 http_service_config.address,
                 peer_id,
                 HTTP_SERVICE_TAG.to_string(),
-                http_service_config.api_version
+                http_service_config.api_version,
             );
             let signed_http_record = SignedServiceRecord::sign(keypair.clone(), http_record)?;
-
 
             info!("Successfully signed node's http service with own keypair!");
 
@@ -641,66 +643,53 @@ impl StryiChainNode {
             services_records.write().await.push(signed_http_record);
         }
 
-
         // run all the services concurrently
         let (grpc_res, _http_res) = join!(grpc_fut, http_fut);
         grpc_res?; // propagate gRPC error if any
-        
+
         Ok(())
     }
 }
 
-
-
-// Builds ConsensusRules instance, calculates current difficulty from tip, other stuff from config.
+// Builds ConsensusConstants instance, calculates current difficulty from tip, other stuff from config.
 // TODO: Refactor `build_consensus_rules` method
-pub async fn build_consensus_rules(
+pub async fn build_consensus_constants(
     storage: &Arc<RwLock<StryiStorage>>,
-) -> Result<ConsensusRules, StryiNodeError> {
-    // Ensure genesis exists and read tip
-    let (_tip_height, tip_hash) = {
+) -> Result<ConsensusConsts, StryiNodeError> {
+    // Ensure genesis exists and read it
+    let genesis = {
         let db = storage.read().await;
-        if db.get_block_by_height(0).await
+        db.get_block_by_height(0)
+            .await
             .map_err(|e| StryiNodeError::other(format!("get_block_by_height(0): {e}")))?
-            .is_none()
-        {
-            return Err(StryiNodeError::other("cannot build consensus rules: no genesis in storage"));
+    };
+
+    if let Some(g) = &genesis {
+        if !g.header.is_genesis() {
+            return Err(StryiNodeError::other(
+                "block at height 0 is not marked as genesis",
+            ));
         }
-        db.tip().await.map_err(|e| StryiNodeError::other(format!("tip(): {e}")))?
-    };
 
-    let tip_block = {
-        let db = storage.read().await;
-        db.get_block_by_hash(tip_hash).await
-            .map_err(|e| StryiNodeError::other(format!("get_block_by_hash({tip_hash}): {e}")))?
-            .ok_or_else(|| StryiNodeError::other(format!("tip block {tip_hash} not found")) )?
-    };
-
-    let current_difficulty = tip_block.header.difficulty_bits;
-
-
-    let consensus_rules = ConsensusRules::default_with_difficulty(current_difficulty);
-    debug!(consensus_rules = ?consensus_rules);
-
-
-    Ok(consensus_rules)
+        // unwrap is safe here, because we checked for None above
+        Ok(g.header.genesis_state.unwrap().consensus_consts)
+    } else {
+        Err(StryiNodeError::other("genesis block not found in storage"))
+    }
 }
-
-
 
 /// Build a consensus engine using dynamic fields from the current tip.
 /// Assumes genesis is already committed (height 0 present).
-pub(crate) async fn build_consensus_engine(storage : Arc<RwLock<StryiStorage>>) -> Result<StryiConsensusEngine<StryiStorage>, StryiNodeError> {
-    let rules = build_consensus_rules(&storage.clone()).await?;
+pub(crate) async fn build_consensus_engine(
+    storage: Arc<RwLock<StryiStorage>>,
+) -> Result<StryiConsensusEngine<StryiStorage>, StryiNodeError> {
+    let rules = build_consensus_constants(&storage.clone()).await?;
     let block_validator = BlockValidator::new(rules.clone());
-    let utxo_processor  = UtxoProcessor::new();
+    let utxo_processor = UtxoProcessor::new();
 
-    let engine = StryiConsensusEngine::new(
-        rules,
-        block_validator,
-        utxo_processor,
-        storage.clone(),
-    ).await.map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
+    let engine = StryiConsensusEngine::new(rules, block_validator, utxo_processor, storage.clone())
+        .await
+        .map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
 
     Ok(engine)
 }

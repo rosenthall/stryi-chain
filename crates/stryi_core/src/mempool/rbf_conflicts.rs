@@ -1,17 +1,16 @@
+use crate::mempool::dependencies::DependencyTracker;
+use crate::mempool::storage::TransactionStorage;
+use crate::transactions::{Transaction, TransactionHash};
 use std::collections::HashSet;
 use thiserror::Error;
-use crate::mempool::dependencies::DependencyTracker;
-use crate::transactions::{Transaction, TransactionHash};
-use crate::mempool::storage::TransactionStorage;
 
 /// ConflictError enumerates possible errors during conflict resolution (e.g., RBF checks).
 #[derive(Debug, Error)]
 pub enum RbfConflictError {
-    #[error("New transaction fee is too low to replace the existing ones. Required: {required}, got: {actual}")]
-    InsufficientFee {
-        required: u64,
-        actual: u64,
-    },
+    #[error(
+        "New transaction fee is too low to replace the existing ones. Required: {required}, got: {actual}"
+    )]
+    InsufficientFee { required: u64, actual: u64 },
 
     #[error("Conflict resolution failed: {0}")]
     Other(String),
@@ -40,7 +39,7 @@ impl RbfPolicy {
             percentage_increase,
         }
     }
-    
+
     /// Creates a disabled RBF policy, that does not perform any replacement checks and always allows transactions.
     pub fn disabled() -> Self {
         Self {
@@ -53,13 +52,14 @@ impl RbfPolicy {
     pub fn is_disabled(&self) -> bool {
         self.base_fee_delta == 0 && self.percentage_increase == 0.0
     }
-    
+
     /// Computes the required fee to replace an existing transaction fee under a given load factor.
     pub fn required_fee(&self, old_fee: u64, load_factor: f64) -> u64 {
         // Calculate required fee by absolute increase.
         let required_absolute = old_fee.saturating_add(self.base_fee_delta);
         // Calculate required fee by percentage increase.
-        let required_percentage = ((old_fee as f64) * (1.0 + self.percentage_increase)).ceil() as u64;
+        let required_percentage =
+            ((old_fee as f64) * (1.0 + self.percentage_increase)).ceil() as u64;
         // Base required fee is the maximum of the two.
         let base_required_fee = std::cmp::max(required_absolute, required_percentage);
         // Adjust requirement based on the current load factor.

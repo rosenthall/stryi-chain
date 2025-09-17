@@ -1,5 +1,5 @@
-use bincode::config::standard;
 use crate::transactions::Transaction;
+use bincode::config::standard;
 
 /// Represents a static fee calculation policy using fixed costs for transaction components.
 ///
@@ -26,10 +26,10 @@ impl Default for FeePolicy {
     /// Creates a default fee policy
     fn default() -> Self {
         Self {
-            fixed_fee: 1000,   // 1000 satoshi base fee
-            input_cost: 500,   // 500 satoshi per input
-            output_cost: 250,  // 250 satoshi per output
-            byte_cost: 10,     // 10 satoshi per byte
+            fixed_fee: 1000,  // 1000 satoshi base fee
+            input_cost: 500,  // 500 satoshi per input
+            output_cost: 250, // 250 satoshi per output
+            byte_cost: 10,    // 10 satoshi per byte
         }
     }
 }
@@ -64,10 +64,10 @@ impl FeeCalculator {
             .expect("Transaction serialization cannot fail")
             .len();
 
-        self.policy.fixed_fee +
-            (self.policy.input_cost * tx.data.inputs.len() as u64) +
-            (self.policy.output_cost * tx.data.outputs.len() as u64) +
-            (self.policy.byte_cost * tx_bytes as u64)
+        self.policy.fixed_fee
+            + (self.policy.input_cost * tx.data.inputs.len() as u64)
+            + (self.policy.output_cost * tx.data.outputs.len() as u64)
+            + (self.policy.byte_cost * tx_bytes as u64)
     }
 
     /// Checks if provided fee is sufficient according to policy
@@ -80,8 +80,11 @@ impl FeeCalculator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transactions::{Transaction, TransactionData, TransactionKind, TransactionIn, TransactionOut, OutPoint, TransactionHash};
     use crate::address::AccountAddress;
+    use crate::transactions::{
+        OutPoint, Transaction, TransactionData, TransactionHash, TransactionIn, TransactionKind,
+        TransactionOut,
+    };
 
     fn create_test_transaction(num_inputs: usize, num_outputs: usize) -> Transaction {
         // Create dummy inputs
@@ -133,7 +136,10 @@ mod tests {
 
         assert_eq!(
             fee1,
-            policy.fixed_fee + policy.input_cost + policy.output_cost + (policy.byte_cost * expected_size1)
+            policy.fixed_fee
+                + policy.input_cost
+                + policy.output_cost
+                + (policy.byte_cost * expected_size1)
         );
 
         // Test case 2: More complex transaction (3 inputs, 2 outputs)
@@ -145,7 +151,10 @@ mod tests {
 
         assert_eq!(
             fee2,
-            policy.fixed_fee + (3 * policy.input_cost) + (2 * policy.output_cost) + (policy.byte_cost * expected_size2)
+            policy.fixed_fee
+                + (3 * policy.input_cost)
+                + (2 * policy.output_cost)
+                + (policy.byte_cost * expected_size2)
         );
     }
 

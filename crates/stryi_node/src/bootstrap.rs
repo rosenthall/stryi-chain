@@ -19,8 +19,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use colored::Colorize;
 use comfy_table::Table;
 use stryi_core::block::{Block, BlockHash};
+use stryi_core::consensus::ConsensusConsts;
 use stryi_core::transactions::TransactionKind;
-use stryi_storage::{write_status_atomic, StorageStatus};
+use stryi_storage::{StorageStatus, write_status_atomic};
 
 use crate::error::StryiNodeError;
 
@@ -48,16 +49,13 @@ impl GenesisBootstrap {
             .map_err(|e| StryiNodeError::other(format!("failed to probe storage meta: {e}")))
     }
 
-
-    
     /// Strict header/body invariants for a genesis candidate.
     pub fn validate_candidate(&self, block: &Block) -> Result<(), StryiNodeError> {
         let h = &block.header;
 
         // simple helper for errors
-        let invariant_err = |msg: &str| {
-            StryiNodeError::other(format!("genesis invariant failed: {msg}"))
-        };
+        let invariant_err =
+            |msg: &str| StryiNodeError::other(format!("genesis invariant failed: {msg}"));
 
         // The genesis block must be height 0.
         if h.height != 0 {
@@ -68,39 +66,36 @@ impl GenesisBootstrap {
         if !block.is_merkle_root_valid() {
             return Err(invariant_err("header.merkle_root must be valid"));
         }
-        
-        
+
         // The previous hash must be all zeros for the root.
         if h.previous_block_hash != BlockHash::empty() {
             return Err(invariant_err("header.previous_block_hash must be zero"));
         }
 
         // Must have is_genesis=true
-        if !h.is_genesis {
-            return Err(invariant_err("header.is_genesis must be true"));
+        if !h.is_genesis() {
+            return Err(invariant_err("header.is_genesis() must be true"));
         }
 
-        // Exactly one transaction 
+        // Exactly one transaction
         if block.data.transactions.len() != 1 {
             return Err(invariant_err("exactly one transaction is required"));
         }
 
         let tx = block.data.transactions[0].clone();
 
-        // The only transaction shall be Genesis kind  
+        // The only transaction shall be Genesis kind
         if tx.data.kind != TransactionKind::Genesis {
-            return Err(invariant_err("transaction must have genesis kind"))
+            return Err(invariant_err("transaction must have genesis kind"));
         }
-        
+
         // .. and have no inputs
         if !tx.data.inputs.is_empty() {
             return Err(invariant_err("transaction must have no inputs"));
         }
-        
-        
+
         // Is that all the checks we need for genesis?
-        
-        
+
         Ok(())
     }
 
@@ -129,7 +124,7 @@ impl GenesisBootstrap {
             StorageStatus::Corrupted { reason } => {
                 return Err(StryiNodeError::other(format!(
                     "storage meta is corrupted: {reason}"
-                )))
+                )));
             }
             StorageStatus::NoGenesis => { /* continue */ }
         }
@@ -139,14 +134,16 @@ impl GenesisBootstrap {
 
         // Present a concise summary
         self.print_block_summary(block);
-        
+
         // Confirmation prompt
         let mut input = String::new();
         println!(
             "{} You are about to accept the shown genesis for this node. This choice is permanent unless you reinitialize the node.",
             "WARNING".on_yellow().black().bold(),
         );
-        println!("Before continuing, verify header values (height, state/Merkle root) and EVERY allocation (recipient -> amount).");
+        println!(
+            "Before continuing, verify header values (height, state/Merkle root) and EVERY allocation (recipient -> amount)."
+        );
         println!("Type 'yes' to confirm; anything else cancels.");
         print!("Accept genesis (yes/no): ");
         io::stdout()
@@ -158,7 +155,6 @@ impl GenesisBootstrap {
         if !input.trim().eq_ignore_ascii_case("yes") {
             return Err(StryiNodeError::other("user rejected the provided genesis"));
         }
-
 
         // Atomically save into storage::meta
         let now = SystemTime::now()
@@ -182,7 +178,34 @@ impl GenesisBootstrap {
         // TODO: add non-interactive acceptance via CLI flag (e.g., --accept-genesis-hash).
 
         Ok(SaveOutcome::SavedNow)
-}
+    }
+
+    fn print_consensus_consts(cs: &ConsensusConsts) {
+        use comfy_table::Table;
+
+        let mut table = Table::new();
+        table.set_header(vec!["Consensus Parameter", "Value"]);
+        table.set_width(73);
+
+        table.add_row(vec![
+            "difficulty_adjustment_interval_blocks".into(),
+            cs.difficulty_adjustment_interval_blocks.to_string(),
+        ]);
+        table.add_row(vec![
+            "initial_subsidy".into(),
+            cs.initial_subsidy.to_string(),
+        ]);
+        table.add_row(vec!["decay_interval".into(), cs.decay_interval.to_string()]);
+        table.add_row(vec!["decay_step".into(), cs.decay_step.to_string()]);
+
+        println!(
+            "{}",
+            "========== CONSENSUS CONSTANTS PARAMETERS =========="
+                .blue()
+                .bold()
+        );
+        println!("{table}");
+    }
 
     /// Print a concise header summary and a table of initial balances from the
     /// single genesis transaction (no walls of text).
@@ -195,15 +218,21 @@ impl GenesisBootstrap {
         println!("Hash             : {header_hash}");
         println!("Version          : {}", block.header.version);
         println!("Timestamp (unix) : {}", block.header.timestamp);
-        println!("Height           : {}", block.header.height);
-        println!("Difficulty bits  : {}", block.header.difficulty_bits);
-        println!("Nonce            : {}", block.header.nonce);
         println!("Merkle root      : {}", block.header.merkle_root_hash);
         println!("Prev block hash  : {}", block.header.previous_block_hash);
-        println!("Tx count         : {}", block.data.transactions.len());
+
+        // ===== Consensus Consts =====
+        if let Some(gs) = &block.header.genesis_state {
+            Self::print_consensus_consts(&gs.consensus_consts);
+        }
 
         // ===== Body: allocation table =====
-        println!("{}", "==================== BLOCK BODY ====================".blue().bold());
+        println!(
+            "{}",
+            "==================== BLOCK BODY ===================="
+                .blue()
+                .bold()
+        );
 
         let mut table = Table::new();
         table.set_header(vec!["Account Address", "Initial Balance"]);
@@ -214,10 +243,7 @@ impl GenesisBootstrap {
         // Still, handle unexpected shapes gracefully.
         if let Some(tx) = block.data.transactions.first() {
             for tx_out in &tx.data.outputs {
-                table.add_row(vec![
-                    tx_out.recipient.to_string(),
-                    tx_out.value.to_string(),
-                ]);
+                table.add_row(vec![tx_out.recipient.to_string(), tx_out.value.to_string()]);
             }
         } else {
             // Fallback: no txs (should not happen if validate_candidate was called).
@@ -225,7 +251,11 @@ impl GenesisBootstrap {
         }
 
         println!("{table}");
-        println!("{}", "===================================================".blue().bold());
+        println!(
+            "{}",
+            "==================================================="
+                .blue()
+                .bold()
+        );
     }
-
 }

@@ -1,15 +1,13 @@
+use crate::http::StryiHttpService;
+use crate::http::error::{BlockIdentifier, ResourceKind, StryiNodeHttpApiError};
 use crate::http::model::ApiErrorBody;
 use crate::http::model::BlockResponse;
-use std::sync::Arc;
-use axum::extract::{Path, State};
 use axum::Json;
-use tracing::error;
+use axum::extract::{Path, State};
+use std::sync::Arc;
 use stryi_core::block::BlockHash;
 use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
-use crate::http::error::{BlockIdentifier, ResourceKind, StryiNodeHttpApiError};
-use crate::http::StryiHttpService;
-
-
+use tracing::error;
 
 /// GET /api/block/{param}
 /// `param` is either block height (u64) or block hash (hex).
@@ -68,49 +66,42 @@ where
                 Ok(Json(BlockResponse {
                     hash,
                     block: serde_json::to_value(block)
-                        .map_err(|e| StryiNodeHttpApiError::Unexpected(e.to_string()))?
+                        .map_err(|e| StryiNodeHttpApiError::Unexpected(e.to_string()))?,
                 }))
             }
 
-            Ok(None) => {
-                Err(StryiNodeHttpApiError::ResourceNotFound {
-                    resource: ResourceKind::Block(BlockIdentifier::Height(height)),
-                })
-            }
+            Ok(None) => Err(StryiNodeHttpApiError::ResourceNotFound {
+                resource: ResourceKind::Block(BlockIdentifier::Height(height)),
+            }),
 
             Err(e) => {
                 error!("get_block_by_height({height}) failed: {e}");
                 Err(StryiNodeHttpApiError::Unexpected(e.to_string()))
             }
-        }
+        };
     }
 
     // If not a height, try as hash
-    let hash = BlockHash::from_hash_string(param.as_str())
-        .map_err(|e| StryiNodeHttpApiError::InvalidResourceId {
+    let hash = BlockHash::from_hash_string(param.as_str()).map_err(|e| {
+        StryiNodeHttpApiError::InvalidResourceId {
             resource_kind: "block".to_string(),
             requested: param,
             message: e.to_string(),
-        })?;
-
-
+        }
+    })?;
 
     match store.get_block_by_hash(hash).await {
         // If the block is found, serialize it to JSON and return
-        Ok(Some(block)) => {
-            Ok(Json(BlockResponse {
-                hash,
-                block: serde_json::to_value(block)
-                    .map_err(|e| StryiNodeHttpApiError::Unexpected(e.to_string()))?
-            }))
-        }
+        Ok(Some(block)) => Ok(Json(BlockResponse {
+            hash,
+            block: serde_json::to_value(block)
+                .map_err(|e| StryiNodeHttpApiError::Unexpected(e.to_string()))?,
+        })),
 
         // If the block is not found, return a 404 error
-        Ok(None) => {
-            Err(StryiNodeHttpApiError::ResourceNotFound {
-                resource: ResourceKind::Block(BlockIdentifier::Hash(hash)),
-            })
-        }
+        Ok(None) => Err(StryiNodeHttpApiError::ResourceNotFound {
+            resource: ResourceKind::Block(BlockIdentifier::Hash(hash)),
+        }),
 
         // If there was an error retrieving the block, log it and return an error
         Err(e) => {

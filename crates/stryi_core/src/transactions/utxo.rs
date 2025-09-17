@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use crate::address::AccountAddress;
 use crate::transactions::hash::TransactionHash;
+use serde::{Deserialize, Serialize};
 
 /// OutPoint identifies which UTXO is being referenced:
 /// - `txid`: the transaction hash (32-byte typed hash)

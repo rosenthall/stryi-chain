@@ -3,23 +3,23 @@
 
 mod behaviour;
 mod error;
-mod manager;
-mod model;
-mod mempool;
-mod services;
 mod event;
+mod manager;
+mod mempool;
+mod model;
 mod peer;
+mod services;
 
+pub use crate::model::BroadcastBlock;
 pub use behaviour::*;
 pub use error::StryiNetworkError;
-pub use manager::*;
-pub use crate::model::BroadcastBlock;
 pub use libp2p::{Multiaddr, PeerId};
+pub use manager::*;
 
-pub use libp2p::identity::{Keypair, ed25519, SigningError, DecodingError};
-use libp2p::identity::PublicKey;
-use stryi_core::transactions::Transaction;
 pub use crate::services::{ServiceRecord, SignedServiceRecord};
+use libp2p::identity::PublicKey;
+pub use libp2p::identity::{DecodingError, Keypair, SigningError, ed25519};
+use stryi_core::transactions::Transaction;
 
 /// Indicates whether we run as a Rendezvous **Server** or a **Client** node.
 #[derive(Debug, Clone)]
@@ -49,7 +49,7 @@ pub struct StryiNetworkManagerConfig {
 
     /// Identity Ed25519 key of the node
     pub keypair: Keypair,
-    
+
     /// Numeric protocol version
     pub version: usize,
 
@@ -72,7 +72,6 @@ impl Default for StryiNetworkManagerConfig {
     }
 }
 
-
 /// Commands that can be sent to the network service.
 // TODO: Major refactor is needed for NetworkCommand, all the commands should be have tokio::sync::oneshot channel to answer with result
 #[derive(Debug)]
@@ -81,7 +80,7 @@ pub enum NetworkCommand {
     // Dial { address: String },
     /// Publish a new block to the network.
     PublishBlock(BroadcastBlock),
-    
+
     /// Publish a new transaction to the network.
     PublishTransaction(Transaction),
 
@@ -91,13 +90,12 @@ pub enum NetworkCommand {
         service: String,
         respond_to: tokio::sync::oneshot::Sender<Vec<(PeerId, ServiceRecord)>>,
     },
-    
-    /// Get the public key of a peer by its PeerId.
-    QueryPeerPublicKey { 
-        peer: PeerId,
-        respond_to: tokio::sync::oneshot::Sender<Option<PublicKey>> 
-    },
 
+    /// Get the public key of a peer by its PeerId.
+    QueryPeerPublicKey {
+        peer: PeerId,
+        respond_to: tokio::sync::oneshot::Sender<Option<PublicKey>>,
+    },
 
     /// Gets current mempool state from random connected node and synchronizes it with own.
     SyncMempoolState,
@@ -114,8 +112,5 @@ pub enum NetworkEvent {
     PeerConnected(Multiaddr),
     /// A peer has disconnected.
     PeerDisconnected(Multiaddr),
-    
     // Something more I need?
 }
-
-

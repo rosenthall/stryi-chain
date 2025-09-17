@@ -1,8 +1,7 @@
 use blake3;
-use hashx::{HashX, Error};
+use hashx::{Error, HashX};
 
 use crate::hash::HashKind;
-
 
 /// Represents a specific hash kind for block hashes using HashX + BLAKE3
 ///
@@ -25,7 +24,7 @@ impl HashKind for BlockHashKind {
     /// Computes a 32-byte hash of the provided `data` using:
     /// - hashx (with a seed derived from BLAKE3(data))
     /// - BLAKE3 for final mixing
-    /// 
+    ///
     /// # Steps
     /// 1. Derive a `seed` via `blake3::hash(data)`.
     /// 2. Build a HashX program with that seed. If `Error::ProgramConstraints`,
@@ -95,10 +94,12 @@ impl HashKind for BlockHashKind {
 pub type BlockHash = crate::hash::Hash<BlockHashKind>;
 
 impl BlockHash {
-    
     /// Returns static blockhash value (Bx0000....) for genesis block.
     pub const fn empty() -> BlockHash {
-        BlockHash { kind: BlockHashKind, data: [0u8; BlockHashKind::SIZE] }
+        BlockHash {
+            kind: BlockHashKind,
+            data: [0u8; BlockHashKind::SIZE],
+        }
     }
 }
 
@@ -109,8 +110,6 @@ mod tests {
     /// Tests BlockHashKind::hash logic by hashing some sample inputs.
     #[test]
     fn test_block_hash_basic() {
-        
-        
         let input1 = b"hello world";
         let input2 = b"foo bar baz";
 
@@ -119,17 +118,23 @@ mod tests {
         let hash2 = BlockHashKind::hash(input2);
 
         // We don't strictly test for "collisions" here, but we can assert they're not identical
-        assert_ne!(hash1, hash2, "Different inputs should produce different block hashes.");
+        assert_ne!(
+            hash1, hash2,
+            "Different inputs should produce different block hashes."
+        );
 
         // Just confirm we get 32-byte outputs
         assert_eq!(hash1.len(), 32);
         assert_eq!(hash2.len(), 32);
 
-
         // Check BlockHash TryFrom
-        println!("{:?}", BlockHash::try_from(hash1.as_slice()).unwrap().to_string());
-        println!("{:?}", BlockHash::try_from(hash2.as_slice()).unwrap().to_string());
+        println!(
+            "{:?}",
+            BlockHash::try_from(hash1.as_slice()).unwrap().to_string()
+        );
+        println!(
+            "{:?}",
+            BlockHash::try_from(hash2.as_slice()).unwrap().to_string()
+        );
     }
-
-
 }

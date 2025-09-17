@@ -1,7 +1,7 @@
-use bincode::config::standard;
-use serde::{Deserialize, Serialize};
 use crate::hash::{Hash, HashKind};
 use crate::transactions::Transaction;
+use bincode::config::standard;
+use serde::{Deserialize, Serialize};
 
 /// 32-byte Merkle hash kind.
 /// The prefix chosen is "MKR" for compact human-readable form like: "MKR<hex...>".
@@ -72,8 +72,7 @@ impl MerkleTree {
             .iter()
             .map(|data| {
                 let digest = MerkleHashKind::hash(data);
-                MerkleHash::try_from(digest.as_slice())
-                    .expect("digest length must be 32")
+                MerkleHash::try_from(digest.as_slice()).expect("digest length must be 32")
             })
             .collect();
 
@@ -119,8 +118,7 @@ impl MerkleTree {
         hasher.update(&right.data);
         let result = hasher.finalize();
 
-        MerkleHash::try_from(&result.as_bytes()[..])
-            .expect("digest length must be 32")
+        MerkleHash::try_from(&result.as_bytes()[..]).expect("digest length must be 32")
     }
 
     /// Retrieve the root hash of the Merkle tree.
@@ -164,7 +162,6 @@ impl MerkleTree {
     }
 }
 
-
 /// Compute the Merkle-root for a list of transactions.
 ///
 /// * `txs` – slice of transactions already selected for the block.
@@ -203,8 +200,7 @@ impl MerkleProof {
         // Recompute the leaf hash using MerkleHashKind directly.
         let leaf_digest = MerkleHashKind::hash(leaf_data);
         let mut computed_hash =
-            MerkleHash::try_from(leaf_digest.as_slice())
-                .expect("digest length must be 32");
+            MerkleHash::try_from(leaf_digest.as_slice()).expect("digest length must be 32");
 
         let mut index = self.leaf_index;
 
@@ -224,9 +220,9 @@ impl MerkleProof {
 
 #[cfg(test)]
 mod tests {
-    use bincode::config::standard;
-    use rand::{rng, Rng};
     use super::*;
+    use bincode::config::standard;
+    use rand::{Rng, rng};
 
     #[test]
     fn test_tree_creation_and_root() {
@@ -237,7 +233,10 @@ mod tests {
             b"tx4".to_vec(),
         ];
         let tree = MerkleTree::new(&transactions);
-        assert!(tree.root_hash().is_some(), "Root hash should exist for non-empty tree");
+        assert!(
+            tree.root_hash().is_some(),
+            "Root hash should exist for non-empty tree"
+        );
     }
 
     #[test]
@@ -252,10 +251,15 @@ mod tests {
         let root = tree.root_hash().expect("Tree should have a root hash");
 
         let leaf_index = 2;
-        let proof = tree.generate_proof(leaf_index).expect("Proof should be generated");
+        let proof = tree
+            .generate_proof(leaf_index)
+            .expect("Proof should be generated");
         let leaf_data = &transactions[leaf_index];
 
-        assert!(proof.verify(leaf_data, root), "Proof should be valid for correct data");
+        assert!(
+            proof.verify(leaf_data, root),
+            "Proof should be valid for correct data"
+        );
     }
 
     #[test]
@@ -270,7 +274,9 @@ mod tests {
         let root = tree.root_hash().expect("Tree should have a root hash");
 
         let leaf_index = 1;
-        let proof = tree.generate_proof(leaf_index).expect("Proof should be generated");
+        let proof = tree
+            .generate_proof(leaf_index)
+            .expect("Proof should be generated");
 
         let incorrect_leaf_data = b"invalid".to_vec();
         assert!(
@@ -281,10 +287,7 @@ mod tests {
 
     #[test]
     fn test_generate_proof_out_of_bounds() {
-        let transactions = vec![
-            b"tx1".to_vec(),
-            b"tx2".to_vec(),
-        ];
+        let transactions = vec![b"tx1".to_vec(), b"tx2".to_vec()];
         let tree = MerkleTree::new(&transactions);
 
         assert!(
@@ -314,7 +317,9 @@ mod tests {
         ];
         let tree = MerkleTree::new(&transactions);
         let leaf_index = 2;
-        let proof = tree.generate_proof(leaf_index).expect("Proof should be generated");
+        let proof = tree
+            .generate_proof(leaf_index)
+            .expect("Proof should be generated");
         let leaf_data = &transactions[leaf_index];
 
         // Explicit "all zeros" digest: build from bytes, not via hashing.
@@ -362,9 +367,12 @@ mod tests {
                     let leaf_data = &leaves_data[leaf_index];
 
                     // Verify the correctness of the proof
-                    assert!(proof.verify(leaf_data, root),
-                            "Proof should verify for leaf at index {} in a tree with {} leaves",
-                            leaf_index, leaf_count);
+                    assert!(
+                        proof.verify(leaf_data, root),
+                        "Proof should verify for leaf at index {} in a tree with {} leaves",
+                        leaf_index,
+                        leaf_count
+                    );
 
                     // Serialize the proof using bincode
                     let serialized = bincode::serde::encode_to_vec(&proof, standard())
@@ -376,9 +384,12 @@ mod tests {
                             .expect("Deserialization should succeed");
 
                     // Verify that the deserialized proof also verifies correctly
-                    assert!(deserialized.verify(leaf_data, root),
-                            "Deserialized proof should verify for leaf at index {} in a tree with {} leaves",
-                            leaf_index, leaf_count);
+                    assert!(
+                        deserialized.verify(leaf_data, root),
+                        "Deserialized proof should verify for leaf at index {} in a tree with {} leaves",
+                        leaf_index,
+                        leaf_count
+                    );
                 } else {
                     panic!(
                         "Proof generation failed for valid index {} in a tree with {} leaves",

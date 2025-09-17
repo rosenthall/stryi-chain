@@ -1,7 +1,7 @@
-use std::collections::HashSet;
 use crate::BlockUndo;
 use crate::storage::UtxoStorage;
-use crate::transactions::{Transaction, TransactionKind, OutPoint, UTXO};
+use crate::transactions::{OutPoint, Transaction, TransactionKind, UTXO};
+use std::collections::HashSet;
 
 /// UtxoProcessor is responsible for applying and reverting blocks to the UTXO set.
 // TODO: Add some configuration structs?
@@ -18,7 +18,6 @@ impl UtxoProcessor {
     pub fn new() -> Self {
         Self
     }
-
 
     /// Applies a validated block to the UTXO storage **and returns** the diff required to undo it.
     ///
@@ -39,7 +38,7 @@ impl UtxoProcessor {
     where
         S: UtxoStorage + Send,
     {
-        let mut created_outpoints : HashSet<OutPoint>  = HashSet::new();
+        let mut created_outpoints: HashSet<OutPoint> = HashSet::new();
         let mut spent_utxos: HashSet<(OutPoint, UTXO)> = HashSet::new();
 
         for tx in &block.data.transactions {
@@ -49,16 +48,10 @@ impl UtxoProcessor {
                 }
                 TransactionKind::Payment => {
                     // collect and remove inputs
-                    let in_ops: Vec<_> = tx
-                        .data
-                        .inputs
-                        .iter()
-                        .map(|i| i.previous_output)
-                        .collect();
+                    let in_ops: Vec<_> = tx.data.inputs.iter().map(|i| i.previous_output).collect();
 
                     // fetch current UTXOs so we can store them in undo
-                    let existing=
-                        utxo_storage.batch_get_utxos(in_ops.clone()).await?;
+                    let existing = utxo_storage.batch_get_utxos(in_ops.clone()).await?;
 
                     for op in &in_ops {
                         if let Some(u) = existing.get(op) {
@@ -76,13 +69,10 @@ impl UtxoProcessor {
 
         Ok(BlockUndo {
             spent_utxos,
-            created_outpoints
+            created_outpoints,
         })
     }
 
-
-
-    
     /// Helper, inserts transaction outputs, returns list of newly created `OutPoint`s.
     async fn put_outputs<S>(
         &self,
@@ -95,11 +85,19 @@ impl UtxoProcessor {
         let txid = tx.data.hash();
 
         let mut batch: Vec<(OutPoint, UTXO)> = Vec::with_capacity(tx.data.outputs.len());
-        let mut outpoints: Vec<OutPoint>     = Vec::with_capacity(tx.data.outputs.len());
+        let mut outpoints: Vec<OutPoint> = Vec::with_capacity(tx.data.outputs.len());
 
         for (vout, output) in tx.data.outputs.iter().enumerate() {
-            let op = OutPoint { txid, vout: vout as u32 };
-            let utxo = UTXO { txid, vout: op.vout, value: output.value, owner: output.recipient };
+            let op = OutPoint {
+                txid,
+                vout: vout as u32,
+            };
+            let utxo = UTXO {
+                txid,
+                vout: op.vout,
+                value: output.value,
+                owner: output.recipient,
+            };
             batch.push((op, utxo));
             outpoints.push(op);
         }
@@ -107,7 +105,6 @@ impl UtxoProcessor {
         utxo_storage.batch_put_utxos(batch).await?;
         Ok(outpoints)
     }
-    
 
     /// Reverts a previously-applied block, restoring the UTXO set to its prior state.
     pub async fn rewind_block<S>(
@@ -121,8 +118,7 @@ impl UtxoProcessor {
         // return all spent outputs
         let spent_outputs = undo.spent_utxos.iter().cloned().collect::<Vec<_>>();
         utxo_storage.batch_put_utxos(spent_outputs).await?;
-        
-        
+
         // remove outputs that were created by the reverted block
         let created_outputs = undo.created_outpoints.iter().cloned().collect::<Vec<_>>();
         utxo_storage.batch_remove_utxos(created_outputs).await

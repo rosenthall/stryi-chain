@@ -4,19 +4,25 @@ use std::{
     time::Duration,
 };
 
-use libp2p::{gossipsub::{
-    Behaviour as Gossipsub, Event as GossipsubEvent, MessageAuthenticity,
-    MessageId, ValidationMode,
-    ConfigBuilder as GossipsubConfigBuilder,
-}, identify::{Behaviour as Identify, Event as IdentifyEvent, Config as IdentifyConfig}, ping::{Behaviour as Ping, Event as PingEvent, Config as PingConfig},
-             rendezvous::{server::{Behaviour as RzvServer, Event as RzvServerEvent, Config as RzvServerConfig},
-                          client::{Behaviour as RzvClient, Event as RzvClientEvent}
-             }, swarm::{NetworkBehaviour, behaviour::toggle::Toggle}, StreamProtocol};
-use libp2p::identity::Keypair;
-use libp2p::request_response::ProtocolSupport;
 use crate::error::{StryiNetworkError, StryiNetworkError::GossipsubConfigError};
 use crate::mempool::{MempoolEvent, MempoolSyncBehaviour};
-use crate::services::{ServicesEvent, ServicesInfoBehaviour, };
+use crate::services::{ServicesEvent, ServicesInfoBehaviour};
+use libp2p::identity::Keypair;
+use libp2p::request_response::ProtocolSupport;
+use libp2p::{
+    StreamProtocol,
+    gossipsub::{
+        Behaviour as Gossipsub, ConfigBuilder as GossipsubConfigBuilder, Event as GossipsubEvent,
+        MessageAuthenticity, MessageId, ValidationMode,
+    },
+    identify::{Behaviour as Identify, Config as IdentifyConfig, Event as IdentifyEvent},
+    ping::{Behaviour as Ping, Config as PingConfig, Event as PingEvent},
+    rendezvous::{
+        client::{Behaviour as RzvClient, Event as RzvClientEvent},
+        server::{Behaviour as RzvServer, Config as RzvServerConfig, Event as RzvServerEvent},
+    },
+    swarm::{NetworkBehaviour, behaviour::toggle::Toggle},
+};
 
 /// High-level event combining all sub-protocol events.
 #[derive(Debug)]
@@ -93,7 +99,8 @@ impl Default for StryiBehaviourConfig {
 #[behaviour(to_swarm = "StryiEvent")]
 pub struct StryiBehaviour {
     pub gossipsub: Gossipsub,
-    #[behaviour(ignore_events)] // todo: Do we need more complex logic for pining? Some analytics for RTT, latency, etc
+    #[behaviour(ignore_events)]
+    // todo: Do we need more complex logic for pining? Some analytics for RTT, latency, etc
     pub ping: Ping,
     pub identify: Identify,
     pub rendezvous_server: Toggle<RzvServer>,
@@ -105,10 +112,14 @@ pub struct StryiBehaviour {
 impl StryiBehaviour {
     /// Create a new `StryiBehaviour` from the given configuration.
     /// Returns an error if building the gossipsub configuration fails.
-    pub fn new(cfg: StryiBehaviourConfig, keypair: &Keypair, _protocol_version : &usize) -> Result<Self, StryiNetworkError> {
+    pub fn new(
+        cfg: StryiBehaviourConfig,
+        keypair: &Keypair,
+        _protocol_version: &usize,
+    ) -> Result<Self, StryiNetworkError> {
         // Build configured Gossipsub
         let gossipsub = Self::build_gossipsub(&cfg, keypair)?;
-        
+
         // Build Ping with the specified interval and timeout.
         let ping_cfg = PingConfig::new()
             .with_interval(cfg.ping_interval)
@@ -117,18 +128,20 @@ impl StryiBehaviour {
 
         // --- request-response behaviours ---
         let mempool_sync = MempoolSyncBehaviour::new(
-            [(StreamProtocol::new("/stryichain/mempool"),
-              ProtocolSupport::Full)],
+            [(
+                StreamProtocol::new("/stryichain/mempool"),
+                ProtocolSupport::Full,
+            )],
             libp2p::request_response::Config::default(),
         );
 
         let services_info = ServicesInfoBehaviour::new(
-            [(StreamProtocol::new("/stryichain/services"),
-              ProtocolSupport::Full)],
+            [(
+                StreamProtocol::new("/stryichain/services"),
+                ProtocolSupport::Full,
+            )],
             libp2p::request_response::Config::default(),
-
         );
-
 
         // Build Identify with a fixed protocol version.
         let identify = Self::build_identify(keypair);
@@ -156,16 +169,18 @@ impl StryiBehaviour {
         })
     }
 
-    
     /// Helper to build identify behaviour with automatic listen address updates.
     pub fn build_identify(keypair: &Keypair) -> Identify {
         let cfg = IdentifyConfig::new("stryichain/0.1.0".to_string(), keypair.public())
             .with_push_listen_addr_updates(true); // Enable automatic updates of listen addresses
         Identify::new(cfg)
     }
-    
+
     /// Helper to build a custom gossipsub behaviour instance using the provided `StryiBehaviourConfig` and a `keypair`.
-    fn build_gossipsub(cfg: &StryiBehaviourConfig, keypair: &Keypair) -> Result<Gossipsub, StryiNetworkError> {
+    fn build_gossipsub(
+        cfg: &StryiBehaviourConfig,
+        keypair: &Keypair,
+    ) -> Result<Gossipsub, StryiNetworkError> {
         let msg_id_fn = |msg: &libp2p::gossipsub::Message| {
             let mut hasher = DefaultHasher::new();
             msg.data.hash(&mut hasher);
@@ -182,9 +197,9 @@ impl StryiBehaviour {
         let gossipsub_behaviour = Gossipsub::new(
             MessageAuthenticity::Signed(keypair.clone()),
             gossipsub_config,
-        ).unwrap();
+        )
+        .unwrap();
 
         Ok(gossipsub_behaviour)
     }
 }
-

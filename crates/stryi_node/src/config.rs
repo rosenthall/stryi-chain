@@ -2,19 +2,22 @@
 //!
 //! Precedence: hard-coded defaults < TOML file < explicit CLI flags.
 
-use std::path::Path;
-use clap::Parser;
-use serde::{Deserialize, Serialize};
-use figment::{Figment, providers::{Toml, Serialized}};
-use figment::providers::Format;
 use crate::cli::{CliArgs, NodeStartMode};
 use crate::error::StryiNodeError;
+use clap::Parser;
+use figment::providers::Format;
+use figment::{
+    Figment,
+    providers::{Serialized, Toml},
+};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NodeConfig {
     /* global settings */
     pub chain_name: String,
-    pub chain_id : String,
+    pub chain_id: String,
     pub genesis_config_path: Option<String>,
     pub block_header_version: u16,
     #[serde(default)]
@@ -35,14 +38,13 @@ pub struct NodeConfig {
 
     /* mempool */
     pub mempool_max_transactions: usize,
-    
+
     /* miner */
-    pub miner_enabled : bool,
+    pub miner_enabled: bool,
     pub miner_hashrate_bench: bool,
     pub miner_tx_threshold: usize,
     pub miner_max_delay_secs: usize,
     pub miner_reward_address: String,
-    
 
     /* gRPC sync */
     pub grpc_sync_address: String,
@@ -52,7 +54,7 @@ pub struct NodeConfig {
     /* http service */
     pub http_service_address: String,
     pub http_service_version: u32,
-    
+
     /* keys */
     pub peer_key_path: String,
 
@@ -87,22 +89,20 @@ impl Default for NodeConfig {
             miner_tx_threshold: 1,
             miner_max_delay_secs: 20,
             miner_reward_address: "@nah".to_string(),
-            
+
             grpc_sync_address: "0.0.0.0:5555".into(),
             sync_protocol_version: 1,
             sync_max_blocks_per_request: 100,
 
             http_service_address: "0.0.0.0:5556".to_string(),
             http_service_version: 1,
-            
+
             peer_key_path: "/var/lib/stryi_chain/peer.stryi_keys".into(),
 
             tls_sans: vec!["localhost".into()],
         }
     }
 }
-
-
 
 impl NodeConfig {
     /// Merge defaults  <  TOML file  <  explicit CLI flags.
@@ -113,9 +113,11 @@ impl NodeConfig {
         // assert that config_path exists
         let path = Path::new(&cli.config_path);
         if !path.is_file() {
-            return Err(StryiNodeError::Other(format!("The provided config path is not a file! Provided path : {}", path.to_str().unwrap())));
+            return Err(StryiNodeError::Other(format!(
+                "The provided config path is not a file! Provided path : {}",
+                path.to_str().unwrap()
+            )));
         }
-
 
         let figment = Figment::new()
             // (3) built-in defaults, lowest priority
@@ -125,8 +127,6 @@ impl NodeConfig {
             // (1) explicit CLI flags – highest priority
             .merge(Serialized::from(cli, "default"));
 
-        figment
-            .extract()
-            .map_err(StryiNodeError::other)
+        figment.extract().map_err(StryiNodeError::other)
     }
 }

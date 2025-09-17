@@ -47,7 +47,9 @@ impl PeerKey {
             .map_err(StryiNodeError::from)?; // Io
 
         // write & flush
-        file.write_all(&bytes).and_then(|_| file.flush()).map_err(StryiNodeError::from)?;
+        file.write_all(&bytes)
+            .and_then(|_| file.flush())
+            .map_err(StryiNodeError::from)?;
 
         // wipe buffer
         bytes.zeroize();

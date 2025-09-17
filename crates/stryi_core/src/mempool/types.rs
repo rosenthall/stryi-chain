@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use crate::mempool::{FeePolicy, RbfPolicy};
 use crate::transactions::Transaction;
+use serde::{Deserialize, Serialize};
 
 /// Serializable mempool state for network synchronization
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -37,7 +37,12 @@ impl Default for MemPoolConfig {
 
 impl MemPoolConfig {
     /// Creates new mempool configuration with custom parameters
-    pub fn new(max_size: usize, fee_policy: FeePolicy, rbf_policy: RbfPolicy, expiry_time: u64) -> Self {
+    pub fn new(
+        max_size: usize,
+        fee_policy: FeePolicy,
+        rbf_policy: RbfPolicy,
+        expiry_time: u64,
+    ) -> Self {
         Self {
             max_size,
             fee_policy,

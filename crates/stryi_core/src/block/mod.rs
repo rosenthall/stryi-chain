@@ -1,14 +1,17 @@
 mod block_hash;
 pub(crate) mod mining;
 
-use std::collections::HashMap;
 pub use block_hash::BlockHash;
 pub use mining::meets_difficulty;
+use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
 use crate::address::AccountAddress;
+use crate::consensus::ConsensusConsts;
 use crate::merkletree::{MerkleHash, MerkleTree};
-use crate::transactions::{StryiSignature, Transaction, TransactionData, TransactionKind, TransactionOut};
+use crate::transactions::{
+    StryiSignature, Transaction, TransactionData, TransactionKind, TransactionOut,
+};
+use serde::{Deserialize, Serialize};
 
 /// BlockData holds a list of transactions of block
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -16,7 +19,6 @@ pub struct BlockData {
     /// List of transactions included in this block
     pub transactions: Vec<Transaction>,
 }
-
 
 /// Block header contains essential metadata for a blockchain block.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,6 +36,7 @@ pub struct BlockHeader {
     pub height: u64,
 
     /// Difficulty parameter in bits
+    /// In genesis always must be 0.
     pub difficulty_bits: u8,
 
     /// Unix timestamp
@@ -42,21 +45,27 @@ pub struct BlockHeader {
     /// Nonce (in Bitcoin it's 32 bits so it's enough much for StryiChain)
     pub nonce: u32,
 
-    /// Boolean value proves that block is the genesis in the chain
-    // TODO: Maybe replace is_genesis field by something like genesis_consensus_config : Option<GenesisConsensusConfig> for better flexibility? And add method is_genesis() for compatibility with an old field.
-    pub is_genesis : bool,
+    /// Optional additional data for genesis blocks
+    /// If this is Some(state) - block is genesis, otherwise - not.
+    pub genesis_state: Option<GenesisState>,
 }
 
-
+impl BlockHeader {
+    /// returns true if self.genesis_state is Some.
+    pub const fn is_genesis(&self) -> bool {
+        self.genesis_state.is_some()
+    }
+}
 
 /// Configuration, the entire later chain relies on.
 /// Stored in genesis, never changes.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct GenesisChainConfig {
-    
-    /// Any description of this genesis, its origin, whatever
-    /// You also may include your favourite joke right in the genesis
-    genesis_message : String,
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GenesisState {
+    /// Static values for consensus:
+    /// covering proof‑of‑work difficulty adjustment and block‑reward emission, etc.
+    #[serde(rename = "consts")]
+    pub consensus_consts: ConsensusConsts,
+    // TODO: Some Additional fields in genesis_state? We may add any configurations/kill switches in here. Or maybe just string with info about the block?
 }
 
 /// Block ties together BlockHeader and BlockData.
@@ -74,7 +83,15 @@ impl Block {
     /// This function calculates the Merkle root from the provided transactions.
     ///
     /// Note: nonce is set to 0 by default, can be changed in mining process.
-    pub fn new(transactions: Vec<Transaction>, previous_block_hash: BlockHash, height: u64, bits: u8, timestamp: u64, version: u16) -> Self {
+    /// Note: this method is only for not genesis blocks. If you want one see the Self::new_genesis method
+    pub fn new(
+        transactions: Vec<Transaction>,
+        previous_block_hash: BlockHash,
+        height: u64,
+        bits: u8,
+        timestamp: u64,
+        version: u16,
+    ) -> Self {
         // Compute the Merkle root from the transactions
         let merkle_hash = Self::compute_merkle_root(&transactions);
 
@@ -86,7 +103,7 @@ impl Block {
             difficulty_bits: bits,
             timestamp,
             nonce: 0,
-            is_genesis: false,
+            genesis_state: None,
         };
 
         let data = BlockData { transactions };
@@ -94,17 +111,19 @@ impl Block {
         Self { header, data }
     }
 
-
     /// Creates a new genesis block with a given balances in HashMap in format
     /// @AccountAddress => 10000
     ///
     /// Function converts TxOuts from this hashmap `balances`
     ///
     /// This function calculates the Merkle root from the provided transactions.
-    pub fn new_genesis(version: u16, difficulty_bits : u8, wanted_balances: HashMap<AccountAddress, u64>) -> Self {
-
+    pub fn new_genesis(
+        version: u16,
+        wanted_balances: HashMap<AccountAddress, u64>,
+        genesis_state: GenesisState,
+    ) -> Self {
         // convert balances to TxOuts
-        let mut tx_outs: Vec<TransactionOut> = vec!();
+        let mut tx_outs: Vec<TransactionOut> = vec![];
 
         for (account_address, balance) in wanted_balances {
             tx_outs.push(TransactionOut {
@@ -122,29 +141,27 @@ impl Block {
         };
         let transaction = Transaction {
             data: tx_data,
-            signature: StryiSignature(Box::new([0u8; 65])) // Use an empty bytes as a signature
+            signature: StryiSignature(Box::new([0u8; 65])), // Use an empty bytes as a signature
         };
-
 
         // Compute the Merkle root from the transactions
         let merkle_hash = Self::compute_merkle_root(&[transaction.clone()]);
 
         let empty_block_hash = BlockHash::empty();
         let header = BlockHeader {
-
             merkle_root_hash: merkle_hash,
 
-            // Use provided values for chain version and difficulty bits
+            // Use provided values for chain version
             version,
-            difficulty_bits,
+            difficulty_bits: 0, // Zero in genesis blocks
 
             // Use empty values for previous_block_hash, nonce, height and timestamp
-            previous_block_hash : empty_block_hash,
+            previous_block_hash: empty_block_hash,
             nonce: 0,
-            height : 0,
+            height: 0,
             timestamp: 0,
 
-            is_genesis: true,
+            genesis_state: Some(genesis_state),
         };
 
         let data = BlockData {
@@ -154,6 +171,10 @@ impl Block {
         Self { header, data }
     }
 
+    /// Method returns true if the block is genesis (if `header.genesis_state` is Some).
+    pub fn is_genesis(&self) -> bool {
+        self.header.genesis_state.is_some()
+    }
 
     /// Recomputes the Merkle root based on current block data and updates the block header.
     /// Usually used if transactions were modified or appended after block creation.
@@ -166,24 +187,26 @@ impl Block {
         // Convert each transaction into a byte vector, e.g., by serializing it
         let leaves_data: Vec<Vec<u8>> = transactions
             .iter()
-            .map(|tx| bincode::serde::encode_to_vec(tx, bincode::config::standard()).expect("Failed to serialize transaction"))
+            .map(|tx| {
+                bincode::serde::encode_to_vec(tx, bincode::config::standard())
+                    .expect("Failed to serialize transaction")
+            })
             .collect();
 
         let tree = MerkleTree::new(&leaves_data);
-        tree.root_hash()
-            .unwrap_or(MerkleHash::empty()) // handle empty block or error case
+        tree.root_hash().unwrap_or(MerkleHash::empty()) // handle empty block or error case
     }
 
     /// Calculates the block hash.
-    /// Returns hardcoded BlockHash::empty value if self.header.is_genesis
+    /// Returns hardcoded BlockHash::empty value if the block is genesis
     pub fn block_hash(&self) -> BlockHash {
-
-        if self.header.is_genesis {
+        if self.is_genesis() {
             return BlockHash::empty();
         };
 
-        let header_bytes = bincode::serde::encode_to_vec(self.header, bincode::config::standard())
-            .expect("Failed to serialize block header");
+        let header_bytes =
+            bincode::serde::encode_to_vec(self.header, bincode::config::standard())
+                .expect("Failed to serialize block header");
 
         // Create the final block hash
         BlockHash::new(&header_bytes)
@@ -201,7 +224,7 @@ impl Block {
     /// * `false` otherwise.
     pub fn validate_proof_of_work(&self) -> bool {
         // Genesis blocks can go without PoW checks
-        if self.header.is_genesis {
+        if self.is_genesis() {
             return true;
         }
 
@@ -227,10 +250,10 @@ impl Block {
 
 #[cfg(test)]
 mod tests {
-    use k256::ecdsa::SigningKey;
-    use k256::elliptic_curve::rand_core::OsRng;
     use super::*;
     use crate::transactions::{TransactionData, TransactionKind};
+    use k256::ecdsa::SigningKey;
+    use k256::elliptic_curve::rand_core::OsRng;
 
     #[test]
     fn test_create_block_and_compute_hash() {
@@ -247,7 +270,6 @@ mod tests {
 
         // Sign transaction data
         let signed_tx = tx_data.sign(&signing_key);
-
 
         // Create a block
         let prev_hash = BlockHash::empty(); // Some placeholder

@@ -1,7 +1,7 @@
-use crate::services::{filter_verified_records, ServiceRecord, SignedServiceRecord};
+use crate::services::{ServiceRecord, SignedServiceRecord, filter_verified_records};
+use libp2p::{Multiaddr, PeerId, identity::PublicKey};
 use std::collections::HashMap;
 use std::time::SystemTime;
-use libp2p::{Multiaddr, PeerId, identity::PublicKey};
 
 type PeerMap = HashMap<PeerId, PeerInfo>;
 
@@ -35,10 +35,10 @@ impl PeerInfo {
     pub fn new_now(remote: Option<Multiaddr>) -> Self {
         Self {
             established_at: Some(SystemTime::now()),
-            last_seen:      None,
-            addresses:      remote.into_iter().collect(), // zero or one
-            public_key:     None,
-            services:       Vec::new(),
+            last_seen: None,
+            addresses: remote.into_iter().collect(), // zero or one
+            public_key: None,
+            services: Vec::new(),
             consecutive_ping_failures: 0,
         }
     }
@@ -160,7 +160,10 @@ impl PeerMapExt for PeerMap {
     fn current_services(&self, peer: &PeerId) -> Option<Vec<ServiceRecord>> {
         let pi = self.get(peer)?;
         let pk = pi.public_key.as_ref()?;
-        Some(filter_verified_records(pi.clone().services, &pk.clone().try_into_ed25519().unwrap()))
+        Some(filter_verified_records(
+            pi.clone().services,
+            &pk.clone().try_into_ed25519().unwrap(),
+        ))
     }
 
     fn ping_success(&mut self, peer: PeerId) -> usize {

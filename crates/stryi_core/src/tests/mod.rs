@@ -2,7 +2,7 @@
 // mod consensus;
 // mod dependencies;
 // mod mempool;
-// 
+//
 // use crate::{
 //     address::AccountAddress,
 //     block::{Block, BlockData, BlockHeader, BlockHash},
@@ -15,13 +15,13 @@
 // };
 // use k256::ecdsa::SigningKey;
 // use crate::storage::UtxoStorage;
-// 
-// 
-// 
+//
+//
+//
 // // Below is some helper methods for testing
-// 
-// 
-// 
+//
+//
+//
 // /// Helper: Create and sign a Coinbase transaction.
 // /// Coinbase transactions have no inputs and exactly one output.
 // pub(crate) fn create_coinbase_tx(
@@ -40,7 +40,7 @@
 //     };
 //     tx_data.sign(signing_key)
 // }
-// 
+//
 // /// Helper: Build a block with the given transactions, set difficulty, set previous_block_hash, and update merkle root.
 // pub(crate) fn make_block(
 //     txs: Vec<Transaction>,
@@ -65,7 +65,7 @@
 //     block.update_merkle_root();
 //     block
 // }
-// 
+//
 // /// Creates a "genesis" outpoint in `utxo_db` for `owner` with the given `value`.
 // pub(crate) async fn put_genesis_utxo(
 //     utxo_db: &mut StryiInMemoryStorage,
@@ -86,7 +86,7 @@
 //     utxo_db.put_utxo(genesis_op, utxo).await.unwrap();
 //     genesis_op
 // }
-// 
+//
 // /// Creates and signs a Payment transaction with one input and arbitrary outputs.
 // pub(crate) fn sign_single_input_tx(
 //     input: OutPoint,
@@ -110,7 +110,7 @@
 //     };
 //     tx_data.sign(signing_key)
 // }
-// 
+//
 // /// Applies a block using the ConsensusEngine's validate_and_apply_block method.
 // /// This ensures atomic validation and application.
 // pub(crate) async fn apply_block<S: ConsensusEngine>(

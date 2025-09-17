@@ -1,26 +1,27 @@
+use crate::BlockUndo;
+use crate::address::AccountAddress;
+use crate::block::{Block, BlockHash};
+use crate::error::{StorageLayer, StryiCoreError};
+use crate::storage::{BlockStorage, StorageStats, UndoStorage, UtxoStorage};
+use crate::transactions::{OutPoint, UTXO};
+use dashmap::{DashMap, DashSet};
+use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::future::ready;
 use std::range::RangeInclusive;
 use std::sync::Arc;
-use dashmap::{DashMap, DashSet};
-use futures::future::BoxFuture;
-use crate::address::AccountAddress;
-use crate::block::{Block, BlockHash};
-use crate::BlockUndo;
-use crate::error::{StorageLayer, StryiCoreError};
-use crate::storage::{BlockStorage, StorageStats, UndoStorage, UtxoStorage};
-use crate::transactions::{OutPoint, UTXO};
 
 /// An overlay database for a specific fork.
 /// Stores only fork-specific delta over actual db in memory, delegating reads
 /// to the base database when no fork-local entry exists.
 pub struct ForkDbOverlay<DB>
 where
-    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static {
+    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
+{
     // canonical state
     base: Arc<DB>,
 
-    inherited_work: u128,   // cumulative work up to (and incl.) the fork point
+    inherited_work: u128, // cumulative work up to (and incl.) the fork point
 
     // new or overridden UTXOs on this fork
     utxo_delta: DashMap<OutPoint, UTXO>,
@@ -37,20 +38,18 @@ where
 
 impl<DB> ForkDbOverlay<DB>
 where
-    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static {
-    pub fn new(base: Arc<DB>, work : u128) -> Self {
+    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
+{
+    pub fn new(base: Arc<DB>, work: u128) -> Self {
         Self {
             base,
             inherited_work: work,
             utxo_delta: DashMap::new(),
             spent_from_base: DashSet::new(),
             block_delta: DashMap::new(),
-            undo_delta: DashMap::new()
-
+            undo_delta: DashMap::new(),
         }
     }
-
-
 
     /// Applies **all** buffered changes to the canonical storage.
     ///
@@ -61,11 +60,12 @@ where
     pub async fn commit(self, db: &mut DB) -> Result<(), StryiCoreError> {
         // write blocks first so that UTXO batch refers to known hashes
         for blk in self.block_delta.into_iter().map(|kv| kv.1) {
-            db.put_block(&blk).await.map_err(|e|
+            db.put_block(&blk).await.map_err(|e| {
                 StryiCoreError::storage(
                     StorageLayer::Block,
                     format!("failed put_block during commit: {e:?}"),
-                ))?;
+                )
+            })?;
         }
 
         // write undo data
@@ -74,40 +74,38 @@ where
             db.put_block_undo(hash, undo).await.map_err(|e| {
                 StryiCoreError::storage(
                     StorageLayer::Undo,
-                    format!("failed put_block_undo during commit: {e:?}")
+                    format!("failed put_block_undo during commit: {e:?}"),
                 )
             })?
         }
 
-
         // batch‑insert newly created / overridden UTXOs
         if !self.utxo_delta.is_empty() {
-            let puts: Vec<_> = self.utxo_delta
-                .into_iter()
-                .collect();
-            db.batch_put_utxos(puts).await.map_err(|e|
+            let puts: Vec<_> = self.utxo_delta.into_iter().collect();
+            db.batch_put_utxos(puts).await.map_err(|e| {
                 StryiCoreError::storage(
                     StorageLayer::Utxo,
                     format!("failed put_utxos during commit: {e:?}"),
-                ))?;
+                )
+            })?;
         }
 
         // batch‑remove UTXO that were spent from the base chain
         if !self.spent_from_base.is_empty() {
             let spent: Vec<_> = self.spent_from_base.into_iter().collect();
-            db.batch_remove_utxos(spent).await.map_err(|e|
+            db.batch_remove_utxos(spent).await.map_err(|e| {
                 StryiCoreError::storage(
                     StorageLayer::Utxo,
                     format!("failed remove_utxos during commit: {e:?}"),
-                ))?;
+                )
+            })?;
         }
         Ok(())
     }
 
-
     /// Drops the overlay without touching the canonical storage.
-    pub fn abort(self) { /* nothing — `self` drops and DashMap memory is freed */ }
-
+    pub fn abort(self) { /* nothing — `self` drops and DashMap memory is freed */
+    }
 
     /// Returns overlay status of the outpoint:
     /// - Some(Some(utxo))  : present in utxo_delta (created/overridden by this fork)
@@ -124,10 +122,7 @@ where
         }
         None
     }
-
 }
-
-
 
 impl<DB> UtxoStorage for ForkDbOverlay<DB>
 where
@@ -162,25 +157,25 @@ where
         Box::pin(ready(Ok(())))
     }
 
-    fn batch_get_utxos<I>(&self, outpoints: I) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
+    fn batch_get_utxos<I>(
+        &self,
+        outpoints: I,
+    ) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
     where
-        I: IntoIterator<Item=OutPoint> + Send,
-        I::IntoIter: Send
+        I: IntoIterator<Item = OutPoint> + Send,
+        I::IntoIter: Send,
     {
-
-
         let mut hit: HashMap<OutPoint, UTXO> = HashMap::new();
         let mut miss: Vec<OutPoint> = Vec::new();
         let base = Arc::clone(&self.base);
 
         // clone outpoints
-        let outpoints= outpoints.into_iter().collect::<Vec<_>>().clone();
+        let outpoints = outpoints.into_iter().collect::<Vec<_>>().clone();
 
         Box::pin(async move {
             for outpoint in outpoints {
                 // firstly try get utxo from overlay state
                 match self.overlay_get_utxo(&outpoint) {
-
                     // Some(Some(_)) means UTXO really here
                     Some(Some(utxo)) => {
                         hit.insert(outpoint, utxo);
@@ -188,22 +183,29 @@ where
                     // Some(None) means that UTXO is spent in this fork
                     Some(None) => {
                         // marked as spent in the overlay – treat as missing
-                        return Err(StryiCoreError::ConsensusValidationFailed {details : "The UTXO exists in fork's overlay but marked as spent".to_string()});
+                        return Err(StryiCoreError::ConsensusValidationFailed {
+                            details: "The UTXO exists in fork's overlay but marked as spent"
+                                .to_string(),
+                        });
                     }
                     None => miss.push(outpoint),
                 }
-
             }
 
             // If some utxos are missing after reading them from overlay state - try to get them from base storage
             if !miss.is_empty() {
                 // Request all the missing in overlay-storage UTXOs in base storage
-                let from_base = base.batch_get_utxos(miss.clone()).await.expect("TODO: Proper error handling ");
+                let from_base = base
+                    .batch_get_utxos(miss.clone())
+                    .await
+                    .expect("TODO: Proper error handling ");
 
                 // If the base doesn't have all requested outpoints, it's an error.
                 if from_base.len() != miss.len() {
                     return Err(StryiCoreError::ConsensusValidationFailed {
-                        details: "The fork's block refers to an unknown outpoint(s) in base storage".to_string(),
+                        details:
+                            "The fork's block refers to an unknown outpoint(s) in base storage"
+                                .to_string(),
                     });
                 }
 
@@ -216,12 +218,14 @@ where
         })
     }
 
-    fn get_utxos_for_address(&self, address: AccountAddress) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>> {
+    fn get_utxos_for_address(
+        &self,
+        address: AccountAddress,
+    ) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>> {
         // Clone handles to concurrent maps/sets so they can be moved into `async`.
         let overlay_map = self.utxo_delta.clone();
-        let spent_set   = self.spent_from_base.clone();
-        let base        = Arc::clone(&self.base);
-
+        let spent_set = self.spent_from_base.clone();
+        let base = Arc::clone(&self.base);
 
         Box::pin(async move {
             // Collect UTXOs created/overridden in this fork
@@ -233,7 +237,10 @@ where
             }
 
             // UTXOs owned by `address` in the base storage
-            let base_map = base.get_utxos_for_address(address).await.expect("TODO: Better error handling");
+            let base_map = base
+                .get_utxos_for_address(address)
+                .await
+                .expect("TODO: Better error handling");
 
             for (op, utxo) in base_map {
                 // Skip if fork has already spent this outpoint
@@ -249,13 +256,12 @@ where
 
             Ok(result)
         })
-
     }
 }
 
 impl<DB> BlockStorage for ForkDbOverlay<DB>
 where
-    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage +  Send + Sync + 'static,
+    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
 {
     type StorageError = StryiCoreError;
 
@@ -271,7 +277,7 @@ where
         hashes: Vec<BlockHash>,
     ) -> BoxFuture<Result<HashMap<BlockHash, Block>, Self::StorageError>> {
         let delta = self.block_delta.clone();
-        let base  = Arc::clone(&self.base);
+        let base = Arc::clone(&self.base);
 
         Box::pin(async move {
             let mut hit = HashMap::with_capacity(hashes.len());
@@ -286,7 +292,10 @@ where
             }
 
             if !miss.is_empty() {
-                let from_base = base.batch_get_blocks_by_hashes(miss.clone()).await.expect("TODO: Better error handling");
+                let from_base = base
+                    .batch_get_blocks_by_hashes(miss.clone())
+                    .await
+                    .expect("TODO: Better error handling");
                 if from_base.len() != miss.len() {
                     return Err(StryiCoreError::ConsensusValidationFailed {
                         details: "some hashes are missing in base storage".into(),
@@ -307,7 +316,7 @@ where
         I::IntoIter: Send,
     {
         let delta = self.block_delta.clone();
-        let base  = Arc::clone(&self.base);
+        let base = Arc::clone(&self.base);
         let requested: Vec<u64> = heights.into_iter().collect();
 
         Box::pin(async move {
@@ -328,7 +337,10 @@ where
                 }
             }
             if !miss.is_empty() {
-                let from_base = base.batch_get_blocks_by_heights(miss.clone()).await.expect("TODO: Better error handling");
+                let from_base = base
+                    .batch_get_blocks_by_heights(miss.clone())
+                    .await
+                    .expect("TODO: Better error handling");
                 if from_base.len() != miss.len() {
                     return Err(StryiCoreError::ConsensusValidationFailed {
                         details: "some heights are missing in base storage".into(),
@@ -344,16 +356,15 @@ where
         &self,
         range: RangeInclusive<usize>,
     ) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>> {
-
         let delta = self.block_delta.clone();
-        let base  = Arc::clone(&self.base);
+        let base = Arc::clone(&self.base);
 
-        let heights : Vec<u64> = range.into_iter().map(|k| k as u64).collect();
+        let heights: Vec<u64> = range.into_iter().map(|k| k as u64).collect();
 
         Box::pin(async move {
             // reuse batch_get_blocks_by_heights on the base,
             // but merge overlay priority manually
-            let mut result : HashMap<u64, Block> = HashMap::new();
+            let mut result: HashMap<u64, Block> = HashMap::new();
 
             // overlay first
             for blk in delta.iter() {
@@ -372,7 +383,10 @@ where
             }
 
             if !gaps.is_empty() {
-                let from_base = base.batch_get_blocks_by_heights(gaps.clone()).await.expect("TODO: Better error handling");
+                let from_base = base
+                    .batch_get_blocks_by_heights(gaps.clone())
+                    .await
+                    .expect("TODO: Better error handling");
                 if from_base.len() != gaps.len() {
                     return Err(StryiCoreError::ConsensusValidationFailed {
                         details: "range contains missing blocks".into(),
@@ -392,7 +406,10 @@ where
 
         let base = Arc::clone(&self.base);
         Box::pin(async move {
-            Ok(base.block_exists(hash).await.expect("TODO: Better error handling"))
+            Ok(base
+                .block_exists(hash)
+                .await
+                .expect("TODO: Better error handling"))
         })
     }
 }
@@ -435,17 +452,24 @@ where
 
     fn block_count(&self) -> BoxFuture<Result<u64, Self::StorageError>> {
         let delta_len = self.block_delta.len() as u64;
-        let base      = Arc::clone(&self.base);
-        let delta     = self.block_delta.clone();   // need hash set of overlay hashes
+        let base = Arc::clone(&self.base);
+        let delta = self.block_delta.clone(); // need hash set of overlay hashes
 
         Box::pin(async move {
             // total blocks in base (async)
-            let base_cnt = base.block_count().await.expect("TODO: Better error handling");
+            let base_cnt = base
+                .block_count()
+                .await
+                .expect("TODO: Better error handling");
 
             // minus those overridden in overlay
             let mut overridden = 0u64;
             for kv in delta.iter() {
-                if base.block_exists(*kv.key()).await.expect("TODO: Better error handling") {
+                if base
+                    .block_exists(*kv.key())
+                    .await
+                    .expect("TODO: Better error handling")
+                {
                     overridden += 1;
                 }
             }
@@ -453,7 +477,6 @@ where
             Ok(base_cnt + delta_len - overridden)
         })
     }
-
 
     fn chain_difficulty(&self) -> BoxFuture<'_, Result<u128, Self::StorageError>> {
         let delta = self.block_delta.clone();
@@ -467,7 +490,11 @@ where
             for kv in delta.iter() {
                 let pow = 1u128 << kv.value().header.difficulty_bits;
                 // if base already has this hash, it’s being replaced - remove old work
-                if base.block_exists(*kv.key()).await.expect("TODO: Better error handling") {
+                if base
+                    .block_exists(*kv.key())
+                    .await
+                    .expect("TODO: Better error handling")
+                {
                     sum = sum.wrapping_sub(pow);
                 }
                 // add overlay block’s work
@@ -477,8 +504,6 @@ where
         })
     }
 }
-
-
 
 impl<DB> UndoStorage for ForkDbOverlay<DB>
 where
@@ -507,10 +532,7 @@ where
     }
 
     /// Removes the undo-record from the overlay (no-op if absent).
-    fn delete_block_undo(
-        &self,
-        hash: BlockHash,
-    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
+    fn delete_block_undo(&self, hash: BlockHash) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         self.undo_delta.remove(&hash);
         Box::pin(ready(Ok(())))
     }

@@ -1,17 +1,17 @@
 //! This file defines our RequestResponse-based custom behaviour for obtaining up-to-date information about the peer's services
 
-use std::fmt;
-use std::net::SocketAddr;
+use crate::ed25519::PublicKey;
+use crate::{Keypair, PeerId, StryiEvent, StryiNetworkError};
 use bincode::config::standard;
 use libp2p::core::SignedEnvelope;
 use libp2p::identity;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use libp2p::request_response::cbor::{Behaviour as RequestResponseBehaviour};
-use libp2p::request_response::{Event as ReqRespEvent};
+use libp2p::request_response::Event as ReqRespEvent;
+use libp2p::request_response::cbor::Behaviour as RequestResponseBehaviour;
+use serde::de::Error as SerdeError;
 use serde::de::Visitor;
-use crate::ed25519::PublicKey;
-use crate::{Keypair, PeerId, StryiEvent, StryiNetworkError};
-use serde::de::{Error as SerdeError};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::fmt;
+use std::net::SocketAddr;
 
 /// Requests enum for ServicesInfo api
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -19,17 +19,14 @@ pub enum ServicesInfoRequest {
     ListServices,
 }
 
-
 /// Response type: list of services
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServicesResponse {
     pub services: Vec<SignedServiceRecord>,
 }
 
-
 /// ServiceInfo defines information we can gather about service(like gRPC api, json-rpc, etc.) which is running on some node/peer.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[derive(PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ServiceRecord {
     /// Address of this service
     address: SocketAddr,
@@ -45,9 +42,8 @@ pub struct ServiceRecord {
 }
 
 impl ServiceRecord {
-
     /// Create new instance of ServiceRecord
-    pub fn new(address: SocketAddr, owner: PeerId, kind : String, version: u32) -> Self {
+    pub fn new(address: SocketAddr, owner: PeerId, kind: String, version: u32) -> Self {
         Self {
             address,
             owner,
@@ -56,7 +52,6 @@ impl ServiceRecord {
         }
     }
 
-
     /// Returns the address of the service.
     pub fn address(&self) -> &SocketAddr {
         &self.address
@@ -64,10 +59,9 @@ impl ServiceRecord {
 
     /// Returns PeerId of this record if it can convert string value to true PeerId instance
     /// Otherwise, returns error
-    pub fn owner(&self) -> PeerId{
+    pub fn owner(&self) -> PeerId {
         self.owner
     }
-
 
     /// Returns the kind of the service.
     pub fn kind(&self) -> &str {
@@ -85,31 +79,30 @@ const SIGNED_SERVICE_PAYLOAD_TYPE: &[u8] = b"\x71stryichain/service";
 
 /// Signed version of ServiceRecord
 #[derive(Clone, Debug)]
-pub struct SignedServiceRecord  {
-    inner: SignedEnvelope
+pub struct SignedServiceRecord {
+    inner: SignedEnvelope,
 }
 
 impl SignedServiceRecord {
-
     /// Sign `ServiceRecord` with the node’s ed25519 key.
-    pub fn sign(peer_keypair: identity::ed25519::Keypair, service_record: ServiceRecord) -> Result<Self, StryiNetworkError> {
-
+    pub fn sign(
+        peer_keypair: identity::ed25519::Keypair,
+        service_record: ServiceRecord,
+    ) -> Result<Self, StryiNetworkError> {
         let bincode_payload = bincode::serde::encode_to_vec(service_record, standard())
             .map_err(|e| StryiNetworkError::other(format!("bincode: {e}")))?;
 
         let kp: Keypair = peer_keypair.clone().into();
-        
+
         let envelope = SignedEnvelope::new(
             &kp,
             SIGNED_SERVICE_RECORD_DOMAIN.to_string(),
             SIGNED_SERVICE_PAYLOAD_TYPE.to_vec(),
-            bincode_payload
-        ).map_err(StryiNetworkError::SigningError)?;
+            bincode_payload,
+        )
+        .map_err(StryiNetworkError::SigningError)?;
 
-
-        Ok(SignedServiceRecord {
-            inner: envelope,
-        })
+        Ok(SignedServiceRecord { inner: envelope })
     }
 
     /// Returns `ServiceRecord` if:
@@ -122,7 +115,8 @@ impl SignedServiceRecord {
         expected_pk: &PublicKey,
     ) -> Result<ServiceRecord, StryiNetworkError> {
         // 1. Pull out payload + signing key, checking domain & payload-type.
-        let (payload, signing_key) = self.inner
+        let (payload, signing_key) = self
+            .inner
             .payload_and_signing_key(
                 SIGNED_SERVICE_RECORD_DOMAIN.to_string(),
                 SIGNED_SERVICE_PAYLOAD_TYPE,
@@ -135,8 +129,9 @@ impl SignedServiceRecord {
             _ => return Err(StryiNetworkError::other("signing key mismatch")),
         }
         // 3. Decode the binary payload back into `ServiceRecord`.
-        let (rec, _len): (ServiceRecord, _) = bincode::serde::decode_from_slice(payload, standard())
-            .map_err(|e| StryiNetworkError::other(format!("bincode : {e}")))?;
+        let (rec, _len): (ServiceRecord, _) =
+            bincode::serde::decode_from_slice(payload, standard())
+                .map_err(|e| StryiNetworkError::other(format!("bincode : {e}")))?;
 
         // 4. Validate the peer_id
         let expected_peer = PeerId::from_public_key(&expected_pk.clone().into());
@@ -144,11 +139,9 @@ impl SignedServiceRecord {
             return Err(StryiNetworkError::other("owner PeerId mismatch"));
         }
 
-
         Ok(rec)
     }
 }
-
 
 /// Verify every `SignedServiceRecord` with `peer_pk` and return the
 /// `ServiceRecord`s that passed. Invalid items are logged and skipped.
@@ -177,7 +170,6 @@ impl Serialize for SignedServiceRecord {
         serializer.serialize_bytes(self.clone().inner.into_protobuf_encoding().as_slice())
     }
 }
-
 
 impl<'de> Deserialize<'de> for SignedServiceRecord {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -236,7 +228,6 @@ impl TryFrom<&[u8]> for SignedServiceRecord {
     }
 }
 
-
 /// Our ServiceInfo NetworkBehaviour relies on https://docs.rs/libp2p/latest/libp2p/request_response/cbor/type.Behaviour.html to perform serialization in binary format
 pub type ServicesInfoBehaviour = RequestResponseBehaviour<ServicesInfoRequest, ServicesResponse>;
 
@@ -246,15 +237,13 @@ pub type ServicesInfoMessage = Message<ServicesInfoRequest, ServicesResponse>;
 */
 
 /// Type alias for ServicesInfo protocol events
-pub type ServicesEvent  = ReqRespEvent<ServicesInfoRequest, ServicesResponse>;
-
+pub type ServicesEvent = ReqRespEvent<ServicesInfoRequest, ServicesResponse>;
 
 impl From<ServicesEvent> for StryiEvent {
-    fn from(e: ServicesEvent) -> Self { StryiEvent::Services(e) }
+    fn from(e: ServicesEvent) -> Self {
+        StryiEvent::Services(e)
+    }
 }
-
-
-
 
 #[cfg(test)]
 mod tests {
@@ -280,8 +269,9 @@ mod tests {
 
         // bincode round-trip via bincode::serde
         let vec = bincode::serde::encode_to_vec(&signed, standard()).unwrap();
-        let de: SignedServiceRecord =
-            bincode::serde::decode_from_slice(&vec, standard()).unwrap().0;
+        let de: SignedServiceRecord = bincode::serde::decode_from_slice(&vec, standard())
+            .unwrap()
+            .0;
 
         // protobuf bytes must match
         assert_eq!(Vec::<u8>::from(signed.clone()), Vec::<u8>::from(de));

@@ -9,7 +9,7 @@ use crate::error::StryiCoreError;
 #[derive(Debug, Default)]
 pub struct ForkTree {
     /// hash -> full entry
-    entries:   HashMap<BlockHash, ForkEntry>,
+    entries: HashMap<BlockHash, ForkEntry>,
 
     /// height -> set of hashes (helps pruning and quick stats)
     by_height: HashMap<u64, HashSet<BlockHash>>,
@@ -98,9 +98,11 @@ mod tests {
                 difficulty_bits: 4,
                 timestamp: 0,
                 nonce: 0,
-                is_genesis: height == 0,
+                genesis_state: None,
             },
-            data: BlockData { transactions: vec![] },
+            data: BlockData {
+                transactions: vec![],
+            },
         };
         block.update_merkle_root();
         block

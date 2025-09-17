@@ -1,6 +1,6 @@
 //! Per-transaction consensus rules.
 //
-//  validate_transaction – async routine used by block-level code  
+//  validate_transaction – async routine used by block-level code
 //  calculate_total_fees – helper to sum fees for the whole block
 
 use crate::{
@@ -22,11 +22,9 @@ pub async fn validate_transaction(
     spent: &DashSet<OutPoint>,
 ) -> Result<(), StryiCoreError> {
     match tx.data.kind {
-        TransactionKind::Genesis  => validate_genesis_tx(tx),
+        TransactionKind::Genesis => validate_genesis_tx(tx),
         TransactionKind::Coinbase => validate_coinbase_tx(tx),
-        TransactionKind::Payment  => {
-            validate_payment_tx(tx, managed, in_block, spent).await
-        }
+        TransactionKind::Payment => validate_payment_tx(tx, managed, in_block, spent).await,
     }
 }
 
@@ -66,12 +64,15 @@ async fn validate_payment_tx(
     spent: &DashSet<OutPoint>,
 ) -> Result<(), StryiCoreError> {
     // Signature & author
-    let pk = tx.recover_public_key().map_err(|_| StryiCoreError::ConsensusValidationFailed {
-        details: "Failed to recover public key".into(),
-    })?;
-    tx.verify_signature(&pk).map_err(|_| StryiCoreError::ConsensusValidationFailed {
-        details: "Invalid transaction signature".into(),
-    })?;
+    let pk = tx
+        .recover_public_key()
+        .map_err(|_| StryiCoreError::ConsensusValidationFailed {
+            details: "Failed to recover public key".into(),
+        })?;
+    tx.verify_signature(&pk)
+        .map_err(|_| StryiCoreError::ConsensusValidationFailed {
+            details: "Invalid transaction signature".into(),
+        })?;
     let author = AccountAddress::from_public_key(&pk);
 
     // Inputs
@@ -95,13 +96,16 @@ async fn validate_payment_tx(
         if utxo.owner != author {
             return Err(StryiCoreError::TxWrongOwner {
                 expected: utxo.owner,
-                actual:   author,
+                actual: author,
             });
         }
 
-        in_sum = in_sum.checked_add(utxo.value).ok_or(StryiCoreError::ConsensusValidationFailed {
-            details: "Overflow while summing inputs".into(),
-        })?;
+        in_sum =
+            in_sum
+                .checked_add(utxo.value)
+                .ok_or(StryiCoreError::ConsensusValidationFailed {
+                    details: "Overflow while summing inputs".into(),
+                })?;
     }
 
     // Outputs
@@ -116,7 +120,7 @@ async fn validate_payment_tx(
 
     if out_sum > in_sum {
         return Err(StryiCoreError::TxInsufficientInputValue {
-            input_sum:  in_sum,
+            input_sum: in_sum,
             output_sum: out_sum,
         });
     }
@@ -147,9 +151,12 @@ pub fn calculate_total_fees(
                     txid: inp.previous_output.txid,
                     vout: inp.previous_output.vout,
                 })?;
-            inputs = inputs.checked_add(u.value).ok_or(StryiCoreError::ConsensusValidationFailed {
-                details: "Overflow while summing input values".into(),
-            })?;
+            inputs =
+                inputs
+                    .checked_add(u.value)
+                    .ok_or(StryiCoreError::ConsensusValidationFailed {
+                        details: "Overflow while summing input values".into(),
+                    })?;
         }
 
         // Σ(outputs)
@@ -163,13 +170,17 @@ pub fn calculate_total_fees(
             })?;
 
         // fee ≥ 0
-        let fee = inputs.checked_sub(outputs).ok_or(StryiCoreError::ConsensusValidationFailed {
-            details: "Outputs exceed inputs".into(),
-        })?;
+        let fee = inputs
+            .checked_sub(outputs)
+            .ok_or(StryiCoreError::ConsensusValidationFailed {
+                details: "Outputs exceed inputs".into(),
+            })?;
 
-        total = total.checked_add(fee).ok_or(StryiCoreError::ConsensusValidationFailed {
-            details: "Overflow while accumulating total fees".into(),
-        })?;
+        total = total
+            .checked_add(fee)
+            .ok_or(StryiCoreError::ConsensusValidationFailed {
+                details: "Overflow while accumulating total fees".into(),
+            })?;
     }
 
     Ok(total)

@@ -5,7 +5,7 @@
 
 use crate::{
     block::{Block, BlockData},
-    consensus::{validator::tx, ConsensusRules},
+    consensus::{ConsensusConsts, validator::tx},
     dependencies::DependencyGraph,
     error::StryiCoreError,
     storage::UtxoStorage,
@@ -36,7 +36,7 @@ fn ensure_unique_txs(block: &Block) -> Result<(), StryiCoreError> {
 
 /// Ensures the very first tx is Coinbase (except for genesis).
 fn ensure_coinbase_first(block: &Block) -> Result<(), StryiCoreError> {
-    if block.header.is_genesis {
+    if block.header.is_genesis() {
         return Ok(());
     }
     match block.data.transactions.first() {
@@ -66,7 +66,6 @@ fn ensure_unique_inputs(data: &BlockData) -> Result<(), StryiCoreError> {
     Ok(())
 }
 
-
 /// Full in-block validation + reward rule.
 ///
 /// 1. Build dependency graph & pull required UTXOs;  
@@ -74,19 +73,19 @@ fn ensure_unique_inputs(data: &BlockData) -> Result<(), StryiCoreError> {
 /// 3. Ensure `coinbase ≤ subsidy + Σ(fees)` (non-genesis).
 pub async fn validate_transactions<US: UtxoStorage + Send>(
     block: &Block,
-    rules: &ConsensusRules,
+    rules: &ConsensusConsts,
     utxo_storage: &mut US,
 ) -> Result<(), StryiCoreError> {
     let (graph, managed) = build_dependency_context(&block.data, utxo_storage).await?;
 
     let in_block = Arc::new(DashMap::<OutPoint, UTXO>::new());
-    let spent    = Arc::new(DashSet::<OutPoint>::new());
+    let spent = Arc::new(DashSet::<OutPoint>::new());
 
     for grp in graph.get_parallel_execution_groups() {
         validate_group(&grp, &block.data, &managed, &in_block, &spent).await?;
     }
 
-    if !block.header.is_genesis {
+    if !block.header.is_genesis() {
         reward_rule(block, rules, &managed, &in_block)?;
     }
     Ok(())
@@ -126,8 +125,6 @@ async fn build_dependency_context<US: UtxoStorage>(
         }
     }
 
-    
-    
     Ok((graph, managed_utxos))
 }
 
@@ -142,14 +139,12 @@ async fn validate_group(
     let mut set = JoinSet::new();
 
     for &i in idxs {
-        let tx       = data.transactions[i].clone();
-        let managed  = Arc::clone(managed);
+        let tx = data.transactions[i].clone();
+        let managed = Arc::clone(managed);
         let in_block = Arc::clone(in_block);
-        let spent    = Arc::clone(spent);
+        let spent = Arc::clone(spent);
 
-        set.spawn(async move {
-            tx::validate_transaction(&tx, &managed, &in_block, &spent).await
-        });
+        set.spawn(async move { tx::validate_transaction(&tx, &managed, &in_block, &spent).await });
     }
 
     while let Some(res) = set.join_next().await {
@@ -173,22 +168,25 @@ async fn validate_group(
 /// Ensures `coinbase ≤ block_subsidy(height) + Σ(fees)`.
 fn reward_rule(
     block: &Block,
-    rules: &ConsensusRules,
+    rules: &ConsensusConsts,
     managed: &DashMap<OutPoint, UTXO>,
     in_block: &DashMap<OutPoint, UTXO>,
 ) -> Result<(), StryiCoreError> {
-    let fees    = tx::calculate_total_fees(block, managed, in_block)?;
+    let fees = tx::calculate_total_fees(block, managed, in_block)?;
     let subsidy = rules.block_subsidy(block.header.height);
 
-    let max_reward = subsidy.checked_add(fees).ok_or(StryiCoreError::ConsensusValidationFailed {
-        details: "Overflow while computing (subsidy + fees)".into(),
-    })?;
+    let max_reward =
+        subsidy
+            .checked_add(fees)
+            .ok_or(StryiCoreError::ConsensusValidationFailed {
+                details: "Overflow while computing (subsidy + fees)".into(),
+            })?;
 
     let coinbase_val = block.data.transactions[0].data.outputs[0].value;
     if coinbase_val > max_reward {
         return Err(StryiCoreError::ConsensusInvalidCoinbaseAmount {
             max_expected: max_reward,
-            actual:       coinbase_val,
+            actual: coinbase_val,
         });
     }
     Ok(())

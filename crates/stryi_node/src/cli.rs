@@ -3,12 +3,10 @@
 //! Every field is an `Option<T>`.
 //! If a flag is omitted, its value doesn’t overwrite the TOML file.
 
-use std::str::FromStr;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
-
-
+use std::str::FromStr;
 
 /// Represents the behavior of the node at startup.
 #[derive(Debug, Deserialize, Default, Clone, Copy, Serialize)]
@@ -25,20 +23,17 @@ pub enum NodeStartMode {
     Auto,
 }
 
-
-
 impl FromStr for NodeStartMode {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_ascii_lowercase().as_str() {
             "bootstrap" => Ok(NodeStartMode::Bootstrap),
-            "join"      => Ok(NodeStartMode::Join),
-            "auto"      => Ok(NodeStartMode::Auto),
-            other       => Err(format!("unknown StartMode: {other}")),
+            "join" => Ok(NodeStartMode::Join),
+            "auto" => Ok(NodeStartMode::Auto),
+            other => Err(format!("unknown StartMode: {other}")),
         }
     }
 }
-
 
 #[skip_serializing_none]
 #[derive(Parser, Debug, Default, Serialize, Deserialize)]
@@ -52,7 +47,6 @@ pub struct CliArgs {
     pub config_path: String,
 
     /* network */
-
     /// Multi-addr the node listens on, e.g. `/ip4/0.0.0.0/tcp/1234`.
     /// Use `/tcp/0` for an OS-assigned port.
     #[arg(long)]
@@ -87,7 +81,6 @@ pub struct CliArgs {
     pub network_gossipsub_heartbeat_secs: Option<u64>,
 
     /* storage */
-
     /// Directory containing the node’s database.
     #[arg(long)]
     pub storage_path: Option<String>,
@@ -97,18 +90,15 @@ pub struct CliArgs {
     pub genesis_config_path: Option<String>,
 
     /* mempool */
-
     /// Maximum number of transactions kept in memory.
     #[arg(long)]
     pub mempool_max_transactions: Option<usize>,
 
-
     /* miner */
-
     /// Enable the miner.
     #[arg(long)]
     pub miner_enabled: Option<bool>,
-    
+
     /// Enable the hashrate bench at start of run
     #[arg(long)]
     pub miner_hashrate_bench: Option<bool>,
@@ -125,9 +115,7 @@ pub struct CliArgs {
     #[arg(long)]
     pub miner_reward_address: Option<String>,
 
-
     /* gRPC sync */
-
     /// Socket address (`ip:port`) for the gRPC sync service.
     #[arg(long)]
     pub grpc_sync_address: Option<String>,
@@ -145,13 +133,11 @@ pub struct CliArgs {
     pub sync_max_blocks_per_request: Option<usize>,
 
     /* keys */
-
     /// Path where the peer's Ed25519 key is backed up.
     #[arg(long)]
     pub peer_key_path: Option<String>,
 
     /* TLS */
-
     /// Comma-separated list of SANs for the self-signed certificate.
     #[arg(long)]
     pub tls_sans: Option<Vec<String>>,

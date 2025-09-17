@@ -4,11 +4,11 @@ use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fmt;
-use thiserror::Error;
-use utoipa::ToSchema;
 use stryi_core::address::AccountAddress;
 use stryi_core::block::BlockHash;
 use stryi_core::transactions::{OutPoint, TransactionHash};
+use thiserror::Error;
+use utoipa::ToSchema;
 
 /// Minimal, structured reasons for a bad transaction.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, ToSchema, Error)]
@@ -57,9 +57,7 @@ pub enum StryiNodeHttpApiError {
 
     #[error("Resource {resource} was not found")]
     #[schema(title = "ResourceNotFoundError")]
-    ResourceNotFound {
-        resource: ResourceKind,
-    },
+    ResourceNotFound { resource: ResourceKind },
 
     // Keep string for logging at call sites; response body won’t leak it.
     #[schema(title = "UnexpectedError")]
@@ -67,14 +65,13 @@ pub enum StryiNodeHttpApiError {
     Unexpected(String),
 }
 
-
-
-
-
 /// Different values that can be used to query a block in the blockchain: hash or height.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
-#[schema(title = "BlockIdentifier", description = "Identifier for a block in the blockchain, either by height or hash.")]
+#[schema(
+    title = "BlockIdentifier",
+    description = "Identifier for a block in the blockchain, either by height or hash."
+)]
 pub enum BlockIdentifier {
     /// Block height (u64)
     #[schema(example = 42)]
@@ -84,7 +81,6 @@ pub enum BlockIdentifier {
     #[schema(value_type = String, example = "Bx9b6d1c0f1a0e4a8e9f3d2c1b0a000000000000000000000000000000000")]
     Hash(BlockHash),
 }
-
 
 impl fmt::Display for BlockIdentifier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -110,7 +106,8 @@ impl TryFrom<&str> for BlockIdentifier {
             Err(_) => Err(StryiNodeHttpApiError::InvalidResourceId {
                 resource_kind: ResourceKind::Block(BlockIdentifier::Height(0)).as_str(),
                 requested: value.to_owned(),
-                message: "Expected block height (u64) or block hash in StryiChain's format (Bx...)".into(),
+                message: "Expected block height (u64) or block hash in StryiChain's format (Bx...)"
+                    .into(),
             }),
         }
     }
@@ -135,7 +132,6 @@ pub enum ResourceKind {
     Utxo(OutPoint),
 }
 
-
 impl ResourceKind {
     pub fn as_str(&self) -> String {
         match self {
@@ -148,7 +144,14 @@ impl ResourceKind {
                 let hash_str = hash.to_string();
                 let mut chars = hash_str.chars();
                 let prefix: String = chars.by_ref().take(7).collect();
-                let suffix: String = hash_str.chars().rev().take(6).collect::<String>().chars().rev().collect();
+                let suffix: String = hash_str
+                    .chars()
+                    .rev()
+                    .take(6)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect();
                 format!("Account {}...{}", prefix, suffix)
             }
             // 'Transaction {hash}' for transactions
@@ -157,7 +160,6 @@ impl ResourceKind {
             ResourceKind::Utxo(outpoint) => format!("Utxo {}:{}", outpoint.txid, outpoint.vout),
         }
     }
-
 
     /// Machine-oriented kind label (stable, lowercase snake_case).
     fn kind_tag(&self) -> &'static str {
@@ -169,7 +171,6 @@ impl ResourceKind {
         }
     }
 }
-
 
 impl fmt::Display for ResourceKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -189,8 +190,11 @@ impl StryiNodeHttpApiError {
                 });
                 (StatusCode::BAD_REQUEST, body)
             }
-            StryiNodeHttpApiError::InvalidResourceId { resource_kind, requested, message } => {
-
+            StryiNodeHttpApiError::InvalidResourceId {
+                resource_kind,
+                requested,
+                message,
+            } => {
                 let body = json!({
                     "error": "invalid_resource_id",
                     "message": message,
@@ -204,7 +208,7 @@ impl StryiNodeHttpApiError {
                 (StatusCode::BAD_REQUEST, body)
             }
 
-            StryiNodeHttpApiError::ResourceNotFound{ resource} => {
+            StryiNodeHttpApiError::ResourceNotFound { resource } => {
                 let body = json!({
                     "error": "resource_not_found",
                     "message": format!("{} was not found.", resource),

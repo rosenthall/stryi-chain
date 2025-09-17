@@ -1,10 +1,10 @@
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 use http::StatusCode;
 use std::sync::Arc;
 use tracing::error;
 
-use crate::http::{model::NodeStateBody, StryiHttpService};
-use stryi_core::storage::{BlockStorage, UtxoStorage, StorageStats};
+use crate::http::{StryiHttpService, model::NodeStateBody};
+use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 
 /// `/nodestate` – one-stop snapshot of the node’s current position in the chain.
 #[utoipa::path(
@@ -36,17 +36,17 @@ where
         };
     }
 
-    let (height, hash)  = fetch!(store.tip(), "tip");
-    let last_update= fetch!(store.last_updated(),  "last_updated");
-    let total_difficulty= fetch!(store.chain_difficulty(), "chain_difficulty");
+    let (height, hash) = fetch!(store.tip(), "tip");
+    let last_update = fetch!(store.last_updated(), "last_updated");
+    let total_difficulty = fetch!(store.chain_difficulty(), "chain_difficulty");
 
     let body = NodeStateBody {
-        chain_name:        svc.config.chain_name.clone(),
-        api_version:       svc.config.api_version,
+        chain_name: svc.config.chain_name.clone(),
+        api_version: svc.config.api_version,
         height,
         latest_block_hash: hash.to_string(),
         total_difficulty,
-        last_update_time:  last_update,
+        last_update_time: last_update,
     };
 
     Ok(Json(body))

@@ -1,17 +1,17 @@
-use std::collections::{HashMap};
+use std::collections::HashMap;
 
-use rand::{random_range, Rng, SeedableRng};
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng, random_range};
 use tempfile::TempDir;
 use tokio::test;
 
 use stryi_core::{
     address::AccountAddress,
-    transactions::{OutPoint, UTXO, TransactionHash},
     storage::UtxoStorage,
+    transactions::{OutPoint, TransactionHash, UTXO},
 };
 
-use crate::{StryiStorage, StryiStorageError, GenesisInitConfig};
+use crate::{GenesisInitConfig, StryiStorage, StryiStorageError};
 
 /// Generates a random 32-byte TransactionHash.
 fn random_txhash(rng: &mut impl Rng) -> TransactionHash {
@@ -28,7 +28,7 @@ fn random_outpoint(rng: &mut impl Rng) -> OutPoint {
     }
 }
 
-/// Produces a random UTXO for the given owner and outpoint, 
+/// Produces a random UTXO for the given owner and outpoint,
 /// assigning a random value in [1_000..1_000_000).
 fn random_utxo(owner: AccountAddress, op: &OutPoint, rng: &mut impl Rng) -> UTXO {
     UTXO {
@@ -47,19 +47,18 @@ fn shuffle<T>(slice: &mut [T], rng: &mut StdRng) {
     }
 }
 
-/// Comprehensive test that inserts and removes random UTXOs, 
+/// Comprehensive test that inserts and removes random UTXOs,
 /// checks deep equality, and confirms address partition correctness.
 #[test]
 async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError> {
     println!("=== test_utxo_database_random_integration ===");
 
-    // 1) Create a temp directory and initialize StryiStorage with default genesis config    
+    // 1) Create a temp directory and initialize StryiStorage with default genesis config
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let genesis_config = GenesisInitConfig::new_test();
-    let mut storage = StryiStorage::initialize_in_path(temp_dir.path().to_owned(), Some(genesis_config)).await?;
+    let mut storage =
+        StryiStorage::initialize_in_path(temp_dir.path().to_owned(), Some(genesis_config)).await?;
     println!("Initialized StryiStorage at: {:?}", temp_dir.path());
-
-    
 
     println!("Storage initialized at: {:?}", temp_dir.path());
 
@@ -120,7 +119,12 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     for &addr in &addresses {
         let from_db = storage.get_utxos_for_address(addr).await?;
         let local_ops = addr_map.get(&addr).cloned().unwrap_or_default();
-        assert_eq!(from_db.len(), local_ops.len(), "Address mismatch: {:?}", addr);
+        assert_eq!(
+            from_db.len(),
+            local_ops.len(),
+            "Address mismatch: {:?}",
+            addr
+        );
 
         let mut db_map = HashMap::new();
         for (op, db_ut) in from_db {
@@ -171,13 +175,21 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     // 8) Final address partition check
     let mut final_addrs = HashMap::new();
     for (op, ut) in &truth_map {
-        final_addrs.entry(ut.owner).or_insert_with(Vec::new).push((*op, *ut));
+        final_addrs
+            .entry(ut.owner)
+            .or_insert_with(Vec::new)
+            .push((*op, *ut));
     }
 
     for &addr in &addresses {
         let from_db = storage.get_utxos_for_address(addr).await?;
         let local_list = final_addrs.remove(&addr).unwrap_or_default();
-        assert_eq!(from_db.len(), local_list.len(), "Mismatch at final: {:?}", addr);
+        assert_eq!(
+            from_db.len(),
+            local_list.len(),
+            "Mismatch at final: {:?}",
+            addr
+        );
 
         let mut db_map = HashMap::new();
         for (op, db_ut) in from_db {

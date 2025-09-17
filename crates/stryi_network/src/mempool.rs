@@ -1,8 +1,8 @@
+use crate::StryiEvent;
 use libp2p::request_response::cbor::Behaviour as RequestResponseBehaviour;
-use libp2p::request_response::{Message, Event as ReqRespEvent};
+use libp2p::request_response::Event as ReqRespEvent;
 use serde::{Deserialize, Serialize};
 use stryi_core::mempool::MemPoolSyncData;
-use crate::StryiEvent;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum MempoolRequest {
@@ -15,12 +15,13 @@ pub enum MempoolResponse {
 }
 
 /// Our mempool-related NetworkBehaviour relies on https://docs.rs/libp2p/latest/libp2p/request_response/cbor/type.Behaviour.html to perform serialization in binary format
-pub type MempoolSyncBehaviour =  RequestResponseBehaviour<MempoolRequest, MempoolResponse>;
-
+pub type MempoolSyncBehaviour = RequestResponseBehaviour<MempoolRequest, MempoolResponse>;
 
 /// Definition of an inbound request or response for mempool
-pub type MempoolEvent  = ReqRespEvent<MempoolRequest,  MempoolResponse>;
+pub type MempoolEvent = ReqRespEvent<MempoolRequest, MempoolResponse>;
 
 impl From<MempoolEvent> for StryiEvent {
-    fn from(e: MempoolEvent) -> Self { StryiEvent::Mempool(e) }
+    fn from(e: MempoolEvent) -> Self {
+        StryiEvent::Mempool(e)
+    }
 }

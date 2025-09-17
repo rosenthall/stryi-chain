@@ -1,28 +1,26 @@
 //! LCA - last common ancestor.
 //! This module contains some helpers for findings LCAs in two chains:
-//! regularly, between local chain and external peers' chains. 
+//! regularly, between local chain and external peers' chains.
 
-use futures_util::StreamExt;
-use tonic::transport::Channel;
-use stryi_core::block::{Block, BlockHash};
-use stryi_core::storage::BlockStorage;
 use crate::error::StryiNodeError;
 use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
 use crate::grpc_services::{BlockHashList, BlockHeightRange};
 use crate::node::StryiChainNode;
-
-
+use futures_util::StreamExt;
+use stryi_core::block::{Block, BlockHash};
+use stryi_core::storage::BlockStorage;
+use tonic::transport::Channel;
 
 impl StryiChainNode {
-
-
     /// checks if peer has a given block hash.
     pub async fn has_remote_block_by_hash(
         grpc: &mut BlockchainSyncClient<Channel>,
         hash: BlockHash,
     ) -> Result<bool, StryiNodeError> {
         let resp = grpc
-            .get_blocks_by_hash(BlockHashList { block_hashes: vec![hash.to_string()] })
+            .get_blocks_by_hash(BlockHashList {
+                block_hashes: vec![hash.to_string()],
+            })
             .await
             .map_err(|e| StryiNodeError::other(format!("get_blocks_by_hash failed: {e}")))?;
         let mut stream = resp.into_inner();
@@ -30,11 +28,12 @@ impl StryiChainNode {
         match stream.next().await {
             Some(Ok(_)) => Ok(true),
             Some(Err(status)) if status.code() == tonic::Code::NotFound => Ok(false),
-            Some(Err(status)) => Err(StryiNodeError::other(format!("get_blocks_by_hash stream error: {status}"))),
+            Some(Err(status)) => Err(StryiNodeError::other(format!(
+                "get_blocks_by_hash stream error: {status}"
+            ))),
             None => Ok(false),
         }
     }
-
 
     /// Fetch exactly one remote block by the given height.
     async fn fetch_remote_block_at(
@@ -43,9 +42,15 @@ impl StryiChainNode {
         height: u64,
     ) -> Result<Block, StryiNodeError> {
         let resp = grpc
-            .get_blocks_by_height(BlockHeightRange { start_height: height, end_height: height, max_blocks: 100 })
+            .get_blocks_by_height(BlockHeightRange {
+                start_height: height,
+                end_height: height,
+                max_blocks: 100,
+            })
             .await
-            .map_err(|e| StryiNodeError::other(format!("get_blocks_by_height({height}) failed: {e}")))?;
+            .map_err(|e| {
+                StryiNodeError::other(format!("get_blocks_by_height({height}) failed: {e}"))
+            })?;
         let mut stream = resp.into_inner();
 
         let item = stream
@@ -69,12 +74,12 @@ impl StryiChainNode {
         local_tip_height: u64,
     ) -> Result<(u64, BlockHash), StryiNodeError> {
         // Search range [low_height .. high_height]
-        let mut low_height:  u64 = 0;
+        let mut low_height: u64 = 0;
         let mut high_height: u64 = std::cmp::min(remote_tip_height, local_tip_height);
-        
+
         // Best known common point (defaults to genesis)
-        let mut best_height: u64      = 0;
-        let mut best_hash:   BlockHash = BlockHash::empty();
+        let mut best_height: u64 = 0;
+        let mut best_hash: BlockHash = BlockHash::empty();
 
         while low_height <= high_height {
             // Midpoint (overflow-safe)
@@ -86,24 +91,32 @@ impl StryiChainNode {
                 storage
                     .get_block_by_height(mid_height)
                     .await
-                    .map_err(|e| StryiNodeError::other(format!("local get_block_by_height({mid_height}) failed: {e}")))?
-                    .ok_or_else(|| StryiNodeError::other(format!("local block missing at height {mid_height}")))?
+                    .map_err(|e| {
+                        StryiNodeError::other(format!(
+                            "local get_block_by_height({mid_height}) failed: {e}"
+                        ))
+                    })?
+                    .ok_or_else(|| {
+                        StryiNodeError::other(format!("local block missing at height {mid_height}"))
+                    })?
             };
 
             // Remote block at the same height
             let remote_block = self.fetch_remote_block_at(grpc, mid_height).await?;
 
-            let local_hash  = local_block.block_hash();
+            let local_hash = local_block.block_hash();
             let remote_hash = remote_block.block_hash();
 
             if local_hash == remote_hash {
                 // mid is a common ancestor; try to move higher
                 best_height = mid_height;
-                best_hash   = local_hash;
-                low_height  = mid_height.saturating_add(1);
+                best_hash = local_hash;
+                low_height = mid_height.saturating_add(1);
             } else {
                 // diverged at or below mid; search lower half
-                if mid_height == 0 { break; }
+                if mid_height == 0 {
+                    break;
+                }
                 high_height = mid_height - 1;
             }
         }
@@ -111,4 +124,3 @@ impl StryiChainNode {
         Ok((best_height, best_hash))
     }
 }
-

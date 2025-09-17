@@ -1,6 +1,6 @@
-use thiserror::Error;
 use crate::mempool::validator::MempoolValidationError;
-use crate::transactions::{TransactionHash, OutPoint};
+use crate::transactions::{OutPoint, TransactionHash};
+use thiserror::Error;
 
 /// A definition of errors related to mempool implementation
 #[derive(Debug, Error)]

@@ -1,8 +1,8 @@
-use thiserror::Error;
 use crate::address::AccountAddress;
-use crate::mempool::storage::TransactionStorage;
 use crate::mempool::UtxoLookup;
-use crate::transactions::{Transaction, TransactionKind, OutPoint, UTXO};
+use crate::mempool::storage::TransactionStorage;
+use crate::transactions::{OutPoint, Transaction, TransactionKind, UTXO};
+use thiserror::Error;
 
 /// Errors that can arise during mempool validation of transactions.
 #[derive(Debug, Error)]
@@ -11,10 +11,7 @@ pub enum MempoolValidationError {
     MissingOutPoint(OutPoint),
 
     #[error("Input sum ({inputs}) is smaller than output sum ({outputs})")]
-    InsufficientSum {
-        inputs: u64,
-        outputs: u64,
-    },
+    InsufficientSum { inputs: u64, outputs: u64 },
 
     #[error("Signature verification failed: {0}")]
     SignatureFailed(String),
@@ -25,7 +22,7 @@ pub enum MempoolValidationError {
         expected: AccountAddress,
         actual: AccountAddress,
     },
-    
+
     #[error("Invalid outpoint index: {0:?}")]
     InvalidOutpointIndex(OutPoint),
 
@@ -35,14 +32,16 @@ pub enum MempoolValidationError {
     #[error("Outpoint {0:?} is already spent by another transaction in mempool")]
     AlreadySpent(OutPoint),
 
-    #[error("Mempool works only for Payment transactions, not Coinbase/Genesis, transaction hash: {0}")]
-    NonPaymentTx(String)
+    #[error(
+        "Mempool works only for Payment transactions, not Coinbase/Genesis, transaction hash: {0}"
+    )]
+    NonPaymentTx(String),
 }
 
 /// MempoolTxValidator validates any transaction so we can add it mempool without risks or inconsistencies.
 /// Recovers the public key (verifying ECDSA signature).
 /// Then checks each input's UTXO.owner matches the recovered address.
-/// Also ensures total inputs >= total outputs and detects double-spends. 
+/// Also ensures total inputs >= total outputs and detects double-spends.
 pub struct MempoolTxValidator {
     utxo_lookup: UtxoLookup,
 }
@@ -59,11 +58,13 @@ impl MempoolTxValidator {
     pub async fn validate(
         &self,
         tx: &Transaction,
-        storage: &TransactionStorage
+        storage: &TransactionStorage,
     ) -> Result<Vec<UTXO>, MempoolValidationError> {
         // Check if transaction kind is not payment
         if !matches!(tx.data.kind, TransactionKind::Payment) {
-            return Err(MempoolValidationError::NonPaymentTx(tx.data.hash().to_string()))
+            return Err(MempoolValidationError::NonPaymentTx(
+                tx.data.hash().to_string(),
+            ));
         }
 
         // Payment transaction => check signature by recovering public key
@@ -114,9 +115,9 @@ impl MempoolTxValidator {
             } else {
                 // Try external UTXO lookup
                 let utxo_lookup = &self.utxo_lookup;
-                utxo_lookup(outpoint).await.ok_or({
-                    MempoolValidationError::MissingOutPoint(*outpoint)
-                })?
+                utxo_lookup(outpoint)
+                    .await
+                    .ok_or(MempoolValidationError::MissingOutPoint(*outpoint))?
             };
 
             // Check ownership

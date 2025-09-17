@@ -1,12 +1,9 @@
 use crate::{
-    block::Block,
-    consensus::ConsensusRules,
-    error::StryiCoreError,
-    storage::UtxoStorage,
+    block::Block, consensus::ConsensusConsts, error::StryiCoreError, storage::UtxoStorage,
 };
 
-mod header;
 pub mod block;
+mod header;
 pub mod tx;
 
 /// Validates a block against the supplied consensus rules.
@@ -16,11 +13,11 @@ pub mod tx;
 /// 2. static block structure     (`block::validate_block_structure`);
 /// 3. dynamic, UTXO-dependent    (`block::validate_transactions`).
 pub struct BlockValidator {
-    pub rules: ConsensusRules,
+    pub rules: ConsensusConsts,
 }
 
 impl BlockValidator {
-    pub fn new(rules: ConsensusRules) -> Self {
+    pub fn new(rules: ConsensusConsts) -> Self {
         Self { rules }
     }
 
@@ -39,23 +36,22 @@ impl BlockValidator {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block::mining::mine_block_in_parallel;
     use crate::{
         address::AccountAddress,
         block::Block,
-        consensus::ConsensusRules,
+        consensus::ConsensusConsts,
         storage::{StryiInMemoryStorage, UtxoStorage},
         transactions::{
-            OutPoint, StryiSignature, Transaction, TransactionData, TransactionIn,
-            TransactionKind, TransactionOut, UTXO,
+            OutPoint, StryiSignature, Transaction, TransactionData, TransactionIn, TransactionKind,
+            TransactionOut, UTXO,
         },
     };
     use k256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
     use std::collections::HashMap;
-    use crate::block::mining::mine_block_in_parallel;
 
     /// Helper: after a block is proven valid, “commit” every new output
     /// into the in-memory UTXO set and spend the inputs of payment txs.
@@ -65,7 +61,10 @@ mod tests {
             for (vout, o) in tx.data.outputs.iter().enumerate() {
                 storage
                     .put_utxo(
-                        OutPoint { txid: tx.data.hash(), vout: vout as u32 },
+                        OutPoint {
+                            txid: tx.data.hash(),
+                            vout: vout as u32,
+                        },
                         UTXO {
                             txid: tx.data.hash(),
                             vout: vout as u32,
@@ -89,7 +88,7 @@ mod tests {
     #[tokio::test]
     async fn validator_accepts_normal_block_chain() {
         // 1. network rules – tiny PoW so mining is fast
-        let rules = ConsensusRules {
+        let rules = ConsensusConsts {
             current_difficulty: 2,
             difficulty_adjustment_interval_blocks: 0,
             initial_subsidy: 0,
@@ -116,14 +115,26 @@ mod tests {
         commit(&genesis, &mut store).await;
 
         // 5. build a payment tx (genesis → alice 600, change 400)
-        let spend_op = OutPoint { txid: genesis.data.transactions[0].data.hash(), vout: 0 };
+        let spend_op = OutPoint {
+            txid: genesis.data.transactions[0].data.hash(),
+            vout: 0,
+        };
         let pay_data = TransactionData {
             version: 1,
             kind: TransactionKind::Payment,
-            inputs: vec![TransactionIn { previous_output: spend_op, sequence: 0xFFFF_FFFF }],
+            inputs: vec![TransactionIn {
+                previous_output: spend_op,
+                sequence: 0xFFFF_FFFF,
+            }],
             outputs: vec![
-                TransactionOut { value: 600, recipient: addr_alice },
-                TransactionOut { value: 400, recipient: addr_genesis },
+                TransactionOut {
+                    value: 600,
+                    recipient: addr_alice,
+                },
+                TransactionOut {
+                    value: 400,
+                    recipient: addr_genesis,
+                },
             ],
         };
         let pay_tx = pay_data.sign(&sk_genesis);
@@ -134,7 +145,10 @@ mod tests {
                 version: 1,
                 kind: TransactionKind::Coinbase,
                 inputs: vec![],
-                outputs: vec![TransactionOut { value: 0, recipient: addr_genesis }],
+                outputs: vec![TransactionOut {
+                    value: 0,
+                    recipient: addr_genesis,
+                }],
             },
             signature: StryiSignature(Box::new([0u8; 65])),
         };
@@ -158,7 +172,7 @@ mod tests {
     // difficulty mismatch must be rejected
     #[tokio::test]
     async fn validator_rejects_wrong_difficulty() {
-        let rules = ConsensusRules {
+        let rules = ConsensusConsts {
             current_difficulty: 1,
             difficulty_adjustment_interval_blocks: 0,
             initial_subsidy: 0,
@@ -190,14 +204,19 @@ mod tests {
         assert!(res.is_err(), "block with wrong difficulty must be rejected");
     }
 
-    // Test the simplest transactions rejections 
-    // (A) duplicate-tx rejection, 
+    // Test the simplest transactions rejections
+    // (A) duplicate-tx rejection,
     // (B) in-block double-spend rejection
     #[tokio::test]
     async fn validator_duplicate_and_double_spend() {
-
         // Common set-up: consensus rules + helper constructor shortcuts
-        let rules = ConsensusRules { current_difficulty: 2, difficulty_adjustment_interval_blocks: 0, initial_subsidy: 0, decay_interval: 0, decay_step: 0 };
+        let rules = ConsensusConsts {
+            current_difficulty: 2,
+            difficulty_adjustment_interval_blocks: 0,
+            initial_subsidy: 0,
+            decay_interval: 0,
+            decay_step: 0,
+        };
         let validator = BlockValidator::new(rules.clone());
 
         let coinbase_template = |recipient: [u8; 20]| Transaction {
@@ -205,7 +224,10 @@ mod tests {
                 version: 1,
                 kind: TransactionKind::Coinbase,
                 inputs: vec![],
-                outputs: vec![TransactionOut { value: 0, recipient: AccountAddress::new(&recipient) }],
+                outputs: vec![TransactionOut {
+                    value: 0,
+                    recipient: AccountAddress::new(&recipient),
+                }],
             },
             signature: StryiSignature(Box::new([0u8; 65])),
         };
@@ -222,14 +244,23 @@ mod tests {
             commit(&genesis, &mut store).await;
 
             // prepare *one* payment tx …
-            let spend = OutPoint { txid: genesis.data.transactions[0].data.hash(), vout: 0 };
+            let spend = OutPoint {
+                txid: genesis.data.transactions[0].data.hash(),
+                vout: 0,
+            };
             let pay = TransactionData {
                 version: 1,
                 kind: TransactionKind::Payment,
-                inputs: vec![TransactionIn { previous_output: spend, sequence: 0 }],
-                outputs: vec![TransactionOut { value: 500, recipient: AccountAddress::new(&[9u8; 20]) }],
+                inputs: vec![TransactionIn {
+                    previous_output: spend,
+                    sequence: 0,
+                }],
+                outputs: vec![TransactionOut {
+                    value: 500,
+                    recipient: AccountAddress::new(&[9u8; 20]),
+                }],
             }
-                .sign(&SigningKey::random(&mut OsRng));
+            .sign(&SigningKey::random(&mut OsRng));
 
             // ... but put it into the block twice
             let mut blk = Block::new(
@@ -242,7 +273,9 @@ mod tests {
             );
             mine_block_in_parallel(&mut blk, u64::MAX);
 
-            let err = validator.validate(&blk, &mut store).await
+            let err = validator
+                .validate(&blk, &mut store)
+                .await
                 .expect_err("duplicate-tx block must be rejected");
             assert!(
                 matches!(err, StryiCoreError::ConsensusValidationFailed { .. }),
@@ -262,14 +295,25 @@ mod tests {
             commit(&genesis, &mut store).await;
 
             // build two independent payments referencing identical input
-            let src = OutPoint { txid: genesis.data.transactions[0].data.hash(), vout: 0 };
-            let mk_pay = |recipient: [u8; 20]| TransactionData {
-                version: 1,
-                kind: TransactionKind::Payment,
-                inputs: vec![TransactionIn { previous_output: src, sequence: 0 }],
-                outputs: vec![TransactionOut { value: 450, recipient: AccountAddress::new(&recipient) }],
-            }
-                .sign(&SigningKey::random(&mut OsRng));
+            let src = OutPoint {
+                txid: genesis.data.transactions[0].data.hash(),
+                vout: 0,
+            };
+            let mk_pay = |recipient: [u8; 20]| {
+                TransactionData {
+                    version: 1,
+                    kind: TransactionKind::Payment,
+                    inputs: vec![TransactionIn {
+                        previous_output: src,
+                        sequence: 0,
+                    }],
+                    outputs: vec![TransactionOut {
+                        value: 450,
+                        recipient: AccountAddress::new(&recipient),
+                    }],
+                }
+                .sign(&SigningKey::random(&mut OsRng))
+            };
 
             let pay1 = mk_pay([3u8; 20]);
             let pay2 = mk_pay([4u8; 20]);
@@ -284,7 +328,9 @@ mod tests {
             );
             mine_block_in_parallel(&mut blk, u64::MAX);
 
-            let err = validator.validate(&blk, &mut store).await
+            let err = validator
+                .validate(&blk, &mut store)
+                .await
                 .expect_err("double-spend block must be rejected");
             assert!(
                 matches!(err, StryiCoreError::TxDoubleSpend { .. }),

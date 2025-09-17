@@ -3,5 +3,5 @@
 mod utxo_database;
 
 /// Integration test for `get_utxos_for_address`-related logic, and the `addresses` partition by itself
-/// Checks correctness for read and checks if `addresses` state correctly updates after delete/delete_batch operations 
+/// Checks correctness for read and checks if `addresses` state correctly updates after delete/delete_batch operations
 mod addresses_integration;
