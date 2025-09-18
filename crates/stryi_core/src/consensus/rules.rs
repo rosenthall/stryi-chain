@@ -61,9 +61,23 @@ impl ConsensusConsts {
         }
     }
 
-    /// Returns the number of blocks between difficulty adjustments.
-    pub fn difficulty_adjustment_interval_blocks(&self) -> u64 {
-        self.difficulty_adjustment_interval_blocks
+    /// Height-only difficulty: genesis=0; from height>=1 start at 1 bit and
+    /// increase by +1 every `difficulty_adjustment_interval_blocks`.
+    /// If the interval is 0, difficulty stays at 1 for all non-genesis heights.
+    #[inline]
+    pub fn difficulty_bits_for_height(&self, height: u64) -> u8 {
+        if height == 0 {
+            return 0;
+        }
+
+        // Treat interval `0` as "no retarget": stay at 1.
+        let interval = self.difficulty_adjustment_interval_blocks.max(1);
+
+        let steps = (height.saturating_sub(1)) / interval; // 0,1,2,...
+
+        // 1 + steps, clamped to 255 so no overflows are possible
+        let bits_u16 = 1u16.saturating_add(steps as u16);
+        bits_u16.min(255) as u8
     }
 
     /// Computes the block subsidy for a given height **after** linear decay.
@@ -71,6 +85,7 @@ impl ConsensusConsts {
     /// ```text
     /// subsidy(height) = max(0, initial_subsidy − floor(height / decay_interval) × decay_step)
     /// ```
+    #[inline]
     pub fn block_subsidy(&self, height: u64) -> u64 {
         if self.decay_interval == 0 {
             return self.initial_subsidy;
@@ -79,6 +94,11 @@ impl ConsensusConsts {
         let steps = height / self.decay_interval;
         self.initial_subsidy
             .saturating_sub(steps.saturating_mul(self.decay_step))
+    }
+
+    /// Returns the number of blocks between difficulty adjustments.
+    pub fn difficulty_adjustment_interval_blocks(&self) -> u64 {
+        self.difficulty_adjustment_interval_blocks
     }
 
     /// Gets current `initial_subsidy`

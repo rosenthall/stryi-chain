@@ -6,6 +6,11 @@ use crate::block::block_hash::BlockHash;
 /// The `bits` parameter indicates the number of leading zero bits required.
 /// For example, if bits = 16, the first 16 bits of `hash.data` must be zero.
 pub fn meets_difficulty(block_hash: &BlockHash, bits: u8) -> bool {
+    // always passes
+    if bits == 0 {
+        return true;
+    }
+
     // Interpret bits as the number of leading zero bits in the 256-bit hash.
     // block_hash.data is [u8; 32].
     // We'll check that the first `bits` bits of that array are zero.

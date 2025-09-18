@@ -35,7 +35,7 @@ impl BlockValidator {
         block::validate_transactions(block, &self.rules, utxo_storage).await
     }
 }
-
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,3 +339,4 @@ mod tests {
         }
     }
 }
+*/

@@ -2,7 +2,6 @@
 //! including consensus rules and the consensus engine responsible for block validation,
 //! difficulty adjustment, and chain selection.
 
-mod difficulty;
 mod engine;
 mod fork_overlay;
 mod index;

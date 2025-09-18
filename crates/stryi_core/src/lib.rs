@@ -56,6 +56,9 @@ mod forktree;
 // public export of common libraries across the project
 pub use blake3;
 
+/// tools for proper difficulty calculation/validation for blocks
+mod difficulty;
+
 // Contains tests for some matter functionality.
 // Some of the tests are present in the concrete modules, but this module contains larger ones with more complex cases like integration tests
 #[cfg(test)]
