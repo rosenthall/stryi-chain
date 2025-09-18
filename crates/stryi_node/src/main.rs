@@ -81,11 +81,13 @@ pub(crate) mod grpc_services {
 /// Reads and deserializes the config from provided path.
 fn try_genesis_config_from_path(path: PathBuf) -> Result<GenesisInitConfig, StryiNodeError> {
     // Check if file exists and if it is a file.
-    // .exists() method is redundant since is_file() already checks it
     if !path.is_file() {
         return Err(StryiNodeError::Io(io::Error::new(
             ErrorKind::NotFound,
-            "Provided path with genesis configuration is not a file or doesn't exists.",
+            format!(
+                "Provided path with genesis configuration is not a file or doesn't exists. Path : {}",
+                path.display()
+            ),
         )));
     }
 
@@ -139,7 +141,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let fmt_layer = fmt::layer().with_target(true).with_level(true);
 
     // Use EnvFilter to filter out some of unnecessary logs (like h2, handshakes, etc.)
-    let filter_layer = EnvFilter::from_default_env()
+    // Set default log level to info if RUST_LOG is not set
+    let filter_layer = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"))
         .add_directive("hyper=info".parse().unwrap())
         .add_directive("h2=info".parse().unwrap());
 
@@ -244,6 +248,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     &preview_block,
                     &cfg.chain_name,
                     cfg.sync_protocol_version as u64,
+                    Some("local"),
                 )
                 .map_err(|e| {
                     error!("confirm_and_save failed: {e}");
@@ -527,11 +532,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             // Construct ConsensusEngine instance and set the field.
             debug!("No synchronizing required, building ConsensusEngine immediately.");
             let consensus_consts = build_consensus_constants(&storage.clone()).await?;
-            let difficulty_calc = stryi_core::difficulty::build_difficulty_calculator_from_consts(
-                consensus_consts.clone(),
-            );
-            let block_validator =
-                BlockValidator::new(consensus_consts.clone(), difficulty_calc.clone());
+            let difficulty_calc =
+                stryi_core::difficulty::build_difficulty_calculator_from_consts(consensus_consts);
+            let block_validator = BlockValidator::new(consensus_consts, difficulty_calc.clone());
             let utxo_processor = UtxoProcessor::new();
             trace!(consensus_consts = ?consensus_consts);
             let engine = StryiConsensusEngine::new(
@@ -552,7 +555,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             info!("Join: running synchronize() to fetch genesis/chain from peers.");
             node.synchronize().await?;
 
-            // If we started with NoGenesis, the sync should have committed height=0.
+            /* synchronize method will prompt user about accepting block.*/
+
+            /*            // If we started with NoGenesis, the sync should have committed height=0.
             if matches!(storage_status, StorageStatus::NoGenesis) {
                 // Expect a storage API that can retrieve block by height.
                 let genesis_block = {
@@ -576,12 +581,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         &genesis_block,
                         &cfg.chain_name,
                         cfg.sync_protocol_version as u64,
+                        Some("local"),
                     )
                     .map_err(|e| {
                         error!("confirm_and_save failed: {e}");
                         e
                     })?;
-            }
+            }*/
         }
 
         NodeStartMode::Auto => unreachable!(),

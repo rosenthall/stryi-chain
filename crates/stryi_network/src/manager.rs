@@ -310,7 +310,11 @@ impl StryiNetworkManager {
                                 discovered_services.len(),
                                 service
                             );
-                            debug!("Discovered services: {:?}", debug(&discovered_services));
+
+                            discovered_services.iter().for_each(|(p, s)| {
+                                debug!(" <^-^> Peer {}: {:?}", p, s);
+                            });
+
 
                             // reply (ignore if receiver is gone)
                             let _ = respond_to.send(discovered_services);

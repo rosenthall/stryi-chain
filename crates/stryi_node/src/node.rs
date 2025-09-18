@@ -326,6 +326,7 @@ impl StryiChainNode {
                     &external_genesis_block,
                     &self.sync_service_config.chain_name,
                     self.sync_service_config.protocol_version as u64,
+                    Some(&*format!("peer {peer}")),
                 )
                 .map_err(|e| StryiNodeError::other(format!("confirm_and_save failed: {e}")))?;
 
@@ -422,7 +423,7 @@ impl StryiChainNode {
             let batch_size = std::cmp::min(
                 self.sync_service_config.max_blocks_range_per_request,
                 heights_differ,
-            ) as usize;
+            );
 
             let (start_height, end_height) = (local_tip_height + 1, external_height);
 
@@ -437,6 +438,8 @@ impl StryiChainNode {
 
             // put ConsensusEngine in place
             self.set_consensus_engine(engine);
+
+            info!("IBD complete, node is now synchronized! Ready to start own services.");
 
             return Ok(());
         }

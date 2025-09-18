@@ -105,6 +105,7 @@ impl GenesisBootstrap {
     /// - `block`: validated candidate genesis block.
     /// - `chain_name`: human-readable network name for meta (current meta schema).
     /// - `protocol_version`: protocol version for meta (current meta schema).
+    /// - `origin`: optional source of this genesis so the user can verify it, e.g. {PeerId} or "local"
     ///
     /// Returns:
     /// - `AlreadySaved` if meta already indicates an initialized datadir.
@@ -117,6 +118,7 @@ impl GenesisBootstrap {
         block: &Block,
         chain_name: &str,
         protocol_version: u64,
+        origin: Option<&str>,
     ) -> Result<SaveOutcome, StryiNodeError> {
         // If meta is already initialized, do nothing.
         match self.probe_meta()? {
@@ -138,12 +140,14 @@ impl GenesisBootstrap {
         // Confirmation prompt
         let mut input = String::new();
         println!(
-            "{} You are about to accept the shown genesis for this node. This choice is permanent unless you reinitialize the node.",
+            "{} You are about to accept the shown genesis for this node.\n \
+            This choice is permanent unless you reinitialize the node.",
             "WARNING".on_yellow().black().bold(),
         );
         println!(
-            "Before continuing, verify header values (height, state/Merkle root) and EVERY allocation (recipient -> amount)."
+            "Before continuing, verify origin, all the header values (height, state/Merkle root) \n and EVERY allocation (recipient -> amount)."
         );
+        println!("Origin: {}", origin.unwrap_or("<unknown>").bold());
         println!("Type 'yes' to confirm; anything else cancels.");
         print!("Accept genesis (yes/no): ");
         io::stdout()
