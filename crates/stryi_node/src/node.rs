@@ -8,13 +8,11 @@ use crate::http::{HTTP_SERVICE_TAG, StryiHttpServiceConfig};
 use crate::ibd::{fetch_blocks_batch, ingest_ibd_batch};
 use crate::middleware::ready::{ReadyFlag, ReadyGateLayer};
 use crate::tls::NodeTlsIdentity;
-use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::Duration;
 use stryi_core::block::{Block, BlockHash};
-use stryi_core::consensus::{
-    BlockValidator, ConsensusConsts, ConsensusEngine, StryiConsensusEngine,
-};
+use stryi_core::consensus::{BlockValidator, ConsensusConsts, StryiConsensusEngine};
+use stryi_core::difficulty::{DifficultyCalc, build_difficulty_calculator_from_consts};
 use stryi_core::mempool::MemPool;
 use stryi_core::storage::{BlockStorage, StorageStats};
 use stryi_core::transactions::UtxoProcessor;
@@ -366,16 +364,25 @@ impl StryiChainNode {
 
         info!("Trying to instantize StryiConsensusEngine instance");
 
-        let rules = build_consensus_constants(&self.storage.clone()).await?;
-        let block_validator = BlockValidator::new(rules.clone());
+        let consensus_constants = build_consensus_constants(&self.storage.clone()).await?;
+        let difficulty_calculator =
+            build_difficulty_calculator_from_consts::<StryiStorage>(consensus_constants);
+
+        let block_validator =
+            BlockValidator::new(consensus_constants, difficulty_calculator.clone());
         let utxo_processor = UtxoProcessor::new();
-        trace!(rules = ?rules);
+        trace!(consensus_constants = ?consensus_constants);
 
         // NOTE: after synchronizing complete, we shall set self.consensus_engine value.
-        let mut engine =
-            StryiConsensusEngine::new(rules, block_validator, utxo_processor, self.storage.clone())
-                .await
-                .map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
+        let mut engine = StryiConsensusEngine::new(
+            consensus_constants,
+            block_validator,
+            utxo_processor,
+            self.storage.clone(),
+            difficulty_calculator,
+        )
+        .await
+        .map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
 
         info!("Success!");
 
@@ -682,14 +689,21 @@ pub async fn build_consensus_constants(
 /// Assumes genesis is already committed (height 0 present).
 pub(crate) async fn build_consensus_engine(
     storage: Arc<RwLock<StryiStorage>>,
+    difficulty_calc: DifficultyCalc<StryiStorage>,
 ) -> Result<StryiConsensusEngine<StryiStorage>, StryiNodeError> {
     let rules = build_consensus_constants(&storage.clone()).await?;
-    let block_validator = BlockValidator::new(rules.clone());
+    let block_validator = BlockValidator::new(rules.clone(), difficulty_calc.clone());
     let utxo_processor = UtxoProcessor::new();
 
-    let engine = StryiConsensusEngine::new(rules, block_validator, utxo_processor, storage.clone())
-        .await
-        .map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
+    let engine = StryiConsensusEngine::new(
+        rules,
+        block_validator,
+        utxo_processor,
+        storage.clone(),
+        difficulty_calc,
+    )
+    .await
+    .map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
 
     Ok(engine)
 }

@@ -1,3 +1,5 @@
+use crate::difficulty::DifficultyCalc;
+use crate::storage::{BlockStorage, StorageStats};
 use crate::{
     block::Block, consensus::ConsensusConsts, error::StryiCoreError, storage::UtxoStorage,
 };
@@ -12,13 +14,27 @@ pub mod tx;
 /// 1. header checks              (`header::validate_header`);
 /// 2. static block structure     (`block::validate_block_structure`);
 /// 3. dynamic, UTXO-dependent    (`block::validate_transactions`).
-pub struct BlockValidator {
-    pub rules: ConsensusConsts,
+pub struct BlockValidator<DB>
+where
+    DB: BlockStorage + StorageStats + Send + Sync + 'static,
+{
+    /// this chain's consensus rules. These are derived from genesis.
+    pub consensus_consts: ConsensusConsts,
+
+    /// Simple closure for convenient calculation of difficulty at a given height.
+    pub difficulty_calc: DifficultyCalc<DB>,
 }
 
-impl BlockValidator {
-    pub fn new(rules: ConsensusConsts) -> Self {
-        Self { rules }
+impl<DB> BlockValidator<DB>
+where
+    DB: BlockStorage + StorageStats + Send + Sync + 'static,
+{
+    /// Creates a new block validator with the given consensus constants and difficulty calculator.
+    pub fn new(consensus_consts: ConsensusConsts, difficulty_calc: DifficultyCalc<DB>) -> Self {
+        Self {
+            consensus_consts,
+            difficulty_calc,
+        }
     }
 
     /// Runs the full consensus pipeline.
@@ -30,9 +46,9 @@ impl BlockValidator {
     where
         US: UtxoStorage + Send,
     {
-        header::validate_header(block, &self.rules)?;
+        header::validate_header(block, &self.consensus_consts)?;
         block::validate_block_structure(block)?;
-        block::validate_transactions(block, &self.rules, utxo_storage).await
+        block::validate_transactions(block, &self.consensus_consts, utxo_storage).await
     }
 }
 /*

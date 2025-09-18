@@ -24,6 +24,10 @@ pub type DifficultyCalc<S> = Arc<
 /// Reads consensus consts/rules from genesis and builds a calculator.
 /// DB is used only here and is not captured by the returned closure.
 /// Will return error if no genesis in DB or if `genesis_state` field is `None`.
+/// NOTE: This function uses DifficultyCalc<S> where S is the DB type, but the
+/// actual state passed to the closure is ignored in our builder (it captures only consts).
+/// This is made for future extensibility, e.g. if we want to build a more complex
+/// calculator that does depend on some state in DB, e.g. previous blocks' timestamps.
 pub async fn load_rules_and_build<DB>(
     db: Arc<RwLock<DB>>,
 ) -> Result<DifficultyCalc<DB>, StryiCoreError>

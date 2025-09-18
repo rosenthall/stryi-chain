@@ -2,8 +2,11 @@ use crate::block::BlockHash;
 use crate::consensus::ConsensusOnBlockVerdict;
 use crate::consensus::index::ChainIndex;
 use crate::consensus::validator::BlockValidator;
+use crate::difficulty::DifficultyCalc;
 use crate::error::{StorageLayer, StryiCoreError};
 use crate::forktree::ForkTree;
+#[cfg(test)]
+use crate::storage::StryiInMemoryStorage;
 use crate::storage::{BlockStorage, StorageStats, UndoStorage, UtxoStorage};
 use crate::transactions::UtxoProcessor;
 use crate::{
@@ -13,10 +16,7 @@ use crate::{
 use futures::future::BoxFuture;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::debug;
-
-#[cfg(test)]
-use crate::storage::StryiInMemoryStorage;
+use tracing::{debug, error, info};
 
 // StryiConsensusEngine is responsible for validating and processing blocks according to the consensus rules.
 ///
@@ -27,14 +27,17 @@ use crate::storage::StryiInMemoryStorage;
 /// for storing and maintaining forks tree.
 pub struct StryiConsensusEngine<DB>
 where
-    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage,
+    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + 'static,
 {
-    /// Consensus rules object defining parameters like current difficulty and adjustment intervals.
-    pub(crate) rules: ConsensusConsts,
+    /// Consensus static rules object defining parameters like adjustment intervals.
+    pub(crate) consensus_consts: ConsensusConsts,
 
     /// Block validator used to verify block-level properties such as proof-of-work, merkle root correctness,
     /// coinbase placement, transaction dependencies and ordering
-    pub(crate) block_validator: BlockValidator,
+    pub(crate) block_validator: BlockValidator<DB>,
+
+    /// Difficulty calculator function.
+    pub(crate) difficulty_calculator: DifficultyCalc<DB>,
 
     /// UTXO processor that applies transactions within a block to update the UTXO set.
     // TODO: consider renaming it later, maybe in TransactionsProcessor? Current name is a little weird
@@ -67,16 +70,20 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage> StryiConsensus
     /// * Scans the current best chain in `db` to build `ChainIndex`.
     /// * Leaves `forks` empty; side branches appear as `on_block` is called.
     pub async fn new(
-        rules: ConsensusConsts,
-        block_validator: BlockValidator,
+        consensus_consts: ConsensusConsts,
+        block_validator: BlockValidator<DB>,
         utxo_processor: UtxoProcessor,
         db: Arc<RwLock<DB>>,
+        difficulty_calculator: DifficultyCalc<DB>,
     ) -> Result<Self, StryiCoreError> {
+        info!("Initializing consensus engine...");
+
         let chain_index = Self::build_chain_index(db.clone()).await?;
 
         Ok(Self {
-            rules,
+            consensus_consts,
             block_validator,
+            difficulty_calculator,
             utxo_processor,
             db: db.clone(),
             chain_index,
@@ -90,7 +97,7 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage> StryiConsensus
         // Hold lock on db
         let db = db.read().await; // block_read?
 
-        debug!("Starting collecting chain index");
+        info!("Starting collecting chain index!");
 
         let mut index = ChainIndex::default();
 
@@ -115,6 +122,10 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage> StryiConsensus
         loop {
             match db.get_block_by_hash(cursor_hash).await {
                 Ok(Some(block)) => {
+                    debug!(
+                        "Indexing block {} at height {} with difficulty bits {}",
+                        cursor_hash, block.header.height, block.header.difficulty_bits
+                    );
                     cumulative_work += 1u128 << block.header.difficulty_bits;
 
                     // Add this block in index with specified cumulative work.
@@ -130,6 +141,11 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage> StryiConsensus
 
                 // Block not found -> error
                 Ok(None) => {
+                    error!(
+                        "Cannot find block {} in persistent storage to build chain index",
+                        cursor_hash
+                    );
+
                     return Err(StryiCoreError::storage(
                         StorageLayer::Block,
                         format!(
@@ -141,6 +157,7 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage> StryiConsensus
 
                 // If got any error while traversing blocks -> return.
                 Err(e) => {
+                    error!("Error while traversing blocks to build chain index: {e:?}");
                     return Err(StryiCoreError::storage(
                         StorageLayer::Block,
                         format!("{e:?}"),
@@ -165,11 +182,6 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage> StryiConsensus
             total = total.saturating_add(1u128 << bits);
         }
         total
-    }
-
-    /// helper — cumulative work of parent + current diff bits
-    fn calc_work(&self, parent_work: u128, diff_bits: u8) -> u128 {
-        parent_work + (1u128 << diff_bits)
     }
 
     /// walks back from `from_hash` until it reaches `stop` (exclusive).
@@ -217,17 +229,26 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + 'static> Cons
     ) -> BoxFuture<Result<ConsensusOnBlockVerdict, Self::Error>> {
         let block = block.clone();
 
+        debug!(
+            "Received new block {} at height {} with difficulty bits {}",
+            block.block_hash(),
+            block.header.height,
+            block.header.difficulty_bits
+        );
+
         Box::pin(async move {
             let block_hash = block.block_hash();
             let hash = block_hash;
 
             // Check if the block is already in main chain
             if self.chain_index.has(&hash) {
+                debug!("Block {} is already in the main chain", hash);
                 return Ok(ConsensusOnBlockVerdict::AlreadyIncludedInChain);
             }
 
             // And if in fork
             if self.forks.get(&hash).is_some() {
+                debug!("Block {} is already known in fork tree", hash);
                 return Ok(ConsensusOnBlockVerdict::AlreadyKnownInForkTree);
             }
 
@@ -236,11 +257,27 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + 'static> Cons
             let parent_in_main = self.chain_index.has(&parent);
             let parent_in_fork = self.forks.get(&parent);
             if !parent_in_main && parent_in_fork.is_none() {
+                debug!(
+                    "Parent {} of block {} is unknown, rejecting (!)",
+                    parent, hash
+                );
                 // orphan for now
                 return Ok(ConsensusOnBlockVerdict::Rejected(StryiCoreError::other(
                     "Unknown parent.",
                 )));
             }
+
+            // log that we have found the block and its parent and origin
+            debug!(
+                "Parent {} of block {} found in {}",
+                parent,
+                hash,
+                if parent_in_main {
+                    "main chain"
+                } else {
+                    "fork tree"
+                }
+            );
 
             // if parent_in_main && parent == main_tip_hash {
             //     self.db

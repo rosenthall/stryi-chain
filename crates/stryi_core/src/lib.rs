@@ -57,7 +57,7 @@ mod forktree;
 pub use blake3;
 
 /// tools for proper difficulty calculation/validation for blocks
-mod difficulty;
+pub mod difficulty;
 
 // Contains tests for some matter functionality.
 // Some of the tests are present in the concrete modules, but this module contains larger ones with more complex cases like integration tests

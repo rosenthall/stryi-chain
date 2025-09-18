@@ -359,7 +359,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "server" => RendezvousMode::Server,
         "client" => RendezvousMode::Client,
         other => {
-            return Err(StryiNodeError::other(format!("invalid rendezvous mode: {}", other)).into());
+            return Err(
+                StryiNodeError::other(format!("invalid rendezvous mode: {}", other)).into(),
+            );
         }
     };
 
@@ -524,16 +526,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             // Construct ConsensusEngine instance and set the field.
             debug!("No synchronizing required, building ConsensusEngine immediately.");
-            let rules = build_consensus_constants(&storage.clone()).await?;
-            let block_validator = BlockValidator::new(rules.clone());
+            let consensus_consts = build_consensus_constants(&storage.clone()).await?;
+            let difficulty_calc = stryi_core::difficulty::build_difficulty_calculator_from_consts(
+                consensus_consts.clone(),
+            );
+            let block_validator =
+                BlockValidator::new(consensus_consts.clone(), difficulty_calc.clone());
             let utxo_processor = UtxoProcessor::new();
-            trace!(rules = ?rules);
-            let engine =
-                StryiConsensusEngine::new(rules, block_validator, utxo_processor, storage.clone())
-                    .await
-                    .map_err(|e| {
-                        StryiNodeError::other(format!("consensus engine init failed: {e}"))
-                    })?;
+            trace!(consensus_consts = ?consensus_consts);
+            let engine = StryiConsensusEngine::new(
+                consensus_consts,
+                block_validator,
+                utxo_processor,
+                storage.clone(),
+                difficulty_calc,
+            )
+            .await
+            .map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
             // set it.
             node.set_consensus_engine(engine);
             info!("Success!");
