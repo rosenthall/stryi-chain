@@ -5,7 +5,7 @@ StryiChain is a minimal, research-grade blockchain prototype named after the Ukr
 ## What is inside?
 
 - **Custom CPU-only Proof-of-Work algorithm** A variant of Tor’s HashX puzzle wrapped in BLAKE3 keeps mining practical on ordinary CPUs and unprofitable on GPUs/FPGAs.
-- **Module architecture** - project conveniently split in 4 crates : `stryi_core`, `striy_storage`, `striy_node` and `stryi_network`, clean and separated logic.
+- **Module architecture** - project conveniently split in 5 crates : `stryi_core`, `striy_storage`, `striy_node`, `stryi_network` and `striy_devkit`, clean and separated logic.
 - **Hybrid networking.**
   - **libp2p** handles peer discovery and lightweight gossip for txs and blocks + mempool synchronization.
   - **gRPC (tonic)** moves heavy traffic—full block transfer, Initial Block Download (IBD).
