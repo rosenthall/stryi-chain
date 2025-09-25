@@ -116,6 +116,10 @@ max_transactions_per_block = 25
 # Basically, all the transactions will be created between these addresses.
 active_addresses_count = 50
 
+# whether to insert BlockUndo records for each block.
+# BlockUndo records are used to roll back the chain to previous state.
+# Usually not needed for testing, so can be disabled to save disk space and speed up generation.
+undo = false
 
 
 

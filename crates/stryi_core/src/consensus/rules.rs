@@ -83,7 +83,7 @@ impl ConsensusConsts {
     /// Computes the block subsidy for a given height **after** linear decay.
     ///
     /// ```text
-    /// subsidy(height) = max(0, initial_subsidy − floor(height / decay_interval) × decay_step)
+    /// subsidy(height) = max(0, initial_subsidy − floor(height / decay_interval) * decay_step)
     /// ```
     #[inline]
     pub fn block_subsidy(&self, height: u64) -> u64 {

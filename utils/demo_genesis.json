@@ -11,7 +11,7 @@
   },
   "genesis_state" : {
     "consts" : {
-      "difficulty_adjustment_interval_blocks": 100,
+      "difficulty_adjustment_interval_blocks": 300,
       "initial_subsidy" : 10000,
       "decay_interval" : 1000,
       "decay_step" : 100

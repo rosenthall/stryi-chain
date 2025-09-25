@@ -51,6 +51,10 @@ pub struct BlocksSettings {
 
     /// Number of unique active addresses participating in transfers.
     pub active_addresses_count: u32,
+
+    /// Whether to insert undo data for each block.
+    /// This will increase the size of the generated chain, but allows testing of reorg-related logic
+    pub need_undo: bool,
 }
 
 impl ChainGenConfig {
@@ -78,9 +82,9 @@ impl ChainGenConfig {
         }
 
         // note: I think 3 is a reasonable minimum for active addresses to ensure some diversity
-        if self.blocks.active_addresses_count <= Self::MIN_ACTIVE_ADDRESSES {
+        if self.blocks.active_addresses_count < Self::MIN_ACTIVE_ADDRESSES {
             return Err(format!(
-                "active_addresses_count must be <= {}",
+                "active_addresses_count must be >= {}",
                 Self::MIN_ACTIVE_ADDRESSES
             ));
         }
@@ -88,24 +92,16 @@ impl ChainGenConfig {
         // validate seed ranges via helper
         seed::validate(&self.chain.seed, self.chain.num_blocks)?;
 
-        // validate that paths are valid (output_path must exist and be dir, genesis_path must be a file)
-        if !self.chain.output_path.is_dir() {
+        if !self.chain.genesis_path.is_file() {
             return Err(format!(
-                "output_path does not exist: {}",
-                self.chain.output_path.display()
+                "genesis_path does not exist or is not a file: {}",
+                self.chain.genesis_path.display()
             ));
         }
 
         // check that miner address is valid stryi address
         if let Err(e) = AccountAddress::from_hash_string(&self.blocks.miner_address) {
             return Err(format!("miner_address is not a valid address: {e}"));
-        }
-
-        if !self.chain.genesis_path.is_file() {
-            return Err(format!(
-                "genesis_path does not exist or is not a file: {}",
-                self.chain.genesis_path.display()
-            ));
         }
 
         Ok(())

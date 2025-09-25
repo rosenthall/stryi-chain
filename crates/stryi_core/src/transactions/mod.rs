@@ -153,6 +153,16 @@ impl Transaction {
         })
     }
 
+    /// Creates a new unsigned transaction with an empty signature.
+    /// This only meant to be used in cases like genesis or coinbase transactions,
+    /// where no signature is required.
+    pub fn new_unsigned(data: TransactionData) -> Self {
+        Transaction {
+            data,
+            signature: StryiSignature::default(),
+        }
+    }
+
     #[cfg(test)]
     /// Verifies that this transaction's recoverable signature recovers to real public key of this account.
     /// Since AccountAddress is hashed public key we will check if recovered public key hash is identical with real AccountAddress.
