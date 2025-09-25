@@ -18,10 +18,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use colored::Colorize;
 use comfy_table::Table;
-use stryi_core::block::{Block, BlockHash};
+use stryi_core::block::Block;
 use stryi_core::consensus::ConsensusConsts;
-use stryi_core::transactions::TransactionKind;
-use stryi_storage::{StorageStatus, write_status_atomic};
+use stryi_storage::{StorageStatus, validate_genesis, write_status_atomic};
 
 use crate::error::StryiNodeError;
 
@@ -47,56 +46,6 @@ impl GenesisBootstrap {
     pub fn probe_meta(&self) -> Result<StorageStatus, StryiNodeError> {
         StorageStatus::from_path(&self.datadir)
             .map_err(|e| StryiNodeError::other(format!("failed to probe storage meta: {e}")))
-    }
-
-    /// Strict header/body invariants for a genesis candidate.
-    pub fn validate_candidate(&self, block: &Block) -> Result<(), StryiNodeError> {
-        let h = &block.header;
-
-        // simple helper for errors
-        let invariant_err =
-            |msg: &str| StryiNodeError::other(format!("genesis invariant failed: {msg}"));
-
-        // The genesis block must be height 0.
-        if h.height != 0 {
-            return Err(invariant_err("header.height must be 0"));
-        }
-
-        // Merkle root must be valid
-        if !block.is_merkle_root_valid() {
-            return Err(invariant_err("header.merkle_root must be valid"));
-        }
-
-        // The previous hash must be all zeros for the root.
-        if h.previous_block_hash != BlockHash::empty() {
-            return Err(invariant_err("header.previous_block_hash must be zero"));
-        }
-
-        // Must have is_genesis=true
-        if !h.is_genesis() {
-            return Err(invariant_err("header.is_genesis() must be true"));
-        }
-
-        // Exactly one transaction
-        if block.data.transactions.len() != 1 {
-            return Err(invariant_err("exactly one transaction is required"));
-        }
-
-        let tx = block.data.transactions[0].clone();
-
-        // The only transaction shall be Genesis kind
-        if tx.data.kind != TransactionKind::Genesis {
-            return Err(invariant_err("transaction must have genesis kind"));
-        }
-
-        // .. and have no inputs
-        if !tx.data.inputs.is_empty() {
-            return Err(invariant_err("transaction must have no inputs"));
-        }
-
-        // Is that all the checks we need for genesis?
-
-        Ok(())
     }
 
     /// Show a concise summary and atomically save into storage::meta.
@@ -132,7 +81,9 @@ impl GenesisBootstrap {
         }
 
         // Validate candidate invariants before asking the user.
-        self.validate_candidate(block)?;
+        validate_genesis(block).map_err(|e| {
+            StryiNodeError::other(format!("provided genesis candidate is invalid: {e}"))
+        })?;
 
         // Present a concise summary
         self.print_block_summary(block);

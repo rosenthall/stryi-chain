@@ -4,7 +4,7 @@ use axum::{Json, extract::State};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use bincode::config::standard;
-use bincode::serde::decode_borrowed_from_slice;
+use bincode::serde::borrow_decode_from_slice;
 use http::StatusCode;
 use std::sync::Arc;
 use stryi_core::address::AccountAddress;
@@ -66,13 +66,12 @@ where
     );
 
     // Try to deserialize the raw transaction into a Transaction object from bincode format
-    let transaction: Transaction =
-        decode_borrowed_from_slice(&raw_tx, standard()).map_err(|_| {
-            StryiNodeHttpApiError::BadTransaction {
-                reason: BadTxReason::BincodeDeserialize,
-                message: Some("Cannot deserialize transaction (bincode)".to_string()),
-            }
-        })?;
+    let transaction: Transaction = borrow_decode_from_slice(&raw_tx, standard())
+        .map_err(|_| StryiNodeHttpApiError::BadTransaction {
+            reason: BadTxReason::BincodeDeserialize,
+            message: Some("Cannot deserialize transaction (bincode)".to_string()),
+        })?
+        .0;
     debug!(
         "Successfully deserialized transaction, hash: {}",
         transaction.data.hash()

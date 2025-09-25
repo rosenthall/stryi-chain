@@ -66,6 +66,8 @@ mod utxo;
 mod tests;
 
 use std::collections::HashMap;
+use std::error::Error;
+use std::io;
 
 mod index;
 mod meta;
@@ -84,6 +86,7 @@ use stryi_core::address::AccountAddress;
 use crate::stats::StorageStateInformation;
 use stryi_core::block::{Block, BlockHash, GenesisState};
 use stryi_core::storage::BlockStorage;
+use stryi_core::transactions::TransactionKind;
 
 /// `StryiStorage` manages seven partitions within a single Fjall keyspace:
 /// - `blocks_partition`: For storing blocks keyed by hash
@@ -99,22 +102,22 @@ pub struct StryiStorage {
     /// Partition storing blocks keyed by block hash
     pub(crate) blocks_partition: TxPartition,
 
-    /// Partition storing block height → block hash
+    /// Partition storing block height -> block hash
     pub(crate) heights_partition: TxPartition,
 
     /// Partition storing UTXOs
     pub(crate) utxo_partition: TxPartition,
 
-    /// Partition storing address → set of OutPoints referencing that address
+    /// Partition storing address -> set of OutPoints referencing that address
     pub(crate) addresses_partition: TxPartition,
 
     /// Partition stores only one value - current chain state, must be updated after each new block or a reorganization
     pub(crate) stats_partition: TxPartition,
 
-    /// Partition storing block hash → `stryi_core::undo::UndoData`
+    /// Partition storing block hash -> `stryi_core::undo::UndoData`
     pub(crate) undo_partition: TxPartition,
 
-    /// Partition storing block hash → `stryi_storage::index::BlockIndexData`
+    /// Partition storing block hash -> `stryi_storage::index::BlockIndexData`
     pub(crate) block_index_partition: TxPartition,
 
     /// Keyspace for the entire database
@@ -139,6 +142,56 @@ impl GenesisInitConfig {
             version: 0,
         }
     }
+}
+
+/// Strict header/body invariants for a genesis candidate.
+pub fn validate_genesis(block: &Block) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let h = &block.header;
+
+    // simple helper for errors
+    let invariant_err =
+        |msg: &str| io::Error::other(format!("genesis invariant failed: {msg}")).into();
+
+    // The genesis block must be height 0.
+    if h.height != 0 {
+        return Err(invariant_err("header.height must be 0"));
+    }
+
+    // Merkle root must be valid
+    if !block.is_merkle_root_valid() {
+        return Err(invariant_err("header.merkle_root must be valid"));
+    }
+
+    // The previous hash must be all zeros for the root.
+    if h.previous_block_hash != BlockHash::empty() {
+        return Err(invariant_err("header.previous_block_hash must be zero"));
+    }
+
+    // Must have is_genesis=true
+    if !h.is_genesis() {
+        return Err(invariant_err("header.is_genesis() must be true"));
+    }
+
+    // Exactly one transaction
+    if block.data.transactions.len() != 1 {
+        return Err(invariant_err("exactly one transaction is required"));
+    }
+
+    let tx = block.data.transactions[0].clone();
+
+    // The only transaction shall be Genesis kind
+    if tx.data.kind != TransactionKind::Genesis {
+        return Err(invariant_err("transaction must have genesis kind"));
+    }
+
+    // .. and have no inputs
+    if !tx.data.inputs.is_empty() {
+        return Err(invariant_err("transaction must have no inputs"));
+    }
+
+    // Is that all the checks we need for genesis?
+
+    Ok(())
 }
 
 impl StryiStorage {
