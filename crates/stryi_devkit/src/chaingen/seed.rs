@@ -19,6 +19,27 @@ pub struct SeedRange {
     value: u64,
 }
 
+impl SeedRange {
+    /// getter for the `height` field
+    #[inline]
+    pub fn height(&self) -> u64 {
+        self.height
+    }
+    /// getter for the `value` field
+    #[inline]
+    pub fn value(&self) -> u64 {
+        self.value
+    }
+}
+
+#[cfg(test)]
+impl SeedRange {
+    /// Test-only constructor to build ranges without deserialization.
+    pub fn new_test(height: u64, value: u64) -> Self {
+        Self { height, value }
+    }
+}
+
 /// Validate the SeedValue.
 /// num_blocks must always be > 0.
 ///
