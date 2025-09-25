@@ -1,75 +1,110 @@
-use clap::{Parser, Subcommand, ValueEnum};
+/// Implementation of ChainGen tool.
+mod chaingen;
+/// Exit codes used by the CLI.
+mod codes;
+
+use crate::codes::{EXIT_CONFIG, EXIT_IO_OR_PARSE, EXIT_OK};
+use clap::{Parser, Subcommand};
+use std::fs::File;
+use std::io::Read;
 use std::path::PathBuf;
 
-#[derive(Parser)]
-#[command(name = "stryi-devkit", version, about = "Dev utilities for StryiChain")]
-struct Cli {
+/// Command-line interface definition.
+#[derive(Parser, Debug)]
+#[command(
+    name = "stryi-devkit",
+    version,
+    about = "StryiChain DevKit",
+    author = "github.com/rosenthall"
+)]
+struct DevKitCli {
     #[command(subcommand)]
     cmd: DevkitCommand,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum DevkitCommand {
-    /// Generate a long chain for sync/IBD tests
-    /// May generate configured chain with custom balances, difficulty, etc.
-    Chaingen(ChaingenArgs),
+    /// generate a long chain for sync/IBD tests
+    Chaingen {
+        // Path to a TOML config for ChainGen.
+        #[arg(long = "config-path", value_name = "FILE", required = true)]
+        config_path: PathBuf,
+    },
 
-    /// Push tx load via HTTP /api/tx
-    Loadgen(LoadgenArgs),
+    /// generate http load for node's api.
+    Loadgen {
+        // Kept for interface compatibility.
+        #[arg(long = "config-path", value_name = "FILE", required = true)]
+        config_path: PathBuf,
+    },
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
-enum Mode {
-    Offline,
-    Live,
+fn run_loadgen(_config_path: PathBuf) -> i32 {
+    panic!("loadgen is not implemented yet");
 }
 
-#[derive(Parser)]
-struct ChaingenArgs {
-    #[arg(long, value_enum, default_value_t = Mode::Offline)]
-    mode: Mode,
-    #[arg(long)]
-    out: Option<PathBuf>,
-    #[arg(long, default_value_t = 1000)]
-    blocks: u64,
-    #[arg(long, default_value_t = 1)]
-    difficulty: u8,
-    #[arg(long)]
-    seed: Option<u64>,
-    #[arg(long, value_name = "@addr=amount", num_args = 0.., value_delimiter = ',')]
-    balances: Vec<String>,
-    #[arg(long, default_value_t = 1)]
-    version: u16,
-    #[arg(long, default_value_t = 1)]
-    timestamp_step: u64,
+fn run_chaingen(config_path: PathBuf) -> Result<(), i32> {
+    // read the config.
+
+    let config = {
+        if !config_path.is_file() {
+            eprintln!(
+                "Provided path to config is not a file: {}",
+                config_path.display()
+            );
+            return Err(EXIT_IO_OR_PARSE);
+        }
+
+        // read file
+        let mut buf = String::new();
+
+        let mut file = File::open(config_path).map_err(|e| {
+            eprintln!("Cannot open config at path. Error : {e}");
+            EXIT_IO_OR_PARSE
+        })?;
+
+        file.read_to_string(&mut buf).map_err(|e| {
+            eprintln!("Cannot read config at path. Error : {e}");
+            EXIT_IO_OR_PARSE
+        })?;
+
+        // Try to deserialize.
+        match toml::from_str::<chaingen::ChainGenConfig>(&buf) {
+            Ok(cfg) => cfg,
+
+            Err(e) => {
+                eprintln!("Error while deserializing ChainGenConfig. Error : {e}");
+                return Err(EXIT_IO_OR_PARSE);
+            }
+        }
+    };
+    println!("Successfully read the config from file.");
+
+    // validate the config's value.
+    match config.validate() {
+        Ok(()) => {
+            println!("Successfully validated the config.");
+        }
+        Err(e) => {
+            eprintln!("Invalid ChainGenConfig::seed value: {e}");
+            return Err(EXIT_CONFIG);
+        }
+    };
+
+    println!("Successfully read and deserialized the config.");
+
+    Ok(())
 }
 
-#[derive(Parser)]
-struct LoadgenArgs {
-    #[arg(long, default_value = "http://127.0.0.1:7001")]
-    node: String,
-    #[arg(long, default_value_t = 5.0)]
-    rate: f32,
-    #[arg(long, default_value_t = 100)]
-    count: u64,
-}
+fn main() -> Result<(), i32> {
+    let cli = DevKitCli::parse();
 
-fn main() {
-    let cli = Cli::parse();
     match cli.cmd {
-        DevkitCommand::Chaingen(args) => {
-            eprintln!(
-                "chaingen: mode={:?} blocks={} out={:?}",
-                args.mode, args.blocks, args.out
-            );
-            todo!("implement chaingen (offline first)");
-        }
-        DevkitCommand::Loadgen(args) => {
-            eprintln!(
-                "loadgen: node={} rate={} count={}",
-                args.node, args.rate, args.count
-            );
-            todo!("implement loadgen (tx -> /api/tx)");
-        }
-    }
+        DevkitCommand::Chaingen { config_path } => run_chaingen(config_path),
+
+        DevkitCommand::Loadgen { .. } => todo!("Loadgen tool is unimplemented yet."),
+    }?; // <-- this will return an error from main if any.
+
+    // and if no error caused - return EXIT_OK status code.
+    Err(EXIT_OK)
 }
