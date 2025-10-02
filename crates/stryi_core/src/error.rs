@@ -52,8 +52,14 @@ pub enum StryiCoreError {
     #[error("Insufficient input value: sum(inputs)={input_sum}, sum(outputs)={output_sum}")]
     TxInsufficientInputValue { input_sum: u64, output_sum: u64 },
 
+    #[error("Detected transaction tries to perform double spend : {txid}:{vout}")]
+    TxDoubleSpend { txid: TransactionHash, vout: u32 },
+
     #[error("Invalid signature : {msg}")]
     InvalidSignature { msg: String },
+
+    #[error("Invalid private key value. Cannot instantiate : {msg}")]
+    InvalidPrivateKey { msg: String },
 
     #[error("Block validation failed: {details}")]
     ConsensusValidationFailed { details: String },
@@ -75,9 +81,6 @@ pub enum StryiCoreError {
 
     #[error("Error while processing transactions' dependency tree : {msg}")]
     TransactionDependencyError { msg: String },
-
-    #[error("Detected transaction tries to perform double spend : {txid}:{vout}")]
-    TxDoubleSpend { txid: TransactionHash, vout: u32 },
 
     #[error("Cannot build chain index: {0}")]
     CannotBuildChainIndex(String),
