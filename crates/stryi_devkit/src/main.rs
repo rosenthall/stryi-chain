@@ -1,5 +1,6 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
+#![feature(exact_size_is_empty)]
 
 /// Implementation of ChainGen tool.
 mod chaingen;
@@ -123,14 +124,25 @@ async fn main() -> Result<(), i32> {
 
     let cli = DevKitCli::parse();
 
-    let code = match cli.cmd {
-        DevkitCommand::Chaingen { config_path } => match run_chaingen(config_path).await {
-            Ok(()) => EXIT_OK,
-            Err(code) => code,
-        },
-        DevkitCommand::Loadgen { config_path } => todo!(),
+    // process command
+    let cmd_result = match cli.cmd {
+        DevkitCommand::Chaingen { config_path } => run_chaingen(config_path).await,
+        DevkitCommand::Loadgen { .. } => {
+            eprintln!("Loadgen is not yet implemented.");
+            Err(EXIT_UNKNOWN)
+        }
     };
 
-    // and if no error caused - return EXIT_OK status code.
-    std::process::exit(code);
+    // Map the result to an exit code and exit with it.
+    std::process::exit(result_into_code(cmd_result));
+}
+
+/// Maps `Result<(), i32>` into code.
+/// `Ok(_)` to EXIT_OK
+/// And `Err(c)` to c.
+fn result_into_code(res: Result<(), i32>) -> i32 {
+    match res {
+        Ok(_) => EXIT_OK,
+        Err(code) => code,
+    }
 }
