@@ -6,7 +6,7 @@
 use crate::StryiCoreError;
 use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 
 /// Represents a private key in the StryiChain system.
 ///
@@ -30,6 +30,22 @@ impl PrivateKey {
         self.inner
     }
 }
+
+impl Debug for PrivateKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PrivateKey")
+            .field("inner", &"<redacted>")
+            .finish()
+    }
+}
+
+impl PartialEq for PrivateKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.to_bytes().as_slice() == other.inner.to_bytes().as_slice()
+    }
+}
+
+impl Eq for PrivateKey {}
 
 impl Display for PrivateKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -80,14 +96,22 @@ impl<'de> Deserialize<'de> for PrivateKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::address::AccountAddress;
     use k256::elliptic_curve::rand_core::OsRng;
 
     #[test]
     fn test_random_private_keys() {
         for i in 1..=20 {
             let signing_key = SigningKey::random(&mut OsRng);
-            let private_key = PrivateKey::new(signing_key);
+            let private_key = PrivateKey::new(signing_key.clone());
             dbg!(i, private_key.to_string());
+
+            // also generate AccountAddress
+            println!(
+                "{}:{}",
+                i,
+                AccountAddress::from_public_key(signing_key.verifying_key())
+            );
 
             // Verify roundtrip conversion
             let recovered = PrivateKey::try_from(private_key.to_string()).unwrap();

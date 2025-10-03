@@ -56,10 +56,37 @@ impl ChainGenerator {
         };
         println!("Successfully read and parsed genesis config.");
 
+        // make sure that config.funds_account exists in GenesisInitConfig and its balance != 0
+
+        let private_key = config.clone().blocks.funding_key.into_inner();
+        let funding_account = AccountAddress::from_public_key(private_key.verifying_key());
+        let maybe_available_balance = genesis_config.wanted_balances.get(&funding_account);
+
+        if let Some(balance) = maybe_available_balance {
+            if *balance == 0 {
+                return Err(format!(
+                    "Provided `funding_key` has corresponding account in genesis, but its balance is ZERO! Account is : {}",
+                    &funding_account
+                ));
+            }
+            println!(
+                "Got {} account with genesis-defined balance {}!",
+                &funding_account, balance
+            );
+        } else {
+            return Err(format!(
+                "Provided `funding_key` has no corresponding account in genesis from which to distribute the balances. Provided key corresponds to {}",
+                &funding_account
+            ));
+        }
+
+        let _available_balance =
+            maybe_available_balance.expect("already checked balance is Some(_)");
+
         let storage_path = config.chain.output_path.clone();
         println!("Initializing storage at path: {}", storage_path.display());
 
-        // probe storage meta information
+        // Probe storage meta information
         let storage_status = StorageStatus::from_path(&storage_path).map_err(|e| {
             println!(
                 "Failed to probe storage at {}: {e}",

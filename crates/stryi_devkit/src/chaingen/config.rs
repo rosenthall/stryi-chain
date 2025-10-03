@@ -2,6 +2,7 @@ use crate::chaingen::seed;
 use crate::chaingen::seed::SeedValue;
 use serde::Deserialize;
 use std::path::PathBuf;
+use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
 
 /// Top-level config for chain-generator tool.
@@ -37,6 +38,9 @@ pub struct ChainSettings {
 /// Block-generation rules for timestamps, miner, and synthetic traffic.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BlocksSettings {
+    /// Private key of the account that has funds (e.g. from genesis) to distribute them evenly.
+    pub funding_key: PrivateKey,
+
     /// Average time between blocks, in seconds (used for header timestamps).
     pub average_block_time_secs: u64,
 

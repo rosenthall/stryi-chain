@@ -99,9 +99,13 @@ genesis_path = "/path/to/genesis.json"
 
 [blocks]
 
+# Private key of one of the accounts that have pre-defined balance in genesis in StryiChains's format (just hex).
+# The available balance will be evenly distributed between all active addresses of geneneration (see `active_addresses_count`).
+funding_key = "8fea080a21992e9262bbd64698d4c81d995c94dd9d262f3a572d2a8f1b65575a"
+
 # Average time between blocks in seconds (sets block header timestamp increment)
 average_block_time_secs = 10
-
+ 
 # Address of the miner who will mine all the blocks in this chain.
 # We use some fixed address instead of random one here so after the chain is generated user may use its private key to sign transactions from this address.
 # It's not the same as if some balance was assigned to this address in genesis, because genesis' funds are usually distributed while generating chain history.
@@ -122,15 +126,11 @@ active_addresses_count = 50
 undo = false
 
 
-
 ```
 
 
 #### Implementation details
 WIP
-
-
-
 
 
 
