@@ -3,11 +3,9 @@ mod config;
 
 use crate::chaingen::state::GenerationState;
 pub use config::*;
-use rand::{Rng, SeedableRng};
+use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 use std::cmp::min;
-use std::fmt::Debug;
-use std::mem::needs_drop;
 
 /// Definition and helpers for Seed struct used in ChainGen.
 pub mod seed;
@@ -29,7 +27,7 @@ use crate::chaingen::utxo::{UtxoInfo, UtxoSelectionCriteria, sample_transaction_
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
-use stryi_core::block::{Block, BlockHash, BlockHeader, meets_difficulty};
+use stryi_core::block::{Block, BlockData, BlockHash, meets_difficulty};
 use stryi_core::storage::BlockStorage;
 use stryi_core::transactions::{
     OutPoint, Transaction, TransactionData, TransactionKind, TransactionOut,
@@ -246,6 +244,11 @@ impl ChainGenerator {
                 println!("Switching seed at height {} -> {}", height, current_seed);
             }
 
+            let mut tx_count = 0;
+            let mut update_tx_count = |data: &BlockData| {
+                tx_count += data.transactions.len();
+            };
+
             // Build block and persist it.
             let block = self
                 .build_block(height, &mut rng, &mut generation_state)
@@ -267,6 +270,11 @@ impl ChainGenerator {
                             .await
                             .map_err(|e| format!("put_block failed at height {}: {}", height, e))?;
             */
+
+            // Update counter
+            update_tx_count(&block.data);
+            let avg_tx_count = height as f64 / tx_count as f64;
+
             // insert undo if needed
             if self.config.blocks.need_undo {
                 todo!("Fix inserting BlockUndo in chaingen if `need_undo` flag provided.");
@@ -274,8 +282,8 @@ impl ChainGenerator {
 
             if height % 10 == 0 || height == total_to_generate {
                 println!(
-                    "... persisted {}/{} blocks (seed {})",
-                    height, total_to_generate, current_seed
+                    "... persisted {}/{} blocks (seed {}). total transactions : {}, per block(avg) : {}",
+                    height, total_to_generate, current_seed, tx_count, avg_tx_count
                 );
             }
         }
@@ -486,6 +494,12 @@ impl ChainGenerator {
             &height,
             transactions.len()
         );
+
+        // if only one tx in transaction (coinbase) - consider as a fail
+        if transactions.len() == 1 {
+            error!("Failed to build block {}.", height);
+            panic!();
+        }
 
         // Assemble block
         let mut block = Block::new(
