@@ -116,9 +116,13 @@ async fn run_chaingen(config_path: PathBuf) -> Result<(), i32> {
 #[tokio::main]
 async fn main() -> Result<(), i32> {
     // Set default log level to info if RUST_LOG is not set
-    // and initialize tracing subscriber with environment filter and formatting layer.
+    // and initialize tracing subscriber with environment filter and formatting layer
+    let env_layer = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"))
+        .add_directive("fjall=info".parse().unwrap());
+
     tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with(env_layer)
         .with(fmt::layer().with_target(true).with_level(true))
         .init();
 

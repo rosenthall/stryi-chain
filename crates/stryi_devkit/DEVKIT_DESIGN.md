@@ -33,7 +33,7 @@ stryi-devkit loadgen --help
 
 The chain generation tool is a command-line application that allows users to generate a deterministic blockchain history for testing purposes.
 It helps test first-time node startup and Initial Block Download (IBD) performance, different consensus rules, and other scenarios such as : 
-- "Will the ConsensusEngine of node still work in chain of 100k blocks?"
+  - "Will the ConsensusEngine of node still work in chain of 100k blocks?"
   - "How fast can node sync 50k blocks from scratch?"
   - Experiment with different block intervals, difficulty adjustment algorithms, and other consensus parameters.
   - Benchmark "How fast can node validate 10k blocks with 100 txs each?", "How much memory ChainIndex will use?"
@@ -130,6 +130,9 @@ undo = false
 
 
 #### Implementation details
+
+Implementation does not rely on stryi_core's ConsensusEngine on purpose for simplicity. 
+
 WIP
 
 

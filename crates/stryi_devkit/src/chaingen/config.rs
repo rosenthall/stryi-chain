@@ -38,7 +38,7 @@ pub struct ChainSettings {
 /// Block-generation rules for timestamps, miner, and synthetic traffic.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BlocksSettings {
-    /// Private key of the account that has funds (e.g. from genesis) to distribute them evenly.
+    /// Private key of the account that has funds (e.g. from genesis or just chain activity) to distribute them evenly for generation purposes.
     pub funding_key: PrivateKey,
 
     /// Average time between blocks, in seconds (used for header timestamps).
