@@ -1,10 +1,15 @@
 use crate::chaingen::txgen::FundAccount;
 use crate::chaingen::utxo::{UtxoInfo, UtxoSelectionCriteria};
 use k256::ecdsa::SigningKey;
+use rand::SeedableRng;
 use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::Write;
+use std::path::PathBuf;
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
 use stryi_core::transactions::OutPoint;
+use tracing::{debug, info};
 
 /// Current state of chain's generation.
 #[derive(Clone)]
@@ -132,38 +137,45 @@ impl GenerationState {
         amount: usize,
         base_seed: u64,
     ) -> HashMap<AccountAddress, SigningKey> {
+        // Create a wrapper that bridges rand::StdRng to k256's rand_core
+        struct StdRngWrapper(rand::rngs::StdRng);
+
+        impl k256::elliptic_curve::rand_core::RngCore for StdRngWrapper {
+            fn next_u32(&mut self) -> u32 {
+                rand::RngCore::next_u32(&mut self.0)
+            }
+            fn next_u64(&mut self) -> u64 {
+                rand::RngCore::next_u64(&mut self.0)
+            }
+            fn fill_bytes(&mut self, dest: &mut [u8]) {
+                rand::RngCore::fill_bytes(&mut self.0, dest)
+            }
+            fn try_fill_bytes(
+                &mut self,
+                dest: &mut [u8],
+            ) -> Result<(), k256::elliptic_curve::rand_core::Error> {
+                rand::RngCore::fill_bytes(&mut self.0, dest);
+                Ok(())
+            }
+        }
+
+        impl k256::elliptic_curve::rand_core::CryptoRng for StdRngWrapper {}
+
         let mut accounts = HashMap::new();
 
         for i in 0..amount {
             // Create deterministic seed for each account by combining base seed with index
             let account_seed = base_seed.wrapping_add(i as u64);
 
-            // Convert to 32-byte seed for SigningKey using a mixing function
-            let mut seed_bytes = [0u8; 32];
+            let mut rng = StdRngWrapper(rand::rngs::StdRng::seed_from_u64(account_seed));
 
-            // Fill seed bytes with deterministic pattern
-            let mut seed = account_seed;
-            for chunk in seed_bytes.chunks_mut(8) {
-                let bytes = seed.to_le_bytes();
-                let len = chunk.len().min(8);
-                chunk[..len].copy_from_slice(&bytes[..len]);
-
-                // Update seed for next chunk using a simple mixing function
-                seed = seed
-                    // .wrapping_mul(0x6C8E9CF570932BD5)
-                    .wrapping_add(1);
-            }
-
-            // Generate deterministic ECDSA keypair from seed bytes
-            let signing_key = SigningKey::from_bytes(&seed_bytes.into())
-                .expect("Failed to create signing key for account.");
+            // Generate a random signing key
+            let signing_key = SigningKey::random(&mut rng);
 
             let verifying_key = signing_key.verifying_key();
-            let account_address = AccountAddress::from_public_key(&verifying_key);
-
+            let account_address = AccountAddress::from_public_key(verifying_key);
             accounts.insert(account_address, signing_key);
         }
-
         accounts
     }
 
