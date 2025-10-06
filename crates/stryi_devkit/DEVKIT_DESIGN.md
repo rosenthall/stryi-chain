@@ -86,6 +86,10 @@ seed = 42
 # path where to initalize the chain.
 # this path will be created if not exists.
 # internally it will use `stryi_storage` crate for initalization logic.
+#
+# chaingen also will create file `CHAINGEN_PRIVATE_KEYS.txt`, with accounts created for generations in format :
+# @AccountAddress:CorrespondingPrivateKeyInHex
+# Each line - one pair. 
 output_path = "/tmp/testchain1"
 
 # Genesis block configuration

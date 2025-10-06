@@ -225,6 +225,9 @@ impl ChainGenerator {
             &generation_state.accounts.len()
         );
 
+        // back the accounts&keys up
+        generation_state.save_accounts(self.config.chain.output_path.clone())?;
+
         // Insert block that distributes balances
         let distributor = self.build_distributing_block(&mut generation_state).await?;
         trace!(?distributor);

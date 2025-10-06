@@ -47,6 +47,52 @@ impl GenerationState {
         }
     }
 
+    /// Saves accounts in provided dir, in file `.txt`
+    /// Saving format is @AccountAddress:CorrespondingPrivateKeyInHex line for each address
+    pub fn save_accounts(&self, path: PathBuf) -> Result<(), String> {
+        // Check that path is dir and exists
+        if !path.is_dir() {
+            return Err(format!(
+                "Provided path ({}) is either not a path, or not a valid dir",
+                &path.to_str().unwrap_or("UNPRINTABLE")
+            ));
+        }
+
+        let file_path = path.join("CHAINGEN_PRIVATE_KEY.txt");
+        debug!(
+            "Path to generate private key backup : {}",
+            file_path.to_str().unwrap()
+        );
+        let mut file = File::create_new(&file_path).map_err(|e| {
+            format!(
+                "Unable to create file for creating private keys backup, error: `{}`.",
+                e
+            )
+        })?;
+
+        info!("Backing up generated accounts in {:?}", path);
+
+        let pairs: Vec<(AccountAddress, PrivateKey)> = self
+            .accounts
+            .clone()
+            .iter()
+            .map(|(addr, signing_key)| (addr.to_owned(), PrivateKey::new(signing_key.clone())))
+            .collect();
+
+        // Create buffer before writing
+        let mut buffer = String::with_capacity(pairs.len() * 100);
+
+        // construct lines in our format
+        for (account_address, private_key) in pairs {
+            let line = format!("{}:{}\n", account_address, private_key);
+            buffer.push_str(&line);
+        }
+
+        // write in file
+        file.write_all(buffer.as_bytes())
+            .map_err(|e| format!("Unable to write backup in file, error : {}", e))
+    }
+
     /// Get all the available UTXOs for provided address in current state.
     pub(crate) fn available_utxos(&self, addr: &AccountAddress) -> Option<HashSet<UtxoInfo>> {
         self.account_utxos.get(addr).cloned()
