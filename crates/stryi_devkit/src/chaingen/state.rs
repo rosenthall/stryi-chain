@@ -1,8 +1,8 @@
 use crate::chaingen::txgen::FundAccount;
 use crate::chaingen::utxo::{UtxoInfo, UtxoSelectionCriteria};
+use indexmap::{IndexMap, IndexSet};
 use k256::ecdsa::SigningKey;
 use rand::SeedableRng;
-use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -16,7 +16,7 @@ use tracing::{debug, info};
 pub struct GenerationState {
     /// Collection of all the accounts.
     /// @addr mapped by SigningKey of corresponding account.
-    pub(crate) accounts: HashMap<AccountAddress, SigningKey>,
+    pub(crate) accounts: IndexMap<AccountAddress, SigningKey>,
 
     /// Account that has balance before generation.
     /// This balance will be distributed between `Self::accounts`,
@@ -25,11 +25,11 @@ pub struct GenerationState {
     pub(crate) fund_account: FundAccount,
 
     /// Track available UTXOs for each account for transaction generation
-    pub(crate) account_utxos: HashMap<AccountAddress, HashSet<UtxoInfo>>,
+    pub(crate) account_utxos: IndexMap<AccountAddress, IndexSet<UtxoInfo>>,
 }
 
 /// Accounts list with corresponding private keys and its UTXOs.
-pub type AccountsWithUtxos = Vec<(AccountAddress, SigningKey, HashSet<UtxoInfo>)>;
+pub type AccountsWithUtxos = Vec<(AccountAddress, SigningKey, IndexSet<UtxoInfo>)>;
 
 impl GenerationState {
     /// Create new instance, with `n` of random accounts, that generated with `base_seed` to generate accounts.
@@ -94,7 +94,7 @@ impl GenerationState {
     }
 
     /// Get all the available UTXOs for provided address in current state.
-    pub(crate) fn available_utxos(&self, addr: &AccountAddress) -> Option<HashSet<UtxoInfo>> {
+    pub(crate) fn available_utxos(&self, addr: &AccountAddress) -> Option<IndexSet<UtxoInfo>> {
         self.account_utxos.get(addr).cloned()
     }
 
@@ -182,7 +182,7 @@ impl GenerationState {
     pub(crate) fn generate_accounts(
         amount: usize,
         base_seed: u64,
-    ) -> HashMap<AccountAddress, SigningKey> {
+    ) -> IndexMap<AccountAddress, SigningKey> {
         // Create a wrapper that bridges rand::StdRng to k256's rand_core
         struct StdRngWrapper(rand::rngs::StdRng);
 
@@ -207,7 +207,7 @@ impl GenerationState {
 
         impl k256::elliptic_curve::rand_core::CryptoRng for StdRngWrapper {}
 
-        let mut accounts = HashMap::new();
+        let mut accounts = IndexMap::new();
 
         for i in 0..amount {
             // Create deterministic seed for each account by combining base seed with index
@@ -230,7 +230,7 @@ impl GenerationState {
     /// Each UTXO will appear at most once in the result
     pub(crate) fn select_utxos_by_criteria(
         &self,
-        utxos: &HashSet<UtxoInfo>,
+        utxos: &IndexSet<UtxoInfo>,
         criteria: UtxoSelectionCriteria,
         count: usize,
     ) -> Vec<UtxoInfo> {

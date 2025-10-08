@@ -24,3 +24,4 @@ rayon = "1.11.0"
 bincode = { version = "2.0.0-rc.3", features = ["serde"] }
 k256 = {version = "0.13", features = ["serde", "ecdsa"]}
 tracing = "0.1.41"
+indexmap = "2.11.4"
