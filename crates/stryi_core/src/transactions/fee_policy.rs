@@ -1,5 +1,4 @@
 use crate::transactions::Transaction;
-use bincode::config::standard;
 
 /// Represents a static fee calculation policy using fixed costs for transaction components.
 ///
@@ -59,15 +58,13 @@ impl FeeCalculator {
 
     /// Calculates the minimum required fee for a transaction
     pub fn calculate_fee(&self, tx: &Transaction) -> u64 {
-        // Get length of serialized transaction
-        let tx_bytes = bincode::serde::encode_to_vec(tx, standard())
-            .expect("Transaction serialization cannot fail")
-            .len();
+        // This avoids doing an actual serialization during fee calculation.
+        let tx_bytes = tx.estimate_serialized_size() as u64;
 
         self.policy.fixed_fee
             + (self.policy.input_cost * tx.data.inputs.len() as u64)
             + (self.policy.output_cost * tx.data.outputs.len() as u64)
-            + (self.policy.byte_cost * tx_bytes as u64)
+            + (self.policy.byte_cost * tx_bytes)
     }
 
     /// Checks if provided fee is sufficient according to policy
@@ -130,9 +127,7 @@ mod tests {
         // Test case 1: Simple transaction (1 input, 1 output)
         let tx1 = create_test_transaction(1, 1);
         let fee1 = calculator.calculate_fee(&tx1);
-        let expected_size1 = bincode::serde::encode_to_vec(&tx1, standard())
-            .unwrap()
-            .len() as u64;
+        let expected_size1 = tx1.estimate_serialized_size() as u64;
 
         assert_eq!(
             fee1,
@@ -145,9 +140,7 @@ mod tests {
         // Test case 2: More complex transaction (3 inputs, 2 outputs)
         let tx2 = create_test_transaction(3, 2);
         let fee2 = calculator.calculate_fee(&tx2);
-        let expected_size2 = bincode::serde::encode_to_vec(&tx2, standard())
-            .unwrap()
-            .len() as u64;
+        let expected_size2 = tx2.estimate_serialized_size() as u64;
 
         assert_eq!(
             fee2,

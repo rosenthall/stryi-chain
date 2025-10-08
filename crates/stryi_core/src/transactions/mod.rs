@@ -17,6 +17,12 @@ pub use crate::transactions::signature::StryiSignature;
 
 /// Definition of FeePolicy and FeeCalculator for estimating required fee for any transaction.
 mod fee_policy;
+
+/// Provides logic for estimating and computing the actual size of transactions,  
+/// including inputs, outputs, and signatures, to ensure accurate fee calculation.
+mod size;
+pub use crate::transactions::size::*;
+
 pub use fee_policy::*;
 
 use serde::{Deserialize, Serialize};
