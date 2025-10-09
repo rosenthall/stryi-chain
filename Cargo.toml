@@ -6,7 +6,8 @@ members = [
     "crates/stryi_node",   # Contains the Stryi blokchain node implementation
     "crates/stryi_storage",# Contains the implementation of storages for UTXO's, blocks and mempool
     "crates/stryi_network", # Contains stryi-network, p2p and protocols high-level api.
-    "crates/stryi_devkit" # Contains cli tools and utilities for development and testing: chaingen, loadgen, etc.
+    "crates/stryi_devkit", # Contains cli tools and utilities for development and testing: chaingen, loadgen, etc.
+    "crates/stryi_wallet" # Contains TUI wallet API
 ]
 resolver = "3"
 

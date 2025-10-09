@@ -1,0 +1,16 @@
+[package]
+name = "stryi_wallet"
+edition = "2024"
+version = "0.0.1"
+authors = ["Rosenthall <rosenthall@riseup.net>"]
+license = "BSD-3-Clause"
+
+
+[[bin]]
+name = "stryi-wallet"
+path = "src/main.rs"
+
+
+[dependencies]
+tokio = {version = "1.47.1", features = ["macros", "rt-multi-thread"]}
+cursive = "0.21.1"
