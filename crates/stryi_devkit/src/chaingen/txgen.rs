@@ -5,11 +5,11 @@ use rand::Rng;
 use rand::prelude::IndexedRandom;
 use stryi_core::address::AccountAddress;
 use stryi_core::transactions::{
-    FeeCalculator, FeePolicy, OutPoint, Transaction, TransactionData, TransactionIn,
-    TransactionKind, TransactionOut,
+    FeePolicy, OutPoint, Transaction, TransactionData, TransactionIn, TransactionKind,
+    TransactionOut, estimate_transaction_size,
 };
 use stryi_core::{PrivateKey, StryiCoreError};
-use tracing::{debug, error};
+use tracing::debug;
 
 /// FundAccount represents account, that will distribute own balance to other accounts
 /// for generating purposes.
@@ -40,8 +40,6 @@ pub struct TransactionGenerationParams {
     pub max_inputs: usize,
     /// Maximum outputs in a transaction
     pub max_outputs: usize,
-    /// Probability of creating change output when remainder is small
-    pub change_output_probability: f64,
 }
 
 impl Default for TransactionGenerationParams {
@@ -49,22 +47,8 @@ impl Default for TransactionGenerationParams {
         Self {
             min_output_value: 10_000,
             fee_policy: FeePolicy::default(),
-            max_inputs: 10,
+            max_inputs: 8,
             max_outputs: 8,
-            change_output_probability: 0.8,
-        }
-    }
-}
-
-impl TransactionGenerationParams {
-    /// Check if a value is worth creating an output for
-    pub fn is_output_worthwhile(&self, value: u64, rng: &mut impl Rng) -> bool {
-        if value >= self.min_output_value * 2 {
-            true
-        } else if value >= self.min_output_value {
-            rng.random_bool(self.change_output_probability)
-        } else {
-            false
         }
     }
 }
@@ -127,7 +111,7 @@ fn generate_transaction_by_pattern(
         TransactionPattern::Simple => {
             // Simple pattern needs exactly 1 UTXO
             let utxo = utxos_to_spend.into_iter().next()?;
-            generate_simple_tx(sender, utxo, receiver_pool, rng, params)
+            generate_simple_tx(utxo, receiver_pool, rng, params)
         }
 
         TransactionPattern::Consolidation => {
@@ -135,7 +119,7 @@ fn generate_transaction_by_pattern(
             if utxos_to_spend.len() < 2 {
                 return None;
             }
-            generate_consolidation_tx(sender, utxos_to_spend, receiver_pool, rng, params)
+            generate_consolidation_tx(utxos_to_spend, receiver_pool, rng, params)
         }
         TransactionPattern::Splitting => {
             // Splitting needs 1 UTXO but creates multiple outputs
@@ -150,6 +134,34 @@ fn generate_transaction_by_pattern(
             generate_complex_tx(sender, utxos_to_spend, receiver_pool, rng, params)
         }
     }
+}
+
+/// Exact fee calculation using accurate size estimation
+#[inline]
+fn estimate_fee(num_inputs: usize, num_outputs: usize, fee_policy: &FeePolicy) -> u64 {
+    let estimated_size = estimate_transaction_size(num_inputs, num_outputs);
+
+    fee_policy.fixed_fee
+        + (num_inputs as u64 * fee_policy.input_cost)
+        + (num_outputs as u64 * fee_policy.output_cost)
+        + (estimated_size as u64 * fee_policy.byte_cost)
+}
+
+/// Calculate minimum economically viable UTXO value.
+/// A UTXO is economically viable if it can cover its own future spending cost
+/// plus create at least one meaningful output (min_output_value).
+///
+/// We add a 50% safety margin to account for:
+/// - Potential fee increases
+/// - Multiple inputs scenarios
+/// - Ensuring outputs remain spendable through multiple generations
+#[inline]
+fn min_viable_output(params: &TransactionGenerationParams) -> u64 {
+    let future_spend_cost = estimate_fee(1, 1, &params.fee_policy);
+    let base_minimum = future_spend_cost + params.min_output_value;
+
+    // Add 50% safety margin to prevent gradual UTXO value degradation
+    base_minimum + (base_minimum / 2)
 }
 
 // Main entry point: build tx and update state
@@ -198,115 +210,50 @@ pub fn generate_transaction(
     Some(transaction)
 }
 
-/// Calculate fee for a transaction with given inputs/outputs by building a preliminary unsigned transaction.
-/// This is necessary because FeeCalculator needs an actual Transaction to compute the fee.
-fn calculate_fee_for_transaction(
-    inputs: Vec<TransactionIn>,
-    outputs: Vec<TransactionOut>,
-    params: &TransactionGenerationParams,
-) -> u64 {
-    let tx_data = TransactionData {
-        version: 0,
-        kind: TransactionKind::Payment,
-        inputs,
-        outputs,
-    };
-
-    let prelim_tx = Transaction::new_unsigned(tx_data);
-    let calculator = FeeCalculator::new(params.fee_policy.clone());
-
-    calculator.calculate_fee(&prelim_tx)
-}
-
 // --- Pattern-Specific Helpers ---
 
-/// Generate a simple 1-input, 1-output (+ optional change) transaction.
-fn generate_simple_tx(
-    sender: AccountAddress,
+/// Generate simple transaction: 1 input -> 1 output
+pub fn generate_simple_tx(
     utxo_to_spend: UtxoInfo,
     receiver_pool: &[AccountAddress],
     rng: &mut impl Rng,
     params: &TransactionGenerationParams,
 ) -> Option<(TransactionData, Vec<TransactionOut>)> {
     let receiver = *receiver_pool.choose(rng)?;
-    debug!(choosen_receiver_for_tx = ?receiver.to_string());
 
     let input = TransactionIn {
         previous_output: utxo_to_spend.outpoint,
         sequence: 0,
     };
 
-    // Calculate base fee with 1 output
-    let base_output = TransactionOut {
-        value: params.min_output_value,
-        recipient: receiver,
-    };
-    let base_fee = calculate_fee_for_transaction(vec![input.clone()], vec![base_output], params);
-    debug!(base_fee_for_tx = ?base_fee);
+    // Calculate fee for single input and single output
+    let fee = estimate_fee(1, 1, &params.fee_policy);
 
-    // Minimum spendable amount = fee to spend it later + min_output
-    // A UTXO is only useful if it can pay for its own spending fee
-    let min_spendable = base_fee + params.min_output_value;
-
-    // Check if we have enough
-    if utxo_to_spend.value <= min_spendable {
-        error!(
-            "Don't have enough balance for simple tx of {}. UTXO value: {}, Required: {}",
-            sender.to_string(),
-            utxo_to_spend.value,
-            min_spendable
+    // Check if UTXO is economically spendable
+    if utxo_to_spend.value <= fee {
+        debug!(
+            "UTXO value {} not enough to cover fee {}",
+            utxo_to_spend.value, fee
         );
         return None;
     }
 
-    let available_after_base_fee = utxo_to_spend.value - base_fee;
+    // Calculate output value (entire UTXO minus fee)
+    let output_value = utxo_to_spend.value - fee;
 
-    // Determine payment value range
-    let max_payment = if available_after_base_fee > min_spendable * 2 {
-        available_after_base_fee - min_spendable
-    } else {
-        available_after_base_fee
-    };
+    // Ensure output meets minimum value requirement
+    if output_value < params.min_output_value {
+        debug!(
+            "Output value too small: {} < {}",
+            output_value, params.min_output_value
+        );
+        return None;
+    }
 
-    let payment_value = rng.random_range(params.min_output_value..=max_payment);
-
-    let mut outputs = vec![TransactionOut {
-        value: payment_value,
+    let outputs = vec![TransactionOut {
+        value: output_value,
         recipient: receiver,
     }];
-
-    // Decide on change output
-    let potential_change = available_after_base_fee - payment_value;
-
-    // Only create change if it will be economically spendable later
-    if potential_change >= min_spendable && params.is_output_worthwhile(potential_change, rng) {
-        // Calculate fee with change output
-        let with_change = vec![
-            TransactionOut {
-                value: payment_value,
-                recipient: receiver,
-            },
-            TransactionOut {
-                value: potential_change, // temporary value for fee calc
-                recipient: sender,
-            },
-        ];
-
-        let fee_with_change =
-            calculate_fee_for_transaction(vec![input.clone()], with_change, params);
-
-        // Check if we can afford the higher fee AND still have min_spendable change
-        if utxo_to_spend.value >= payment_value + fee_with_change + min_spendable {
-            let change_value = utxo_to_spend.value - payment_value - fee_with_change;
-
-            if change_value >= min_spendable {
-                outputs.push(TransactionOut {
-                    value: change_value,
-                    recipient: sender,
-                });
-            }
-        }
-    }
 
     let tx_data = TransactionData {
         version: 0,
@@ -318,15 +265,76 @@ fn generate_simple_tx(
     Some((tx_data, outputs))
 }
 
-/// Consolidate multiple UTXOs into one (or two with change)
-fn generate_consolidation_tx(
-    _sender: AccountAddress,
-    _utxos_to_spend: Vec<UtxoInfo>,
-    _receiver_pool: &[AccountAddress],
-    _rng: &mut impl Rng,
-    _params: &TransactionGenerationParams,
+/// Generate consolidation transaction: N inputs -> 1 output
+/// Combines multiple small UTXOs into one larger UTXO
+pub fn generate_consolidation_tx(
+    utxos_to_spend: Vec<UtxoInfo>,
+    receiver_pool: &[AccountAddress],
+    rng: &mut impl Rng,
+    params: &TransactionGenerationParams,
 ) -> Option<(TransactionData, Vec<TransactionOut>)> {
-    todo!("implement consolidation tx gen")
+    if utxos_to_spend.len() < 2 {
+        debug!("Need at least 2 UTXOs for consolidation");
+        return None;
+    }
+
+    // Limit number of inputs to prevent huge transactions
+    let utxos_to_use: Vec<_> = utxos_to_spend.into_iter().take(params.max_inputs).collect();
+
+    let num_inputs = utxos_to_use.len();
+    let receiver = *receiver_pool.choose(rng)?;
+
+    let inputs: Vec<TransactionIn> = utxos_to_use
+        .iter()
+        .map(|utxo| TransactionIn {
+            previous_output: utxo.outpoint,
+            sequence: 0,
+        })
+        .collect();
+
+    let total_input: u64 = utxos_to_use.iter().map(|u| u.value).sum();
+
+    // Calculate exact fee for N inputs -> 1 output
+    let fee = estimate_fee(num_inputs, 1, &params.fee_policy);
+
+    debug!(
+        "Consolidating {} UTXOs (total: {}, fee: {})",
+        num_inputs, total_input, fee
+    );
+
+    if total_input <= fee {
+        debug!(
+            "Total input {} not enough to cover fee {}",
+            total_input, fee
+        );
+        return None;
+    }
+
+    let output_value = total_input - fee;
+    let min_viable = min_viable_output(params);
+
+    // Ensure consolidated output is economically viable
+    if output_value < min_viable {
+        debug!(
+            "Consolidation result too small: {} < {}",
+            output_value, min_viable
+        );
+        return None;
+    }
+
+    let outputs = vec![TransactionOut {
+        value: output_value,
+        recipient: receiver,
+    }];
+
+    let tx_data = TransactionData {
+        version: 0,
+        kind: TransactionKind::Payment,
+        inputs,
+        outputs: outputs.clone(),
+    };
+
+    Some((tx_data, outputs))
 }
 
 /// Split one UTXO into multiple outputs
@@ -349,17 +357,4 @@ fn generate_complex_tx(
     _params: &TransactionGenerationParams,
 ) -> Option<(TransactionData, Vec<TransactionOut>)> {
     todo!("implement complex tx gen")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_calculate_balance_per_account() {
-        assert_eq!(calculate_balance_per_account(10000, 2), 4950); // rounds to 4950
-        assert_eq!(calculate_balance_per_account(100000, 4), 24750); // rounds to 24750
-        assert_eq!(calculate_balance_per_account(1234, 2), 610); // rounds to 610
-        assert_eq!(calculate_balance_per_account(0, 2), 0);
-    }
 }

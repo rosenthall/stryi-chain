@@ -23,7 +23,9 @@ use crate::chaingen::txgen::{
     FundAccount, TransactionGenerationParams, generate_distributing_transaction,
     generate_transaction,
 };
-use crate::chaingen::utxo::{UtxoInfo, UtxoSelectionCriteria, sample_transaction_pattern};
+use crate::chaingen::utxo::{
+    TransactionPattern, UtxoInfo, UtxoSelectionCriteria, sample_transaction_pattern,
+};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
@@ -33,7 +35,7 @@ use stryi_core::transactions::{
     OutPoint, Transaction, TransactionData, TransactionKind, TransactionOut,
 };
 use stryi_storage::{GenesisInitConfig, StorageStatus, StryiStorage};
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace};
 
 pub struct ChainGenerator {
     /// Config for this run.
@@ -263,16 +265,29 @@ impl ChainGenerator {
                 .await
                 .map_err(|e| format!("put_block failed at height {}: {}", height, e))?;
 
-            /*            let block = self
-                            .build_block(height, &mut rng, &accounts, &mut account_utxos)
-                            .await
-                            .map_err(|e| format!("failed to build block at height {}: {}", height, e))?;
+            // log current utxos state
+            let utxos_amount = |s: &GenerationState| {
+                s.account_utxos
+                    .iter()
+                    .map(|(_addr, set)| set.iter().count())
+                    .sum::<usize>()
+            };
 
-                        self.storage
-                            .put_block(&block)
-                            .await
-                            .map_err(|e| format!("put_block failed at height {}: {}", height, e))?;
-            */
+            trace!(
+                "There is {} UTXOs available before persisting block {}",
+                utxos_amount(&generation_state),
+                height
+            );
+
+            // update the generation state
+            generation_state.apply_block(&block);
+
+            // and log after
+            trace!(
+                "There is {} UTXOs available after persisting block {}",
+                utxos_amount(&generation_state),
+                height
+            );
 
             // Update counter
             update_tx_count(&block.data);
@@ -284,14 +299,14 @@ impl ChainGenerator {
             }
 
             if height % 10 == 0 || height == total_to_generate {
-                println!(
-                    "... persisted {}/{} blocks (seed {}). total transactions : {}, per block(avg) : {}",
+                info!(
+                    "|->  persisted {}/{} blocks (seed {}). total transactions : {}, per block(avg) : {}",
                     height, total_to_generate, current_seed, tx_count, avg_tx_count
                 );
             }
         }
 
-        println!(
+        info!(
             "Done. Persisted {} blocks after genesis.",
             total_to_generate
         );
@@ -442,6 +457,7 @@ impl ChainGenerator {
             let top_accounts = state.get_top_accounts_with_utxos(payment_tx_count);
 
             // Generate payment transactions
+            let params = TransactionGenerationParams::default();
 
             for (sender_addr, sender_key, sender_utxos) in
                 top_accounts.into_iter().take(payment_tx_count)
@@ -451,26 +467,37 @@ impl ChainGenerator {
                     continue;
                 }
 
-                // Generate random selection criteria for and pattern for this transaction
+                // Generate random selection criteria and pattern for this transaction
                 let selection_criteria: UtxoSelectionCriteria = rng.random();
-                let transaction_pattern = sample_transaction_pattern(rng);
+                let mut transaction_pattern = sample_transaction_pattern(rng);
 
-                // TODO: Calculate how many UTXOs we want to spend in this tx.
-                // for now use two if possible, or 1 if not.
-                let _utxos_to_spend = min(sender_utxos.len(), 2);
+                // Determine how many UTXOs to select based on pattern and availability
+                let utxos_to_select = match transaction_pattern {
+                    TransactionPattern::Simple => 1,
+
+                    TransactionPattern::Consolidation => {
+                        // Consolidation requires at least 2 UTXOs
+                        if sender_utxos.len() < 2 {
+                            // Fallback to Simple if not enough UTXOs
+                            transaction_pattern = TransactionPattern::Simple;
+                            1
+                        } else {
+                            min(sender_utxos.len(), params.max_inputs)
+                        }
+                    }
+
+                    _ => unreachable!("this cannot be yet"),
+                };
 
                 let selected_utxos = state.select_utxos_by_criteria(
                     &sender_utxos,
                     selection_criteria,
-                    1, //utxos_to_spend,
+                    utxos_to_select,
                 );
 
                 let receivers_pool = state
                     .get_best_receivers(state.accounts.len())
                     .expect("Must be available receivers.");
-
-                // TODO: Make params and FeePolicy configurable in transaction generator
-                let params = TransactionGenerationParams::default();
 
                 let generated_tx = generate_transaction(
                     state,
@@ -492,6 +519,7 @@ impl ChainGenerator {
                 transactions.push(generated_tx.expect("must exist"));
             }
         }
+
         trace!(
             "transaction count at the end of the block {} is : {}",
             &height,

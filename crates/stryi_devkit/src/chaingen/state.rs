@@ -3,11 +3,13 @@ use crate::chaingen::utxo::{UtxoInfo, UtxoSelectionCriteria};
 use indexmap::{IndexMap, IndexSet};
 use k256::ecdsa::SigningKey;
 use rand::SeedableRng;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
+use stryi_core::block::Block;
 use stryi_core::transactions::OutPoint;
 use tracing::{debug, info};
 
@@ -91,11 +93,6 @@ impl GenerationState {
         // write in file
         file.write_all(buffer.as_bytes())
             .map_err(|e| format!("Unable to write backup in file, error : {}", e))
-    }
-
-    /// Get all the available UTXOs for provided address in current state.
-    pub(crate) fn available_utxos(&self, addr: &AccountAddress) -> Option<IndexSet<UtxoInfo>> {
-        self.account_utxos.get(addr).cloned()
     }
 
     /// Removes a set of UTXOs from an account's available UTXO pool.
@@ -257,6 +254,62 @@ impl GenerationState {
         }
 
         utxo_vec.into_iter().take(count).collect()
+    }
+
+    /// Applies block to GenerationState.
+    pub fn apply_block(&mut self, block: &Block) {
+        let height = block.header.height;
+
+        // Transactions in the block
+        let txs = &block.data.transactions;
+
+        // Collect all spent OutPoints from inputs
+        let mut spent_outpoints: Vec<OutPoint> = Vec::new();
+        for tx in txs.iter() {
+            for input in tx.data.inputs.iter() {
+                spent_outpoints.push(input.previous_output);
+            }
+        }
+
+        // Remove all spent UTXOs from account_utxos
+        if !spent_outpoints.is_empty() {
+            let spent_set: HashSet<OutPoint> = spent_outpoints.into_iter().collect();
+
+            // For each account, remove any utxo whose outpoint is in spent_set
+            for (_addr, utxos) in self.account_utxos.iter_mut() {
+                utxos.retain(|u| !spent_set.contains(&u.outpoint))
+            }
+        }
+
+        // Add outputs as new UTXOs
+        for tx in txs.iter() {
+            let tx_id = tx.data.hash();
+
+            for (idx, output) in tx.data.outputs.iter().enumerate() {
+                let owner: AccountAddress = output.recipient;
+                let value: u64 = output.value;
+
+                // Construct OutPoint for the new UTXO
+                let outpoint = OutPoint {
+                    txid: tx_id,
+                    vout: idx as u32,
+                };
+
+                // Construct new UtxoInfo
+                let new_utxo = UtxoInfo {
+                    outpoint,
+                    value,
+                    height_created: height,
+                    is_coinbase: false,
+                };
+
+                // Insert into account_utxos for the owner
+                self.account_utxos
+                    .entry(owner)
+                    .or_default()
+                    .insert(new_utxo);
+            }
+        }
     }
 }
 
