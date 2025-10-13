@@ -337,24 +337,244 @@ pub fn generate_consolidation_tx(
     Some((tx_data, outputs))
 }
 
-/// Split one UTXO into multiple outputs
 fn generate_splitting_tx(
     _sender: AccountAddress,
-    _utxo_to_spend: UtxoInfo, // Single UTXO
-    _receiver_pool: &[AccountAddress],
-    _rng: &mut impl Rng,
-    _params: &TransactionGenerationParams,
+    utxo_to_spend: UtxoInfo,
+    receiver_pool: &[AccountAddress],
+    rng: &mut impl Rng,
+    params: &TransactionGenerationParams,
 ) -> Option<(TransactionData, Vec<TransactionOut>)> {
-    todo!("implement splitting tx gen")
+    let min_viable = min_viable_output(params);
+
+    // Limit splitting to reasonable range (2-4 outputs) to avoid UTXO explosion
+    let max_split_outputs = 4.min(params.max_outputs).min(receiver_pool.len());
+
+    // Calculate maximum possible outputs based on available value
+    let mut max_possible_outputs = 2;
+    for num_outputs in 2..=max_split_outputs {
+        let fee = estimate_fee(1, num_outputs, &params.fee_policy);
+        if utxo_to_spend.value <= fee {
+            break;
+        }
+        let available = utxo_to_spend.value - fee;
+        if available >= min_viable * num_outputs as u64 {
+            max_possible_outputs = num_outputs;
+        } else {
+            break;
+        }
+    }
+
+    if max_possible_outputs < 2 {
+        debug!(
+            "UTXO value {} too small to split into multiple viable outputs",
+            utxo_to_spend.value
+        );
+        return None;
+    }
+
+    // Choose number of outputs within viable range
+    let num_outputs = rng.random_range(2..=max_possible_outputs);
+
+    let input = TransactionIn {
+        previous_output: utxo_to_spend.outpoint,
+        sequence: 0,
+    };
+
+    // Calculate fee for 1 input -> N outputs
+    let fee = estimate_fee(1, num_outputs, &params.fee_policy);
+
+    // Check if fee can be covered BEFORE subtracting
+    if utxo_to_spend.value <= fee {
+        debug!(
+            "UTXO value {} cannot cover fee {} for {} outputs",
+            utxo_to_spend.value, fee, num_outputs
+        );
+        return None;
+    }
+
+    let available_for_outputs = utxo_to_spend.value - fee;
+
+    // Additional safety check: ensure we can create viable outputs
+    if available_for_outputs < min_viable * num_outputs as u64 {
+        debug!(
+            "Available value {} insufficient for {} viable outputs (need {})",
+            available_for_outputs,
+            num_outputs,
+            min_viable * num_outputs as u64
+        );
+        return None;
+    }
+
+    // Select random receivers
+    let receivers: Vec<AccountAddress> = receiver_pool.sample(rng, num_outputs).copied().collect();
+
+    // Split value among outputs with some randomization
+    let mut outputs = Vec::with_capacity(num_outputs);
+    let mut remaining = available_for_outputs;
+
+    for (i, receiver) in receivers.iter().enumerate() {
+        let output_value = if i == num_outputs - 1 {
+            // Last output gets all remaining value
+            remaining
+        } else {
+            // Calculate how much we need to reserve for remaining outputs
+            let outputs_left = (num_outputs - i - 1) as u64;
+            let reserved_for_remaining = min_viable.saturating_mul(outputs_left);
+
+            // Ensure we have enough remaining value
+            let available_for_this = remaining.saturating_sub(reserved_for_remaining);
+            if available_for_this < min_viable {
+                // Not enough left, give minimum viable
+                min_viable
+            } else {
+                let fair_share = remaining / (num_outputs - i) as u64;
+                let max_val = fair_share.min(available_for_this);
+                if max_val <= min_viable {
+                    min_viable
+                } else {
+                    rng.random_range(min_viable..=max_val)
+                }
+            }
+        };
+
+        outputs.push(TransactionOut {
+            value: output_value,
+            recipient: *receiver,
+        });
+        remaining = remaining.saturating_sub(output_value);
+    }
+
+    debug!(
+        "Splitting UTXO of {} into {} outputs",
+        utxo_to_spend.value, num_outputs
+    );
+
+    let tx_data = TransactionData {
+        version: 0,
+        kind: TransactionKind::Payment,
+        inputs: vec![input],
+        outputs: outputs.clone(),
+    };
+
+    Some((tx_data, outputs))
 }
 
-/// Multiple inputs to multiple outputs
+/// Generate complex transaction: N inputs -> M outputs
+/// Combines multiple UTXOs and distributes to multiple recipients
 fn generate_complex_tx(
     _sender: AccountAddress,
-    _utxos_to_spend: Vec<UtxoInfo>, // Multiple UTXOs
-    _receiver_pool: &[AccountAddress],
-    _rng: &mut impl Rng,
-    _params: &TransactionGenerationParams,
+    utxos_to_spend: Vec<UtxoInfo>,
+    receiver_pool: &[AccountAddress],
+    rng: &mut impl Rng,
+    params: &TransactionGenerationParams,
 ) -> Option<(TransactionData, Vec<TransactionOut>)> {
-    todo!("implement complex tx gen")
+    if utxos_to_spend.len() < 2 {
+        debug!("Need at least 2 UTXOs for complex transaction");
+        return None;
+    }
+
+    // Limit inputs to prevent huge transactions
+    let utxos_to_use: Vec<_> = utxos_to_spend.into_iter().take(params.max_inputs).collect();
+    let num_inputs = utxos_to_use.len();
+    let total_input: u64 = utxos_to_use.iter().map(|u| u.value).sum();
+
+    let min_viable = min_viable_output(params);
+
+    // Limit complex outputs to reasonable range (2-5) to avoid UTXO explosion
+    let max_complex_outputs = 5.min(params.max_outputs).min(receiver_pool.len());
+
+    // Calculate maximum possible outputs based on available value
+    let mut max_possible_outputs = 2;
+    for num_outputs in 2..=max_complex_outputs {
+        let fee = estimate_fee(num_inputs, num_outputs, &params.fee_policy);
+        if total_input <= fee {
+            break;
+        }
+        let available = total_input - fee;
+        if available >= min_viable * num_outputs as u64 {
+            max_possible_outputs = num_outputs;
+        } else {
+            break;
+        }
+    }
+
+    if max_possible_outputs < 2 {
+        debug!(
+            "Total input {} too small to create multiple viable outputs",
+            total_input
+        );
+        return None;
+    }
+
+    // Choose number of outputs within viable range
+    let num_outputs = rng.random_range(2..=max_possible_outputs);
+
+    let inputs: Vec<TransactionIn> = utxos_to_use
+        .iter()
+        .map(|utxo| TransactionIn {
+            previous_output: utxo.outpoint,
+            sequence: 0,
+        })
+        .collect();
+
+    // Calculate fee for N inputs -> M outputs
+    let fee = estimate_fee(num_inputs, num_outputs, &params.fee_policy);
+
+    debug!(
+        "Complex tx: {} inputs (total: {}) -> {} outputs (fee: {})",
+        num_inputs, total_input, num_outputs, fee
+    );
+
+    let available_for_outputs = total_input - fee;
+
+    // Select random receivers
+    let receivers: Vec<AccountAddress> = receiver_pool.sample(rng, num_outputs).copied().collect();
+
+    // Distribute value among outputs with randomization
+    let mut outputs = Vec::with_capacity(num_outputs);
+    let mut remaining = available_for_outputs;
+
+    for (i, receiver) in receivers.iter().enumerate() {
+        let output_value = if i == num_outputs - 1 {
+            // Last output gets all remaining value
+            remaining
+        } else {
+            // Calculate how much we need to reserve for remaining outputs
+            let outputs_left = (num_outputs - i - 1) as u64;
+            let reserved_for_remaining = min_viable.saturating_mul(outputs_left);
+
+            // Ensure we have enough remaining value
+            let available_for_this = remaining.saturating_sub(reserved_for_remaining);
+
+            if available_for_this < min_viable {
+                // Not enough left, give minimum viable
+                min_viable
+            } else {
+                let fair_share = remaining / (num_outputs - i) as u64;
+                let max_val = fair_share.min(available_for_this);
+
+                if max_val <= min_viable {
+                    min_viable
+                } else {
+                    rng.random_range(min_viable..=max_val)
+                }
+            }
+        };
+
+        outputs.push(TransactionOut {
+            value: output_value,
+            recipient: *receiver,
+        });
+
+        remaining = remaining.saturating_sub(output_value);
+    }
+
+    let tx_data = TransactionData {
+        version: 0,
+        kind: TransactionKind::Payment,
+        inputs,
+        outputs: outputs.clone(),
+    };
+
+    Some((tx_data, outputs))
 }

@@ -56,9 +56,7 @@ impl Distribution<UtxoSelectionCriteria> for StandardUniform {
 /// - 20% of transactions are `Splitting`
 /// - 10% of transactions are `Complex`
 static PATTERN_WEIGHTED_INDEX: LazyLock<WeightedIndex<u32>> = LazyLock::new(|| {
-    // TODO: Set old weights back for PATTERN_WEIGHTED_INDEX. Now it just chooses `TransactionPattern::Simple` in 80% of times, and `TransactionPattern::Consolidation` in the rest of cases.
-    // let weights: [u32; 4] = [50, 20, 20, 10];
-    let weights: [u32; 4] = [80, 20, 0, 0];
+    let weights: [u32; 4] = [50, 20, 20, 10];
     WeightedIndex::new(weights).expect("weights must be non-empty and positive")
 });
 

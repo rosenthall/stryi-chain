@@ -375,7 +375,6 @@ impl ChainGenerator {
 
         Ok(block)
     }
-
     /// Build a deterministic, valid block at `height`:
     /// - loads consensus consts from genesis;
     /// - derives prev_hash/timestamp from the previous block;
@@ -486,7 +485,22 @@ impl ChainGenerator {
                         }
                     }
 
-                    _ => unreachable!("this cannot be yet"),
+                    TransactionPattern::Splitting => {
+                        // Splitting requires exactly 1 UTXO
+                        1
+                    }
+
+                    TransactionPattern::Complex => {
+                        // Complex requires at least 2 UTXOs
+                        if sender_utxos.len() < 2 {
+                            // Fallback to Simple if not enough UTXOs
+                            transaction_pattern = TransactionPattern::Simple;
+                            1
+                        } else {
+                            // Use 2 to max_inputs UTXOs for complex transactions
+                            min(sender_utxos.len(), params.max_inputs)
+                        }
+                    }
                 };
 
                 let selected_utxos = state.select_utxos_by_criteria(
