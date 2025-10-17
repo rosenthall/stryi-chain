@@ -15,10 +15,12 @@ pub mod seed;
 mod seed_schedule;
 mod state;
 
+mod strategy;
 mod txgen;
 mod utxo;
 
 use crate::chaingen::seed_schedule::SeedSchedule;
+use crate::chaingen::strategy::TxGenerationStrategy;
 use crate::chaingen::txgen::{
     FundAccount, TransactionGenerationParams, generate_distributing_transaction,
     generate_transaction,
@@ -310,6 +312,9 @@ impl ChainGenerator {
             "Done. Persisted {} blocks after genesis.",
             total_to_generate
         );
+
+        // TODO: Finalize chaingen run: e.g., write summary file with some stats, etc.
+
         Ok(())
     }
 
@@ -451,57 +456,40 @@ impl ChainGenerator {
         let total_tx_count = rng.random_range(min_txs..=max_txs) as usize;
         let payment_tx_count = total_tx_count.saturating_sub(1); // Subtract 1 for coinbase
 
-        if payment_tx_count > 0 {
-            // Get top accounts with UTXOs for transaction generation
-            let top_accounts = state.get_top_accounts_with_utxos(payment_tx_count);
+        // In build_block method, replace the existing transaction generation loop with:
+        if payment_tx_count == 0 {
+            panic!("Payment transaction count is zero at height {}!", height);
+        }
 
-            // Generate payment transactions
-            let params = TransactionGenerationParams::default();
+        let params = TransactionGenerationParams::default();
+        let receivers_pool = state
+            .get_best_receivers(state.accounts.len())
+            .expect("Must be available receivers.");
 
-            for (sender_addr, sender_key, sender_utxos) in
-                top_accounts.into_iter().take(payment_tx_count)
-            {
-                // No utxo - skip tx.
+        // Initialize strategy
+        let mut strategy = TxGenerationStrategy::new(payment_tx_count);
+
+        while strategy.should_continue() {
+            strategy.record_attempt();
+
+            // Get accounts with UTXOs
+            let top_accounts =
+                state.get_top_accounts_with_utxos(strategy.target_txs - strategy.successful_txs);
+
+            for (sender_addr, sender_key, sender_utxos) in top_accounts {
+                if !strategy.should_continue() {
+                    break;
+                }
+
+                // Skip if no UTXOs available
                 if sender_utxos.is_empty() {
                     continue;
                 }
 
-                // Generate random selection criteria and pattern for this transaction
-                let selection_criteria: UtxoSelectionCriteria = rng.random();
-                let mut transaction_pattern = sample_transaction_pattern(rng);
-
-                // Determine how many UTXOs to select based on pattern and availability
-                let utxos_to_select = match transaction_pattern {
-                    TransactionPattern::Simple => 1,
-
-                    TransactionPattern::Consolidation => {
-                        // Consolidation requires at least 2 UTXOs
-                        if sender_utxos.len() < 2 {
-                            // Fallback to Simple if not enough UTXOs
-                            transaction_pattern = TransactionPattern::Simple;
-                            1
-                        } else {
-                            min(sender_utxos.len(), params.max_inputs)
-                        }
-                    }
-
-                    TransactionPattern::Splitting => {
-                        // Splitting requires exactly 1 UTXO
-                        1
-                    }
-
-                    TransactionPattern::Complex => {
-                        // Complex requires at least 2 UTXOs
-                        if sender_utxos.len() < 2 {
-                            // Fallback to Simple if not enough UTXOs
-                            transaction_pattern = TransactionPattern::Simple;
-                            1
-                        } else {
-                            // Use 2 to max_inputs UTXOs for complex transactions
-                            min(sender_utxos.len(), params.max_inputs)
-                        }
-                    }
-                };
+                // Use strategy to choose pattern and UTXO selection
+                let pattern = strategy.choose_pattern(sender_utxos.len(), &params, rng);
+                let (selection_criteria, utxos_to_select) =
+                    strategy.choose_utxo_strategy(pattern, sender_utxos.len(), &params, rng);
 
                 let selected_utxos = state.select_utxos_by_criteria(
                     &sender_utxos,
@@ -509,28 +497,21 @@ impl ChainGenerator {
                     utxos_to_select,
                 );
 
-                let receivers_pool = state
-                    .get_best_receivers(state.accounts.len())
-                    .expect("Must be available receivers.");
-
-                let generated_tx = generate_transaction(
+                // Generate transaction
+                if let Some(tx) = generate_transaction(
                     state,
                     sender_addr,
                     &sender_key,
-                    transaction_pattern,
+                    pattern,
                     selected_utxos,
                     &receivers_pool,
                     rng,
                     &params,
                     height,
-                );
-
-                if generated_tx.is_none() {
-                    error!("Tried to generate TX, but got None");
-                    continue;
+                ) {
+                    transactions.push(tx);
+                    strategy.record_success();
                 }
-
-                transactions.push(generated_tx.expect("must exist"));
             }
         }
 
