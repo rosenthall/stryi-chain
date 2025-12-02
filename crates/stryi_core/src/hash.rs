@@ -26,7 +26,7 @@ pub trait HashKind: Default {
 }
 
 /// Generic `Hash` struct parameterized by a `HashKind`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Hash<K: HashKind>
 where
     [u8; K::SIZE]:,
@@ -172,6 +172,40 @@ where
     }
 }
 
+// implementation of Debug for Hash<K>, so it prints not the raw bytes but the debug string representation
+// which looks like "StryiHash({HashKindName}){hash_string}"
+impl<K: HashKind> fmt::Debug for Hash<K>
+where
+    [u8; K::SIZE]:,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // get kind name e.g. stryi_core::address::AddressHasher
+        let hash_kind_name = std::any::type_name::<K>();
+
+        // only use last part after '::' via rsplit_once
+        // now it will be just 'AddressHasher'
+        let kind_name = hash_kind_name
+            .rsplit_once("::")
+            .map(|(_left_tail, name)| name)
+            .unwrap_or(hash_kind_name);
+
+        // get rid of "Hasher" or "HashKind" suffix if present
+
+        // It will make
+        // "AddressHasher" -> "Address"
+        // "BlockHashKind" -> "Block"
+        // "MerkleRootHashKind" -> "Merkle
+        // "TransactionHash" -> "Transaction"
+
+        let kind_name = kind_name
+            .strip_suffix("Hasher")
+            .or_else(|| kind_name.strip_suffix("HashKind"))
+            .unwrap_or(kind_name);
+
+        write!(f, "StryiHash({}, {})", kind_name, self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,15 +214,15 @@ mod tests {
     /// A mock HashKind for testing purposes.
     /// Prefix: "TEST", Size: 16 bytes (128 bits)
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct TestHashKind;
+    struct TestHasher;
 
-    impl Default for TestHashKind {
+    impl Default for TestHasher {
         fn default() -> Self {
-            TestHashKind
+            TestHasher
         }
     }
 
-    impl HashKind for TestHashKind {
+    impl HashKind for TestHasher {
         const SIZE: usize = 16; // 16 bytes = 128 bits
         const PREFIX: &'static str = "TEST";
 
@@ -202,7 +236,7 @@ mod tests {
         }
     }
 
-    type TestHash = Hash<TestHashKind>;
+    type TestHash = Hash<TestHasher>;
 
     /// Helper function to generate a vector of bytes of a specific length.
     fn generate_bytes(len: usize) -> Vec<u8> {
@@ -220,15 +254,15 @@ mod tests {
             data
         };
         assert_eq!(hash.data, expected_data);
-        assert_eq!(hash.kind, TestHashKind);
+        assert_eq!(hash.kind, TestHasher);
     }
 
     #[test]
     fn test_display_hash() {
         let input = b"test input data";
-        let hash = Hash::<TestHashKind>::new(input);
+        let hash = Hash::<TestHasher>::new(input);
         let hex_data = hex::encode(hash.data);
-        let expected_string = format!("{}{}", TestHashKind::PREFIX, hex_data);
+        let expected_string = format!("{}{}", TestHasher::PREFIX, hex_data);
         assert_eq!(hash.to_string(), expected_string);
         assert_eq!(format!("{}", hash), expected_string);
     }
@@ -236,10 +270,10 @@ mod tests {
     #[test]
     fn test_from_hash_string_with_valid_input() {
         let input = b"valid input";
-        let hash = Hash::<TestHashKind>::new(input);
+        let hash = Hash::<TestHasher>::new(input);
         let hash_string = hash.to_string();
 
-        let parsed_hash = Hash::<TestHashKind>::from_hash_string(&hash_string);
+        let parsed_hash = Hash::<TestHasher>::from_hash_string(&hash_string);
         assert!(parsed_hash.is_ok());
         let parsed = parsed_hash.unwrap();
         assert_eq!(parsed, hash);
@@ -251,12 +285,12 @@ mod tests {
         let hex_part = "000102030405060708090a0b0c0d0e0f";
         let hash_string = format!("{}{}", invalid_prefix, hex_part);
 
-        let parsed_hash = Hash::<TestHashKind>::from_hash_string(&hash_string);
+        let parsed_hash = Hash::<TestHasher>::from_hash_string(&hash_string);
         assert!(parsed_hash.is_err());
 
         match parsed_hash {
             Err(StryiCoreError::InvalidPrefix { expected, actual }) => {
-                assert_eq!(expected, TestHashKind::PREFIX.to_string());
+                assert_eq!(expected, TestHasher::PREFIX.to_string());
                 assert_eq!(actual, "WRON".to_string());
             }
             _ => panic!("Expected InvalidPrefix error."),
@@ -266,7 +300,7 @@ mod tests {
     #[test]
     fn test_from_hash_string_with_invalid_hex() {
         let invalid_hex = "TESTGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG"; // G is not a hex value
-        let parsed_hash = Hash::<TestHashKind>::from_hash_string(invalid_hex);
+        let parsed_hash = Hash::<TestHasher>::from_hash_string(invalid_hex);
         assert!(parsed_hash.is_err());
 
         match parsed_hash {
@@ -277,16 +311,16 @@ mod tests {
 
     #[test]
     fn test_from_hash_string_with_invalid_length() {
-        let prefix = TestHashKind::PREFIX;
+        let prefix = TestHasher::PREFIX;
         let hex_part = "00010203"; // Only 8 characters instead of 32 for 16 bytes
         let hash_string = format!("{}{}", prefix, hex_part);
 
-        let parsed_hash = Hash::<TestHashKind>::from_hash_string(&hash_string);
+        let parsed_hash = Hash::<TestHasher>::from_hash_string(&hash_string);
         assert!(parsed_hash.is_err());
 
         match parsed_hash {
             Err(StryiCoreError::InvalidLength { expected, actual }) => {
-                assert_eq!(expected, TestHashKind::SIZE);
+                assert_eq!(expected, TestHasher::SIZE);
                 let actual_bytes = hex::decode(hex_part).unwrap().len();
                 assert_eq!(actual, actual_bytes);
             }
@@ -297,22 +331,22 @@ mod tests {
     #[test]
     fn test_try_from_slice_with_valid_length() {
         let bytes = generate_bytes(16); // Exact length
-        let hash = Hash::<TestHashKind>::try_from(bytes.as_slice());
+        let hash = Hash::<TestHasher>::try_from(bytes.as_slice());
         assert!(hash.is_ok());
 
-        let expected_hash = Hash::<TestHashKind>::new(&bytes);
+        let expected_hash = Hash::<TestHasher>::new(&bytes);
         assert_eq!(hash.unwrap(), expected_hash);
     }
 
     #[test]
     fn test_try_from_slice_with_invalid_length() {
         let bytes = generate_bytes(10); // Less than required
-        let hash = Hash::<TestHashKind>::try_from(bytes.as_slice());
+        let hash = Hash::<TestHasher>::try_from(bytes.as_slice());
         assert!(hash.is_err());
 
         match hash {
             Err(StryiCoreError::InvalidLength { expected, actual }) => {
-                assert_eq!(expected, TestHashKind::SIZE);
+                assert_eq!(expected, TestHasher::SIZE);
                 assert_eq!(actual, 10);
             }
             _ => panic!("Expected InvalidLength error."),
@@ -323,22 +357,22 @@ mod tests {
     fn test_try_from_vec_with_valid_length() {
         let bytes = generate_bytes(16);
 
-        let hash = Hash::<TestHashKind>::try_from(bytes.clone());
+        let hash = Hash::<TestHasher>::try_from(bytes.clone());
         assert!(hash.is_ok());
 
-        let expected_hash = Hash::<TestHashKind>::new(&bytes);
+        let expected_hash = Hash::<TestHasher>::new(&bytes);
         assert_eq!(hash.unwrap(), expected_hash);
     }
 
     #[test]
     fn test_try_from_vec_with_invalid_length() {
         let bytes = generate_bytes(20); // More than required
-        let hash = Hash::<TestHashKind>::try_from(bytes);
+        let hash = Hash::<TestHasher>::try_from(bytes);
         assert!(hash.is_err());
 
         match hash {
             Err(StryiCoreError::InvalidLength { expected, actual }) => {
-                assert_eq!(expected, TestHashKind::SIZE);
+                assert_eq!(expected, TestHasher::SIZE);
                 assert_eq!(actual, 20);
             }
             _ => panic!("Expected InvalidLength error."),
@@ -367,14 +401,29 @@ mod tests {
         let result: Result<TestHash, _> = serde_json::from_str(json_str);
         assert!(result.is_err());
         // Invalid hex
-        let json_str = format!("\"{}ZZZZ\"", TestHashKind::PREFIX);
+        let json_str = format!("\"{}ZZZZ\"", TestHasher::PREFIX);
         let result: Result<TestHash, _> = serde_json::from_str(&json_str);
         assert!(result.is_err());
 
         // Incorrect length
         let hex_part = "a3f1"; // Too short
-        let json_str = format!("\"{}{}\"", TestHashKind::PREFIX, hex_part);
+        let json_str = format!("\"{}{}\"", TestHasher::PREFIX, hex_part);
         let result: Result<TestHash, _> = serde_json::from_str(&json_str);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hash_debug_format() {
+        let bytes = generate_bytes(16);
+
+        let hash = Hash::<TestHasher>::try_from(bytes.clone()).unwrap();
+
+        let debug_str = format!("{:?}", hash);
+
+        // Ensure it contains the kind name without "Hasher" suffix
+        assert!(!debug_str.contains("Hasher"));
+
+        // Full expected debug string
+        assert_eq!(debug_str, format!("StryiHash({}, {})", "Test", hash));
     }
 }

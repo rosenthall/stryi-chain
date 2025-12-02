@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 /// MKR stands for MerKle Root.
 /// Uses blake3 hash function.
 #[derive(Default, Eq, PartialEq, Debug, Clone, Copy, Hash)]
-pub struct MerkleHashKind;
+pub struct MerkleRootHashKind;
 
-impl HashKind for MerkleHashKind {
+impl HashKind for MerkleRootHashKind {
     const SIZE: usize = 32;
     const PREFIX: &'static str = "MKR";
 
@@ -25,15 +25,15 @@ impl HashKind for MerkleHashKind {
 
 /// A 32-byte hash produced by Blake3, serialized as a human-friendly string (e.g., "MKR<hex...>")
 /// via the generic `Hash<K>` implementation.
-pub type MerkleHash = Hash<MerkleHashKind>;
+pub type MerkleHash = Hash<MerkleRootHashKind>;
 
 impl MerkleHash {
     /// Create an explicit "empty" Merkle hash with all zeros.
     /// Useful as a sentinel for empty blocks.
     pub const fn empty() -> Self {
         MerkleHash {
-            kind: MerkleHashKind,
-            data: [0u8; MerkleHashKind::SIZE],
+            kind: MerkleRootHashKind,
+            data: [0u8; MerkleRootHashKind::SIZE],
         }
     }
 }
@@ -71,7 +71,7 @@ impl MerkleTree {
         let mut current_level: Vec<MerkleHash> = leaves_data
             .iter()
             .map(|data| {
-                let digest = MerkleHashKind::hash(data);
+                let digest = MerkleRootHashKind::hash(data);
                 MerkleHash::try_from(digest.as_slice()).expect("digest length must be 32")
             })
             .collect();
@@ -198,7 +198,7 @@ impl MerkleProof {
     /// `true` if the proof is valid and corresponds to the expected root, `false` otherwise.
     pub fn verify(&self, leaf_data: &[u8], expected_root: MerkleHash) -> bool {
         // Recompute the leaf hash using MerkleHashKind directly.
-        let leaf_digest = MerkleHashKind::hash(leaf_data);
+        let leaf_digest = MerkleRootHashKind::hash(leaf_data);
         let mut computed_hash =
             MerkleHash::try_from(leaf_digest.as_slice()).expect("digest length must be 32");
 
