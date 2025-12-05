@@ -1,6 +1,7 @@
 use crate::address::AccountAddress;
 use crate::transactions::hash::TransactionHash;
 use serde::{Deserialize, Serialize};
+use std::fmt::Display;
 
 /// OutPoint identifies which UTXO is being referenced:
 /// - `txid`: the transaction hash (32-byte typed hash)
@@ -13,6 +14,12 @@ pub struct OutPoint {
     pub vout: u32,
 }
 
+impl Display for OutPoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.txid, self.vout)
+    }
+}
+
 /// TransactionIn represents an input of the transaction,
 /// referencing an existing UTXO to be spent.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
@@ -22,6 +29,12 @@ pub struct TransactionIn {
 
     /// Sequence field (similar to Bitcoin). It's optional for advanced use (locktime, etc.).
     pub sequence: u32,
+}
+
+impl Display for TransactionIn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.previous_output)
+    }
 }
 
 /// TransactionOut represents an output of the transaction.
