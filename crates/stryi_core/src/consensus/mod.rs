@@ -1,11 +1,22 @@
 //! The consensus module defines interfaces and structures for the consensus mechanism,
 //! including consensus rules and the consensus engine responsible for block validation,
-//! difficulty adjustment, and chain selection.
+//! forks management, difficulty adjustment, and chain selection.
 
+/// [`StryiConsensusEngine`] lives here.
 mod engine;
-mod fork_overlay;
+
+/// [`ChainIndex`] implementation.
 mod index;
+
+/// Static consensus rules definition.
 mod rules;
+
+/// Fork utilities.
+mod forks;
+
+/// Block validator implementation.
+/// Performs block-level validation according to consensus rules,
+/// current chain state (or overlay in case if validating fork's block), and UTXO set.
 mod validator;
 
 use crate::block::{Block, BlockHash};
@@ -16,14 +27,15 @@ use std::error::Error;
 use std::fmt::Debug;
 
 // --- exports ---
+pub use crate::storage::{BlockStorage, StorageStats, UndoStorage, UtxoStorage};
 pub use engine::StryiConsensusEngine;
 pub use rules::ConsensusConsts;
 pub use validator::BlockValidator;
 
 /// Reply message type for ConsensusEngine.
-/// See ConsensusEngine::on_block method for more details.
+/// See [`ConsensusEngine::on_block`] method for more details.
 #[derive(Debug, Clone, PartialEq)]
-pub enum ConsensusOnBlockVerdict {
+pub enum ConsensusVerdict {
     /// Block belongs to some fork of the chain, but this fork's cumulative complexity is lower than local one.
     BufferedIntoForkTree {
         /// Common's ancestor block's hash and height
@@ -49,16 +61,17 @@ pub enum ConsensusOnBlockVerdict {
     /// It either was included by itself or with some fork it belongs to.
     CausedReorganization {
         /// HashMap with deleted block's hashes keyed by its pre-reorganization height.
-        deleted_blocks: HashMap<u8, BlockHash>,
+        deleted_blocks: HashMap<u64, BlockHash>,
     },
 }
 
 /// The `ConsensusEngine` trait defines the interface for consensus mechanisms.
-/// It provides the only method `on_block`
+/// The API is ultra-high-level, caller does not perform any pre-validation or checks,
+/// all that is the engine's responsibility.
+/// This includes block validation, chain selection, difficulty adjustment, block saving, etc.
 pub trait ConsensusEngine {
     type Error: Debug + Send + Error + Clone;
 
     /// Method called for each new block
-    fn on_block(&mut self, block: Block)
-    -> BoxFuture<Result<ConsensusOnBlockVerdict, Self::Error>>;
+    fn on_block(&mut self, block: Block) -> BoxFuture<Result<ConsensusVerdict, Self::Error>>;
 }

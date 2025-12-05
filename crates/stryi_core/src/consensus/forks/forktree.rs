@@ -4,23 +4,25 @@ use std::time::Instant;
 use crate::block::{Block, BlockHash};
 use crate::error::StryiCoreError;
 
-/// A single, in‑memory container for forked blocks that are **valid**
-/// but **not** on the canonical chain at the moment.
-#[derive(Debug, Default)]
-pub struct ForkTree {
-    /// hash -> full entry
-    entries: HashMap<BlockHash, ForkEntry>,
-
-    /// height -> set of hashes (helps pruning and quick stats)
-    by_height: HashMap<u64, HashSet<BlockHash>>,
-}
-
+/// An entry in the fork tree representing a single block
+/// that is not on the canonical chain plus some additional metadata.
 #[derive(Debug, Clone)]
 pub struct ForkEntry {
     pub block: Block,
     pub cumulative_difficulty: u128,
     pub common_ancestor: BlockHash,
     pub timestamp: Instant,
+}
+
+/// A single, in‑memory container for forked blocks that are **valid**
+/// but **not** on the canonical chain at the moment.
+#[derive(Debug, Default)]
+pub struct ForkTree {
+    /// mapping of hash to full entry
+    entries: HashMap<BlockHash, ForkEntry>,
+
+    /// mapping of height to set of hashes (helps pruning and quick stats)
+    by_height: HashMap<u64, HashSet<BlockHash>>,
 }
 
 impl ForkTree {

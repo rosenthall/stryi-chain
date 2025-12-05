@@ -3,6 +3,7 @@ use crate::storage::{BlockStorage, StorageStats};
 use crate::{
     block::Block, consensus::ConsensusConsts, error::StryiCoreError, storage::UtxoStorage,
 };
+use tracing::debug;
 
 pub mod block;
 mod header;
@@ -38,17 +39,95 @@ where
     }
 
     /// Runs the full consensus pipeline.
-    pub async fn validate<US>(
-        &self,
-        block: &Block,
-        utxo_storage: &mut US,
-    ) -> Result<(), StryiCoreError>
+    pub async fn validate<US>(&self, block: &Block, utxo_storage: &US) -> Result<(), StryiCoreError>
     where
         US: UtxoStorage + Send,
     {
+        debug!(
+            "Validating block {} that consists of {} transactions",
+            block.block_hash(),
+            block.data.transactions.len()
+        );
+
+        let hash = block.block_hash();
+        let short_hash = &hash.to_string()[..8];
+
         header::validate_header(block, &self.consensus_consts)?;
+        debug!("Block {short_hash} passed header validation");
+
         block::validate_block_structure(block)?;
-        block::validate_transactions(block, &self.consensus_consts, utxo_storage).await
+        debug!("Block {short_hash} passed structure validation");
+        /*
+                // Validate UTXOs
+                let wanted_utxos: Vec<TransactionIn> = block
+                    .data
+                    .transactions
+                    .iter()
+                    .flat_map(|tx| tx.data.inputs.clone())
+                    .collect();
+
+                fn pretty_print_utxos(utxos: &[TransactionIn]) -> String {
+                    utxos
+                        .iter()
+                        .map(|inp| {
+                            format!(
+                                "{:.8}:{}",
+                                inp.previous_output.txid, inp.previous_output.vout
+                            )
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                }
+
+                debug!(
+                    "Validating {} UTXOs for block {}: {}",
+                    wanted_utxos.len(),
+                    short_hash,
+                    pretty_print_utxos(&wanted_utxos)
+                );
+
+                if !wanted_utxos.is_empty() {
+                    let input_outpoints: Vec<_> =
+                        wanted_utxos.iter().map(|inp| inp.previous_output).collect();
+
+                    match utxo_storage.batch_get_utxos(input_outpoints).await {
+                        Ok(existing_utxos) => {
+                            let found = existing_utxos.len();
+                            let total = wanted_utxos.len();
+
+                            if found < total {
+                                let missing: Vec<_> = wanted_utxos
+                                    .iter()
+                                    .filter(|inp| !existing_utxos.contains_key(&inp.previous_output))
+                                    .collect();
+
+                                // Log first missing UTXO for context
+                                if let Some(first_missing) = missing.first() {
+                                    let op = &first_missing.previous_output;
+                                    return Err(StryiCoreError::StorageError {
+                                        layer: StorageLayer::Utxo,
+                                        err: format!("Missing UTXO: {:.8}:{}", op.txid, op.vout),
+                                    });
+                                }
+                            }
+
+                            debug!("Block {short_hash}: validated {found}/{total} UTXOs");
+                        }
+                        Err(e) => {
+                            return Err(StryiCoreError::StorageError {
+                                layer: StorageLayer::Utxo,
+                                err: format!("UTXO fetch failed: {}", e),
+                            });
+                        }
+                    }
+                }
+        */
+        //trace!("Validating transactions for block {}", short_hash);
+
+        block::validate_transactions(block, &self.consensus_consts, utxo_storage).await?;
+        debug!("Block {short_hash} passed transaction validation");
+
+        Ok(())
     }
 }
 /*

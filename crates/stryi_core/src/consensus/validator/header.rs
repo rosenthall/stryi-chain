@@ -6,6 +6,7 @@ use crate::{
     consensus::ConsensusConsts,
     error::StryiCoreError,
 };
+use tracing::trace;
 
 /// Runs every static header rule.
 ///
@@ -13,24 +14,33 @@ use crate::{
 /// 2. hash satisfies Proof-of-Work;  
 /// 3. Merkle root matches the transaction list.
 pub fn validate_header(block: &Block, rules: &ConsensusConsts) -> Result<(), StryiCoreError> {
+    let hash = block.block_hash().to_string();
+    trace!("Validating header for block hash {}", hash);
+
     verify_difficulty(block, rules)?;
+    trace!("Block {} passed difficulty verification", hash);
+
     verify_proof_of_work(block)?;
+    trace!("Block {} passed proof of work check", hash);
+
     verify_merkle_root(block)?;
+    trace!("Block {} passed merkle root validation", hash);
     Ok(())
 }
 
-/// Verifies `header.difficulty_bits` equals `rules.current_difficulty`.
+/// Verifies `header.difficulty_bits` equals to the expected value for the block height.
 fn verify_difficulty(block: &Block, rules: &ConsensusConsts) -> Result<(), StryiCoreError> {
-    // TODO: FIX
-    /*    if block.header.difficulty_bits != rules.current_difficulty {
-            return Err(StryiCoreError::ConsensusValidationFailed {
-                details: format!(
-                    "Block difficulty ({}) does not match current difficulty ({})",
-                    block.header.difficulty_bits, rules.current_difficulty,
-                ),
-            });
-        }
-    */
+    let current_difficulty_bits = rules.difficulty_bits_for_height(block.header.height);
+
+    if block.header.difficulty_bits != current_difficulty_bits {
+        return Err(StryiCoreError::ConsensusValidationFailed {
+            details: format!(
+                "Block difficulty ({}) does not match current difficulty ({})",
+                block.header.difficulty_bits, current_difficulty_bits,
+            ),
+        });
+    }
+
     Ok(())
 }
 

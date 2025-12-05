@@ -1,10 +1,10 @@
 use crate::block::BlockHash;
-use crate::consensus::ConsensusOnBlockVerdict;
+use crate::consensus::ConsensusVerdict;
+use crate::consensus::forks::forktree::{ForkEntry, ForkTree};
 use crate::consensus::index::ChainIndex;
 use crate::consensus::validator::BlockValidator;
 use crate::difficulty::DifficultyCalc;
 use crate::error::{StorageLayer, StryiCoreError};
-use crate::forktree::ForkTree;
 #[cfg(test)]
 use crate::storage::StryiInMemoryStorage;
 use crate::storage::{BlockStorage, StorageStats, UndoStorage, UtxoStorage};
@@ -13,8 +13,10 @@ use crate::{
     block::Block,
     consensus::{ConsensusConsts, ConsensusEngine},
 };
+use comfy_table::{Table, presets::ASCII_FULL};
 use futures::future::BoxFuture;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
@@ -80,7 +82,7 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage> StryiConsensus
 
         let chain_index = Self::build_chain_index(db.clone()).await?;
 
-        Ok(Self {
+        let engine = Self {
             consensus_consts,
             block_validator,
             difficulty_calculator,
@@ -88,18 +90,68 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage> StryiConsensus
             db: db.clone(),
             chain_index,
             forks: ForkTree::default(),
-        })
+        };
+
+        Ok(engine)
+    }
+
+    /// Prints a welcome message with current consensus engine state and some settings.
+    /// Meant to be called once on startup.
+    pub fn startup_message(&self) {
+        // print some info about consensus engine state
+        info!("Welcome from Stryi Consensus Engine!");
+
+        // print some info about consensus engine state
+        info!("Current consensus engine state:");
+
+        let mut table = Table::new();
+        table.load_preset(ASCII_FULL);
+        table.set_header(vec!["Key", "Value"]);
+
+        // Database implementation
+        let database_impl = std::any::type_name::<DB>();
+        table.add_row(vec!["Database implementation", &database_impl]);
+
+        // tip info
+        let (tip_height, tip_hash, tip_work) = match self.chain_index.tip() {
+            Some((h, hh, w)) => (h.to_string(), hh.to_string(), w.to_string()),
+            None => ("N/A".to_string(), "N/A".to_string(), "0".to_string()),
+        };
+
+        table.add_row(vec!["Tip height", &tip_height]);
+        table.add_row(vec!["Tip hash", &tip_hash]);
+        table.add_row(vec!["Tip cumulative work", &tip_work]);
+
+        // consensus consts (separately one by one)
+        let (adjustment_interval_blocks, initial_subsidy, decay_interval, decay_step) = (
+            self.consensus_consts.difficulty_adjustment_interval_blocks,
+            self.consensus_consts.initial_subsidy,
+            self.consensus_consts.decay_interval,
+            self.consensus_consts.decay_step,
+        );
+
+        table.add_row(vec![
+            "Difficulty adjustment interval (blocks)",
+            &adjustment_interval_blocks.to_string(),
+        ]);
+        table.add_row(vec!["Initial subsidy", &initial_subsidy.to_string()]);
+        table.add_row(vec!["Decay interval (blocks)", &decay_interval.to_string()]);
+        table.add_row(vec!["Decay step", &decay_step.to_string()]);
+
+        // Print table as a single info log
+        info!("\n{}", table);
     }
 
     /// Walks from the stored tip back to genesis and fills `ChainIndex`.
     /// May return an error if chain refers to unknown block.
+    /// TODO: ChainIndex does not validates existing of BlockUndo in db for each block
     async fn build_chain_index(db: Arc<RwLock<DB>>) -> Result<ChainIndex, StryiCoreError> {
         // Hold lock on db
         let db = db.read().await; // block_read?
 
         info!("Starting collecting chain index!");
 
-        let mut index = ChainIndex::default();
+        let mut index = ChainIndex::new();
 
         // Get latest block.
         let mut cursor_hash = db
@@ -223,11 +275,10 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + 'static> Cons
 {
     type Error = StryiCoreError;
 
-    fn on_block(
-        &mut self,
-        block: Block,
-    ) -> BoxFuture<Result<ConsensusOnBlockVerdict, Self::Error>> {
+    fn on_block(&mut self, block: Block) -> BoxFuture<Result<ConsensusVerdict, Self::Error>> {
         let block = block.clone();
+
+        // generate a simple table log for this block's most important fields
 
         debug!(
             "Received new block {} at height {} with difficulty bits {}",
@@ -243,27 +294,28 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + 'static> Cons
             // Check if the block is already in main chain
             if self.chain_index.has(&hash) {
                 debug!("Block {} is already in the main chain", hash);
-                return Ok(ConsensusOnBlockVerdict::AlreadyIncludedInChain);
+                return Ok(ConsensusVerdict::AlreadyIncludedInChain);
             }
 
             // And if in fork
             if self.forks.get(&hash).is_some() {
                 debug!("Block {} is already known in fork tree", hash);
-                return Ok(ConsensusOnBlockVerdict::AlreadyKnownInForkTree);
+                return Ok(ConsensusVerdict::AlreadyKnownInForkTree);
             }
 
-            // locate parent and return error if no
+            // locate parent and determine its origin
             let parent = block.header.previous_block_hash;
             let parent_in_main = self.chain_index.has(&parent);
             let parent_in_fork = self.forks.get(&parent);
-            if !parent_in_main && parent_in_fork.is_none() {
+
+            // if parent is unknown, reject as orphan
+            if !parent_in_main && parent_in_fork.clone().is_none() {
                 debug!(
-                    "Parent {} of block {} is unknown, rejecting (!)",
+                    "Parent {} of block {} is unknown, rejecting as orphan",
                     parent, hash
                 );
-                // orphan for now
-                return Ok(ConsensusOnBlockVerdict::Rejected(StryiCoreError::other(
-                    "Unknown parent.",
+                return Ok(ConsensusVerdict::Rejected(StryiCoreError::other(
+                    "Unknown parent block - orphan",
                 )));
             }
 
@@ -279,18 +331,248 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + 'static> Cons
                 }
             );
 
-            // if parent_in_main && parent == main_tip_hash {
-            //     self.db
-            //         .put_block(&block)
-            //         .await
-            //         .map_err(|e| StryiCoreError::storage(StorageLayer::Block, format!("{e:?}")))?;
-            //     self.chain_index.insert(&block, cum_work);
-            //     return Ok(ConsensusOnBlockVerdict::Applied { new_chain_complexity: cum_work as u64 });
-            // }
+            // // Validate the block against appropriate storage view
+            // let validation_result = if parent_in_main {
+            //     // Parent is in main chain - validate against canonical DB
+            //     let read_db = self.db.read().await;
+            //     self.block_validator.validate(&block, &*read_db).await
+            // } else {
+            //     // Parent is in fork tree - need to validate against fork overlay
+            //     // For now, we'll create an overlay and validate
+            //     let fork_entry = parent_in_fork.expect("parent must be in fork tree");
+            //     let parent_work = fork_entry.cumulative_difficulty;
+            //
+            //     // Create fork overlay starting from the fork's common ancestor
+            //     let overlay = ForkDbOverlay::new(self.db.clone(), parent_work);
+            //
+            //     // TODO: Need to replay fork blocks onto overlay before validation
+            //     // This is a simplified approach - in production you'd reconstruct the full fork state
+            //     self.block_validator.validate(&block, &overlay).await
+            // };
 
-            // TODO: Finish the `on_block` ASAP
+            // Validate the block against appropriate storage view
+            let validation_result = if parent_in_main {
+                // Parent is in main chain - validate against canonical DB
+                let read_db = self.db.read().await;
+                self.block_validator.validate(&block, &*read_db).await
+            } else {
+                todo!()
+            };
 
-            Err(Self::Error::other("unimplemented"))
+            match validation_result {
+                Ok(()) => {
+                    debug!("Block {} passed validation", hash);
+                }
+                Err(e) => {
+                    debug!("Block {} failed validation: {:?}", hash, e);
+                    return Ok(ConsensusVerdict::Rejected(e));
+                }
+            }
+
+            // Calculate cumulative difficulty for this block
+            let block_work = 1u128 << block.header.difficulty_bits;
+            let cumulative_work = if parent_in_main {
+                self.chain_index.work(&parent).unwrap() + block_work
+            } else {
+                parent_in_fork.clone().unwrap().cumulative_difficulty + block_work
+            };
+
+            // Determine what to do based on fork choice
+            if parent_in_main {
+                // Block extends main chain directly
+                let current_tip_work = self.chain_index.tip().map(|(_, _, w)| w).unwrap_or(0);
+
+                if cumulative_work > current_tip_work {
+                    // This block becomes new tip - apply it
+                    debug!("Block {} extends main chain and becomes new tip", hash);
+
+                    // Apply block to storage
+                    let mut write_db = self.db.write().await;
+
+                    // Store the block
+                    write_db.put_block(&block).await.map_err(|e| {
+                        StryiCoreError::storage(
+                            StorageLayer::Block,
+                            format!("Failed to store block: {e:?}"),
+                        )
+                    })?;
+
+                    // Apply transactions to UTXO set and get undo data
+                    let undo = self
+                        .utxo_processor
+                        .apply_block(&block, &mut *write_db)
+                        .await
+                        .map_err(|e| {
+                            StryiCoreError::storage(
+                                StorageLayer::Utxo,
+                                format!("Failed to apply block transactions: {e:?}"),
+                            )
+                        })?;
+
+                    // Store undo data
+                    write_db.put_block_undo(hash, undo).await.map_err(|e| {
+                        StryiCoreError::storage(
+                            StorageLayer::Undo,
+                            format!("Failed to store undo data: {e:?}"),
+                        )
+                    })?;
+
+                    drop(write_db);
+
+                    // Update chain index
+                    self.chain_index.insert(&block, cumulative_work);
+
+                    info!(
+                        "Applied block {} at height {} to main chain",
+                        hash, block.header.height
+                    );
+
+                    return Ok(ConsensusVerdict::Applied {
+                        new_chain_complexity: cumulative_work as u64,
+                    });
+                }
+            }
+
+            // Block creates or extends a fork
+            let common_ancestor = if parent_in_main {
+                parent
+            } else {
+                parent_in_fork.clone().unwrap().common_ancestor
+            };
+
+            self.forks.put(ForkEntry {
+                block: block.clone(),
+                cumulative_difficulty: cumulative_work,
+                common_ancestor,
+                timestamp: Instant::now(),
+            })?;
+
+            debug!(
+                "Buffered block {} into fork tree with cumulative work {}",
+                hash, cumulative_work
+            );
+
+            // Check if this fork should trigger reorganization
+            let current_tip_work = self.chain_index.tip().map(|(_, _, w)| w).unwrap_or(0);
+
+            let lca_height = self
+                .chain_index
+                .height(&common_ancestor)
+                .ok_or_else(|| StryiCoreError::other("Common ancestor not in chain index"))?;
+
+            if cumulative_work > current_tip_work {
+                // This fork is now heavier - perform reorganization
+                info!(
+                    "Fork containing block {} has higher work ({} > {}), triggering reorganization",
+                    hash, cumulative_work, current_tip_work
+                );
+
+                // Collect blocks to detach and attach
+                let (detach, attach) = self.collect_detach_attach(&block, common_ancestor);
+
+                debug!(
+                    "Reorganization: detaching {} blocks, attaching {} blocks",
+                    detach.len(),
+                    attach.len()
+                );
+
+                // Perform the reorganization
+                let mut write_db = self.db.write().await;
+
+                // Detach blocks from main chain (undo in reverse order)
+                for &block_hash in &detach {
+                    let undo = write_db
+                        .get_block_undo(block_hash)
+                        .await
+                        .map_err(|e| {
+                            StryiCoreError::storage(
+                                StorageLayer::Undo,
+                                format!("Failed to get undo data: {e:?}"),
+                            )
+                        })?
+                        .ok_or_else(|| StryiCoreError::other("Missing undo data for block"))?;
+
+                    self.utxo_processor
+                        .rewind_block(undo, &mut *write_db)
+                        .await
+                        .map_err(|e| {
+                            StryiCoreError::storage(
+                                StorageLayer::Utxo,
+                                format!("Failed to revert block: {e:?}"),
+                            )
+                        })?;
+
+                    // Remove from chain index
+                    self.chain_index.remove(&block_hash);
+                }
+                // Attach new fork blocks
+                for attach_block in &attach {
+                    let attach_hash = attach_block.block_hash();
+
+                    // Store block
+                    write_db.put_block(attach_block).await.map_err(|e| {
+                        StryiCoreError::storage(
+                            StorageLayer::Block,
+                            format!("Failed to store block during reorg: {e:?}"),
+                        )
+                    })?;
+
+                    // Apply transactions
+                    let undo = self
+                        .utxo_processor
+                        .apply_block(attach_block, &mut *write_db)
+                        .await
+                        .map_err(|e| {
+                            StryiCoreError::storage(
+                                StorageLayer::Utxo,
+                                format!("Failed to apply block during reorg: {e:?}"),
+                            )
+                        })?;
+
+                    // Store undo
+                    write_db
+                        .put_block_undo(attach_hash, undo)
+                        .await
+                        .map_err(|e| {
+                            StryiCoreError::storage(
+                                StorageLayer::Undo,
+                                format!("Failed to store undo during reorg: {e:?}"),
+                            )
+                        })?;
+
+                    // Calculate work for this block
+                    let prev_work = self
+                        .chain_index
+                        .work(&attach_block.header.previous_block_hash)
+                        .unwrap_or(0);
+                    let work = prev_work + (1u128 << attach_block.header.difficulty_bits);
+
+                    // Update chain index
+                    self.chain_index.insert(attach_block, work);
+                }
+
+                drop(write_db);
+
+                // Prune the fork branch that just became main
+                self.forks.prune_branch(&hash);
+
+                // Build deleted blocks map
+                let mut deleted_blocks = std::collections::HashMap::new();
+                for &h in &detach {
+                    if let Some(height) = self.chain_index.height(&h) {
+                        deleted_blocks.insert(height, h);
+                    }
+                }
+
+                info!("Reorganization completed successfully");
+
+                return Ok(ConsensusVerdict::CausedReorganization { deleted_blocks });
+            }
+
+            // Fork is buffered but not heavy enough to trigger reorg
+            Ok(ConsensusVerdict::BufferedIntoForkTree {
+                common_ancestor_height: (common_ancestor, lca_height),
+            })
         })
     }
 }

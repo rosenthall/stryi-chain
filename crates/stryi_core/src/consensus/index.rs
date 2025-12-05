@@ -21,13 +21,22 @@ struct TipInfo {
 ///
 /// * `entries` – metadata for every block in the main chain;
 /// * `tip`     – cached best block for O(1) access.
-#[derive(Clone, PartialEq, Default, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct ChainIndex {
     entries: HashMap<BlockHash, ChainIndexEntry>,
     tip: Option<TipInfo>,
 }
 
 impl ChainIndex {
+    /// Creates new empty instance of `ChainIndex`
+    #[inline(always)]
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            tip: None,
+        }
+    }
+
     /// Insert/overwrite a block together with already‑calculated cumulative work.
     ///
     /// The caller must guarantee that `cumulative_work` is
@@ -180,7 +189,7 @@ mod tests {
 
     #[test]
     fn chain_index_tip_and_has_and_ancestor() {
-        let mut idx = ChainIndex::default();
+        let mut idx = ChainIndex::new();
         // genesis
         let g = make_block(BlockHash::empty(), 0, 4);
         let w_g = 1u128 << 4;
@@ -209,7 +218,7 @@ mod tests {
 
     #[test]
     fn chain_index_remove_recomputes_tip() {
-        let mut idx = ChainIndex::default();
+        let mut idx = ChainIndex::new();
         let g = make_block(BlockHash::empty(), 0, 4);
         let w_g = 1u128 << 4;
         idx.insert(&g, w_g);
@@ -225,7 +234,7 @@ mod tests {
     #[test]
     fn chain_index_lca_basic() {
         // build two branches sharing genesis
-        let mut idx = ChainIndex::default();
+        let mut idx = ChainIndex::new();
         let g = make_block(BlockHash::empty(), 0, 4);
         idx.insert(&g, 1u128 << 4);
 

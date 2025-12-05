@@ -1,8 +1,10 @@
 [chain]
-num_blocks = 300
+num_blocks = 100
 seed = 41
 output_path = "/tmp/testchain1"
 genesis_path = "../demo_genesis.json"
+persistence_mode = "consensus_engine"
+#persistence_mode = "direct_insert"
 
 [blocks]
 # This key is bound to `@ee4a3a385d2bc7c46bc0925a5b3052f70e5f7b87` address from demo_genesis.json

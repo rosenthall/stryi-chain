@@ -47,12 +47,6 @@ pub use undo::BlockUndo;
 /// Implementation of the transactions [mempool](https://www.geeksforgeeks.org/what-is-a-memory-pool/).
 pub mod mempool;
 
-/// A tree‐based structure for managing blockchain forks:
-/// keeps orphaned blocks indexed by hash and height,
-/// tracks each fork’s cumulative difficulty and divergence point,
-/// and provides efficient ancestor discovery, chain reconstruction
-mod forktree;
-
 // public export of common libraries across the project
 pub use blake3;
 

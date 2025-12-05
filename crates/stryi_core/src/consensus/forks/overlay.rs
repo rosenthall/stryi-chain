@@ -18,21 +18,23 @@ pub struct ForkDbOverlay<DB>
 where
     DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
 {
-    // canonical state
+    /// canonical state.
+    /// by default, all reads are delegated to this DB unless overridden in the overlay
     base: Arc<DB>,
 
-    inherited_work: u128, // cumulative work up to (and incl.) the fork point
+    /// cumulative work up to (and incl.) the fork point
+    inherited_work: u128,
 
-    // new or overridden UTXOs on this fork
+    /// new or overridden UTXOs on this fork
     utxo_delta: DashMap<OutPoint, UTXO>,
 
-    // outpoints that spent from base by this fork
+    /// outpoints that spent from base by this fork
     spent_from_base: DashSet<OutPoint>,
 
-    // blocks produced on this fork (keyed by hash)
+    /// blocks produced on this fork (keyed by hash)
     block_delta: DashMap<BlockHash, Block>,
 
-    // per-block undo diff created by UtxoProcessor::apply_block
+    /// per-block undo diff created by UtxoProcessor::apply_block
     undo_delta: DashMap<BlockHash, BlockUndo>,
 }
 
