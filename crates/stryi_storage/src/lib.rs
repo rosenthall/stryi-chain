@@ -41,7 +41,7 @@
 //! 6. **Undo**
 //!     - Key : `stryi_core::block::BlockHash` (32 bytes of the block hash)
 //!     - Value : A `bincode`-serialized `stryi_core::BlockUndo` object
-//!     
+//!
 //!     This partition is our per-block backup data. The thing allows us easily restore pre-block state, by just keeping
 //!    `BlockUndo` in base. Restoration is just simple as deleting all the new outputs and restoring all the existing ones.
 //!    High-level struct for implementing this functionality is `ChainReorganizer`
@@ -65,7 +65,7 @@ mod utxo;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io;
 
@@ -78,15 +78,15 @@ pub use meta::*;
 use fjall::{Config as FjallConfig, PartitionCreateOptions, TxKeyspace, TxPartition};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tracing::info;
+use tracing::{debug, info};
 
 pub use crate::error::StryiStorageError;
 use stryi_core::address::AccountAddress;
 
 use crate::stats::StorageStateInformation;
 use stryi_core::block::{Block, BlockHash, GenesisState};
-use stryi_core::storage::BlockStorage;
-use stryi_core::transactions::TransactionKind;
+use stryi_core::storage::{BlockStorage, UtxoStorage};
+use stryi_core::transactions::{OutPoint, TransactionKind, UTXO};
 
 /// `StryiStorage` manages seven partitions within a single Fjall keyspace:
 /// - `blocks_partition`: For storing blocks keyed by hash
@@ -177,7 +177,7 @@ pub fn validate_genesis(block: &Block) -> Result<(), Box<dyn Error + Send + Sync
         return Err(invariant_err("exactly one transaction is required"));
     }
 
-    let tx = block.data.transactions[0].clone();
+    let tx = &block.data.transactions[0];
 
     // The only transaction shall be Genesis kind
     if tx.data.kind != TransactionKind::Genesis {
@@ -189,9 +189,61 @@ pub fn validate_genesis(block: &Block) -> Result<(), Box<dyn Error + Send + Sync
         return Err(invariant_err("transaction must have no inputs"));
     }
 
+    // Genesis transaction must have at least one output
+    if tx.data.outputs.is_empty() {
+        return Err(invariant_err(
+            "genesis transaction must have at least one output",
+        ));
+    }
+
+    // All the recipients of allocations must be unique (no double funding for a single account)
+    let mut seen_addresses = HashSet::new();
+
+    for output in &tx.data.outputs {
+        if !seen_addresses.insert(output.recipient) {
+            return Err(invariant_err("all allocation recipients must be unique"));
+        }
+
+        // Check for zero-value allocations
+        if output.value == 0 {
+            return Err(invariant_err("genesis allocations must be non-zero"));
+        }
+    }
+
     // Is that all the checks we need for genesis?
 
     Ok(())
+}
+
+/// simple helper function to extract all UTXOs from a block
+/// returns a vector of (OutPoint, UTXO) tuples
+pub fn extract_utxos_from_block(block: &Block) -> Vec<(OutPoint, UTXO)> {
+    block
+        .data
+        .transactions
+        .iter()
+        .flat_map(|tx| {
+            tx.data
+                .outputs
+                .iter()
+                .enumerate()
+                .map(move |(vout, output)| {
+                    let outpoint = OutPoint {
+                        txid: tx.data.hash(),
+                        vout: vout as u32,
+                    };
+
+                    let utxo = UTXO {
+                        txid: tx.data.hash(),
+                        vout: vout as u32,
+                        value: output.value,
+                        owner: output.recipient,
+                    };
+
+                    (outpoint, utxo)
+                })
+        })
+        .collect()
 }
 
 impl StryiStorage {
@@ -210,6 +262,7 @@ impl StryiStorage {
     /// Notes:
     /// - This function performs no network I/O.
     /// - Callers that defer genesis should ensure it is committed before exposing chain-dependent services.
+    /// - Acquires an exclusive lock file to prevent concurrent initialization attempts.
     pub async fn initialize_in_path(
         path: PathBuf,
         genesis_config: Option<GenesisInitConfig>,
@@ -253,25 +306,45 @@ impl StryiStorage {
         };
 
         // Attempt to load existing chain state
-        if let Err(StryiStorageError::NoStorageStatsFound(_)) = storage.get_current_storage_state()
-        {
-            // Create an empty, pre-genesis state so callers can commit genesis later
-            storage.initialize_storage_state()?;
+        match storage.get_current_storage_state() {
+            Ok(state) => {
+                info!(
+                    "Storage already initialized. Current chain state: latest block = {:?}, last update time = {}, blocks count = {}, chain difficulty = {}",
+                    state.latest_block,
+                    state.last_update_time,
+                    state.blocks_count,
+                    state.chain_difficulty
+                );
+                // Storage is already initialized; return as-is.
+                return Ok(storage);
+            }
+            Err(StryiStorageError::NoStorageStatsFound(_)) => {
+                // Database is brand new - initialize it
+                debug!("Storage not initialized. Proceeding with initialization...");
 
-            if let Some(gconfig) = genesis_config {
-                info!("Inserting genesis block (bootstrap mode)...");
-                storage.init_with_genesis(gconfig.clone()).await?;
-                info!(
-                    "Genesis inserted: {} allocations, genesis's chain statics ={:?}, version={}",
-                    gconfig.wanted_balances.len(),
-                    gconfig.genesis_state,
-                    gconfig.version
-                );
-            } else {
-                // Pre-Genesis: partitions + initial stats exist; no block yet.
-                info!(
-                    "Initialized storage in Pre-Genesis mode (no genesis block). The caller must commit genesis later."
-                );
+                if let Some(gconfig) = genesis_config {
+                    info!("Inserting genesis block (bootstrap mode)...");
+
+                    // Initialize with genesis block - this will also create initial stats
+                    storage.init_with_genesis(gconfig.clone()).await?;
+
+                    info!(
+                        "Genesis inserted: {} allocations, genesis's chain statics = {:?}, version={}",
+                        gconfig.wanted_balances.len(),
+                        gconfig.genesis_state,
+                        gconfig.version
+                    );
+                } else {
+                    // Pre-Genesis: create empty layout with initial stats
+                    storage.initialize_storage_state()?;
+                    info!(
+                        "Initialized storage in Pre-Genesis mode (no genesis block). The caller must commit genesis later."
+                    );
+                }
+            }
+            Err(e) => {
+                // Some other error occurred while checking storage state.
+                return Err(e);
             }
         }
 
@@ -281,7 +354,9 @@ impl StryiStorage {
     /// Inserts a genesis block if the database is empty, using the user-provided config.
     ///
     /// 1) Constructs the genesis block
-    /// 2) Calls self.put_block to store it and update the chain stats
+    /// 2) Validates it
+    /// 3) Initializes storage state
+    /// 4) Calls self.put_block and self.put_utxos to store it and update the chain stats
     pub async fn init_with_genesis(
         &mut self,
         cfg: GenesisInitConfig,
@@ -289,17 +364,31 @@ impl StryiStorage {
         // Build the genesis block from user config
         let genesis_block = Block::new_genesis(cfg.version, cfg.wanted_balances, cfg.genesis_state);
 
-        // try store it via put_block
-        self.put_block(&genesis_block).await
+        // Validate the genesis block before storing
+        validate_genesis(&genesis_block).map_err(|e| {
+            StryiStorageError::InvalidGenesisBlock(format!("Genesis validation failed: {}", e))
+        })?;
+
+        self.initialize_storage_state()?;
+
+        // Store it via put_block
+        self.put_block(&genesis_block).await?;
+
+        info!("Genesis block successfully stored.");
+
+        // And utxos via put_utxos
+        let utxos_to_insert: Vec<(OutPoint, UTXO)> = extract_utxos_from_block(&genesis_block);
+
+        self.batch_put_utxos(utxos_to_insert).await?;
+
+        info!("Genesis UTXOs successfully stored.");
+
+        Ok(())
     }
 
-    /// Creates initial storage state if it doesn't exist
+    /// Creates initial storage state if it doesn't exist.
+    /// Note: This should only be called when we know state doesn't exist (after NoStorageStatsFound error).
     fn initialize_storage_state(&mut self) -> Result<(), StryiStorageError> {
-        // Check if state already exists
-        if self.get_current_storage_state().is_ok() {
-            return Ok(());
-        }
-
         // Create initial state
         let initial_state = StorageStateInformation {
             latest_block: (0, BlockHash::empty()), // Empty is basically genesis block

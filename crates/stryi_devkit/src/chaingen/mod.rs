@@ -1,23 +1,30 @@
-/// Configuration struct for ChainGen.
-mod config;
-
 use crate::chaingen::state::GenerationState;
 pub use config::*;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
-use std::cmp::min;
+use std::sync::Arc;
+
+/// Configuration struct for ChainGen.
+mod config;
+
+/// Transaction generation helpers.
+mod txgen;
 
 /// Definition and helpers for Seed struct used in ChainGen.
-pub mod seed;
+mod seed;
+
+/// UTXO tracking and selection helpers.
+mod utxo;
 
 /// Seed schedule: mapping from height to active seed.
 /// Used to create ChaCha8Rng instances for block synthesis.
 mod seed_schedule;
+
+/// Generation state: accounts, UTXOs, etc.
 mod state;
 
+/// Defines `TxGenerationStrategy`, a helper for choosing how to generate transactions.
 mod strategy;
-mod txgen;
-mod utxo;
 
 use crate::chaingen::seed_schedule::SeedSchedule;
 use crate::chaingen::strategy::TxGenerationStrategy;
@@ -25,20 +32,26 @@ use crate::chaingen::txgen::{
     FundAccount, TransactionGenerationParams, generate_distributing_transaction,
     generate_transaction,
 };
-use crate::chaingen::utxo::{
-    TransactionPattern, UtxoInfo, UtxoSelectionCriteria, sample_transaction_pattern,
-};
+use crate::chaingen::utxo::UtxoInfo;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
 use stryi_core::block::{Block, BlockData, BlockHash, meets_difficulty};
-use stryi_core::storage::BlockStorage;
+use stryi_core::consensus::{
+    BlockValidator, ConsensusEngine, ConsensusVerdict, StryiConsensusEngine,
+};
+use stryi_core::difficulty::build_difficulty_calculator_from_consts;
+use stryi_core::storage::{BlockStorage, UtxoStorage};
 use stryi_core::transactions::{
-    OutPoint, Transaction, TransactionData, TransactionKind, TransactionOut,
+    OutPoint, Transaction, TransactionData, TransactionKind, TransactionOut, UTXO, UtxoProcessor,
 };
 use stryi_storage::{GenesisInitConfig, StorageStatus, StryiStorage};
-use tracing::{debug, error, info, trace};
+use tokio::sync::RwLock;
+use tracing::{debug, error, info, trace, warn};
 
+/// Generator for synthetic blockchain data.
+/// Builds and persists a chain of blocks according to the provided configuration.
+// TODO: Make ChainGenerator use ConsensusConsts from genesis.
 pub struct ChainGenerator {
     /// Config for this run.
     config: ChainGenConfig,
@@ -46,11 +59,15 @@ pub struct ChainGenerator {
     /// Fund account
     pub(crate) fund_account: (AccountAddress, PrivateKey, u64, OutPoint),
 
-    /// Cached genesis
+    /// Cached genesis block.
     genesis: Block,
 
+    /// Optional consensus engine instance.
+    /// Only being initialized and used if config.blocks.persistence_mode == PersistenceMode::ConsensusEngine
+    consensus_engine: Option<StryiConsensusEngine<StryiStorage>>,
+
     /// Storage instance.
-    storage: StryiStorage,
+    storage: Arc<RwLock<StryiStorage>>,
 }
 
 impl ChainGenerator {
@@ -58,7 +75,7 @@ impl ChainGenerator {
     /// This includes reading and parsing the genesis config,
     /// and initializing storage.
     pub async fn initialize(config: ChainGenConfig) -> Result<Self, String> {
-        println!("Initializing ChainGenerator...");
+        info!("Initializing ChainGenerator...");
 
         // Check if output path exists, if not create it
         if !config.chain.output_path.is_dir() {
@@ -83,7 +100,7 @@ impl ChainGenerator {
                 )
             })?
         };
-        println!("Successfully read and parsed genesis config.");
+        info!("Successfully read and parsed genesis config.");
 
         // make sure that config.funds_account exists in GenesisInitConfig and its balance != 0
 
@@ -98,7 +115,7 @@ impl ChainGenerator {
                     &funding_account
                 ));
             }
-            println!(
+            info!(
                 "Got {} account with genesis-defined balance {}!",
                 &funding_account, balance
             );
@@ -113,18 +130,18 @@ impl ChainGenerator {
             maybe_available_balance.expect("already checked balance is Some(_)");
 
         let storage_path = config.chain.output_path.clone();
-        println!("Initializing storage at path: {}", storage_path.display());
+        info!("Initializing storage at path: {}", storage_path.display());
 
         // Probe storage meta information
         let storage_status = StorageStatus::from_path(&storage_path).map_err(|e| {
-            println!(
+            info!(
                 "Failed to probe storage at {}: {e}",
                 &storage_path.display()
             );
             e.to_string()
         })?;
 
-        println!(
+        info!(
             "Storage status at {} => {:?}",
             &storage_path.display(),
             storage_status
@@ -144,7 +161,7 @@ impl ChainGenerator {
             .await
             .map_err(|e| e.to_string())?;
 
-        println!("Storage initialized.");
+        info!("Storage initialized.");
 
         // read genesis
         let genesis = storage
@@ -153,15 +170,48 @@ impl ChainGenerator {
             .map_err(|e| format!("Unable to read genesis block from storage! Error: {e}"))?
             .ok_or("Genesis block does not exist in storage after initialization")?;
 
-        let first_tx = genesis
+        // filter out the genesis transaction
+        let genesis_tx = genesis
             .data
             .transactions
             .first()
-            .expect("Genesis transaction must exist");
+            .filter(|tx| tx.data.kind == TransactionKind::Genesis)
+            .ok_or("Genesis block's first transaction must be of kind Genesis)")?;
 
+        // Print all the allocations from the genesis block
+        {
+            let txid = genesis_tx.data.hash();
+            for (vout, out) in genesis_tx.data.outputs.iter().enumerate() {
+                info!(
+                    "Genesis allocation - vout: {}, recipient: {}, value: {}",
+                    vout, out.recipient, out.value
+                );
+            }
+
+            // check that all these utxos are in the genesis utxo set
+            for (vout, _out) in genesis_tx.data.outputs.iter().enumerate() {
+                let outpoint = OutPoint {
+                    txid,
+                    vout: vout as u32,
+                };
+                let utxo = storage
+                    .get_utxo(outpoint)
+                    .await
+                    .map_err(|e| format!("Failed to get UTXO from storage: {}", e))?;
+                if utxo.is_none() {
+                    return Err(format!(
+                        "Genesis UTXO not found in storage for OutPoint: {:?}",
+                        outpoint
+                    ));
+                }
+            }
+        }
+
+        // get exact outpoint for funding account
+        // NOTE: Funding Account is account that will distribute its balance to other accounts during first generated block (distributing block)
         let genesis_fund_outpoint = OutPoint {
-            txid: first_tx.data.hash(),
-            vout: first_tx
+            txid: genesis_tx.data.hash(),
+            vout: genesis_tx
                 .data
                 .outputs
                 .iter()
@@ -169,6 +219,7 @@ impl ChainGenerator {
                 .expect("Funding account must have a balance") as u32,
         };
 
+        // build fund account tuple
         let fund_account: FundAccount = (
             funding_account,
             config.clone().blocks.funding_key,
@@ -178,23 +229,79 @@ impl ChainGenerator {
 
         debug!(?fund_account);
 
+        // build consensus engine if needed (in case if persistence_mode == ConsensusEngine)
+
+        // Wrap db in arc and read-write lock
+        let storage = Arc::new(RwLock::new(storage));
+
+        let consensus_engine = match config.chain.persistence_mode {
+            // if ConsensusEngine - build it
+            PersistenceMode::ConsensusEngine => {
+                info!(
+                    "`PersistenceMode::ConsensusEngine` selected. Initializing StryiConsensusEngine..."
+                );
+
+                // read consensus consts from genesis
+                let consensus_consts = genesis
+                    .header
+                    .genesis_state
+                    .as_ref()
+                    .ok_or("genesis_state is None in genesis")?
+                    .consensus_consts;
+
+                trace!(?consensus_consts);
+
+                // build components of the engine
+
+                let difficulty_calc = build_difficulty_calculator_from_consts(consensus_consts);
+                let block_validator =
+                    BlockValidator::new(consensus_consts, difficulty_calc.clone());
+                let utxo_processor = UtxoProcessor::new();
+
+                // .. and the engine itself
+                let engine = StryiConsensusEngine::new(
+                    consensus_consts,
+                    block_validator,
+                    utxo_processor,
+                    storage.clone(),
+                    difficulty_calc,
+                )
+                .await
+                .map_err(|e| format!("Failed to initialize StryiConsensusEngine: {:?}", e))?;
+
+                // print welcome message
+                engine.startup_message();
+
+                Some(engine)
+            }
+            // if DirectInsert - no engine
+            PersistenceMode::DirectInsert => {
+                warn!(
+                    "`PersistenceMode::DirectInsert` selected. Make sure you know what you are doing!"
+                );
+                None
+            }
+        };
+
         Ok(Self {
             config,
             fund_account,
             genesis,
+            consensus_engine,
             storage,
         })
     }
 
     /// Deterministic, sequential generation: build and persist N-1 blocks after genesis.
+    /// Utilizes the preferred way of persistence, direct insert or consensus engine, as per config.
     /// Initializes SeedSchedule and reseeds exactly at switch heights.
     pub async fn start(mut self) -> Result<(), String> {
-        println!("Starting chain generation and persistence...");
+        info!("Starting chain generation and persistence...");
 
         // Number of post-genesis blocks to generate.
         let total_to_generate = self.config.chain.num_blocks.saturating_sub(1);
         if total_to_generate == 0 {
-            println!("Nothing to generate (num_blocks = 1: only genesis).");
+            info!("Nothing to generate (num_blocks = 1: only genesis).");
             return Ok(());
         }
 
@@ -203,7 +310,7 @@ impl ChainGenerator {
         let mut current_seed = schedule.seed_at(1);
         let mut rng = SeedSchedule::rng_from_seed(current_seed);
 
-        println!(
+        info!(
             "Seed schedule initialized. First active seed: {}",
             current_seed
         );
@@ -216,15 +323,15 @@ impl ChainGenerator {
             current_seed,
         );
 
-        // print accounts
+        // print all generated accounts
         generation_state
             .accounts
             .iter()
             .map(|acc| acc.0) // only iterate addresses
             .enumerate()
-            .for_each(|(idx, address)| println!("[{}] {address}", idx + 1));
+            .for_each(|(idx, address)| info!("[{}] {address}", idx + 1));
 
-        println!(
+        info!(
             "Generated {} deterministic accounts",
             &generation_state.accounts.len()
         );
@@ -232,26 +339,86 @@ impl ChainGenerator {
         // back the accounts&keys up
         generation_state.save_accounts(self.config.chain.output_path.clone())?;
 
+        debug!("Building distributing block");
         // Insert block that distributes balances
         let distributor = self.build_distributing_block(&mut generation_state).await?;
-        trace!(?distributor);
+        debug!("Distributor block : {:#?}", distributor);
 
-        self.storage
-            .put_block(&distributor)
-            .await
-            .map_err(|e| format!("Cannot insert distribution block : {:?}", e))?;
+        // Persist distribution block at height 1 with a short-lived write lock
+
+        // Persist distribution block at height 1:
+        // - If consensus engine is configured -> call on_block (do not hold storage lock).
+        // - Otherwise -> direct insert into storage.
+        let dist_utxo_count = distributor.data.transactions[1].data.outputs.len();
+        if let Some(engine) = &mut self.consensus_engine {
+            // Move (or clone) block into engine. Expect Block: Clone.
+            let blk_for_engine = distributor.clone();
+            match engine
+                .on_block(blk_for_engine)
+                .await
+                .map_err(|e| format!("Consensus engine failed: {:?}", e))?
+            {
+                // Applied successfully
+                ConsensusVerdict::Applied {
+                    new_chain_complexity,
+                } => {
+                    info!(
+                        "Distributor persisted via ConsensusEngine. new_chain_complexity={}",
+                        new_chain_complexity
+                    );
+                }
+
+                // Rejected by consensus
+                ConsensusVerdict::Rejected(err) => {
+                    return Err(format!(
+                        "Distributor block rejected by consensus: {:?}",
+                        err
+                    ));
+                }
+
+                _ => {
+                    warn!(
+                        "Unexpected ConsensusVerdict for distributor block: {:?}",
+                        distributor
+                    );
+                    return Err("Unexpected ConsensusVerdict".to_string());
+                }
+            }
+            info!(
+                "Successfully built and persisted distributing block at height 1. It created {} UTXOs.",
+                dist_utxo_count
+            );
+        } else {
+            // direct insert (keep short-lived lock)
+            let mut storage_guard = self.storage.write().await;
+            storage_guard
+                .put_block(&distributor)
+                .await
+                .map_err(|e| format!("Cannot insert distribution block : {:?}", e))?;
+
+            info!(
+                "Successfully built and persisted distributing block at height 1. It created {} UTXOs.",
+                dist_utxo_count
+            );
+        }
 
         /* inserting undo here if flag passed */
 
+        // acc for tx count
+        let mut tx_count = 0;
+
+        // Main generation loop
         for height in 2..=total_to_generate {
+            debug!("Building block at height {}...", height);
+
             // If this exact height is a switch point, reseed before building the block.
             if height != 1 && schedule.is_switch_height(height) {
                 current_seed = schedule.seed_at(height);
                 rng = SeedSchedule::rng_from_seed(current_seed);
-                println!("Switching seed at height {} -> {}", height, current_seed);
+                info!("Switching seed at height {} -> {}", height, current_seed);
             }
 
-            let mut tx_count = 0;
+            // Helper to update tx count after block is built
             let mut update_tx_count = |data: &BlockData| {
                 tx_count += data.transactions.len();
             };
@@ -262,10 +429,50 @@ impl ChainGenerator {
                 .await
                 .map_err(|e| format!("failed to build block at height {}: {}", height, e))?;
 
-            self.storage
-                .put_block(&block)
-                .await
-                .map_err(|e| format!("put_block failed at height {}: {}", height, e))?;
+            // Persist block depending on persistence mode.
+            if let Some(engine) = &mut self.consensus_engine {
+                let blk_for_engine = block.clone();
+                match engine
+                    .on_block(blk_for_engine)
+                    .await
+                    .map_err(|e| format!("Consensus engine failed at height {}: {:?}", height, e))?
+                {
+                    // Applied successfully
+                    ConsensusVerdict::Applied {
+                        new_chain_complexity,
+                    } => {
+                        debug!(
+                            "Block at height {} persisted via ConsensusEngine. new_chain_complexity={}",
+                            height, new_chain_complexity
+                        );
+                    }
+
+                    // Rejected by consensus
+                    ConsensusVerdict::Rejected(err) => {
+                        return Err(format!(
+                            "Block at height {} rejected by consensus: {:?}",
+                            height, err
+                        ));
+                    }
+
+                    _ => {
+                        warn!(
+                            "Unexpected ConsensusVerdict for block at height {}: {:?}",
+                            height, block
+                        );
+                        return Err("Unexpected ConsensusVerdict".to_string());
+                    }
+                }
+            }
+            // DIRECT INSERT
+            else {
+                // Acquire write lock only for the short duration required to persist the block
+                let mut storage_guard = self.storage.write().await;
+                storage_guard
+                    .put_block(&block)
+                    .await
+                    .map_err(|e| format!("put_block failed at height {}: {}", height, e))?;
+            }
 
             // log current utxos state
             let utxos_amount = |s: &GenerationState| {
@@ -275,7 +482,7 @@ impl ChainGenerator {
                     .sum::<usize>()
             };
 
-            trace!(
+            debug!(
                 "There is {} UTXOs available before persisting block {}",
                 utxos_amount(&generation_state),
                 height
@@ -285,7 +492,7 @@ impl ChainGenerator {
             generation_state.apply_block(&block);
 
             // and log after
-            trace!(
+            debug!(
                 "There is {} UTXOs available after persisting block {}",
                 utxos_amount(&generation_state),
                 height
@@ -302,15 +509,15 @@ impl ChainGenerator {
 
             if height % 10 == 0 || height == total_to_generate {
                 info!(
-                    "|->  persisted {}/{} blocks (seed {}). total transactions : {}, per block(avg) : {}",
+                    "|->  persisted {}/{} blocks (seed {}). total transactions : {}, per block(avg) : {:.2}",
                     height, total_to_generate, current_seed, tx_count, avg_tx_count
                 );
             }
         }
 
         info!(
-            "Done. Persisted {} blocks after genesis.",
-            total_to_generate
+            "Done. Persisted {} blocks after genesis. With total transactions created: {}",
+            total_to_generate, tx_count
         );
 
         // TODO: Finalize chaingen run: e.g., write summary file with some stats, etc.
@@ -380,6 +587,7 @@ impl ChainGenerator {
 
         Ok(block)
     }
+
     /// Build a deterministic, valid block at `height`:
     /// - loads consensus consts from genesis;
     /// - derives prev_hash/timestamp from the previous block;
@@ -395,17 +603,17 @@ impl ChainGenerator {
         if height == 0 || height == 1 {
             return Err("build_block called with height=0 (genesis)".to_string());
         }
+        // Lock storage for entire block build.
+        let mut storage_guard = self.storage.write().await;
 
         // Load genesis and prev block once.
-        let genesis = self
-            .storage
+        let genesis = storage_guard
             .get_block_by_height(0)
             .await
             .map_err(|e| format!("cannot read genesis: {e}"))?
             .ok_or_else(|| "genesis block is missing".to_string())?;
 
-        let prev = self
-            .storage
+        let prev = storage_guard
             .get_block_by_height(height - 1)
             .await
             .map_err(|e| format!("cannot read prev block at height {}: {e}", height - 1))?
@@ -456,7 +664,6 @@ impl ChainGenerator {
         let total_tx_count = rng.random_range(min_txs..=max_txs) as usize;
         let payment_tx_count = total_tx_count.saturating_sub(1); // Subtract 1 for coinbase
 
-        // In build_block method, replace the existing transaction generation loop with:
         if payment_tx_count == 0 {
             panic!("Payment transaction count is zero at height {}!", height);
         }
@@ -515,7 +722,7 @@ impl ChainGenerator {
             }
         }
 
-        trace!(
+        debug!(
             "transaction count at the end of the block {} is : {}",
             &height,
             transactions.len()

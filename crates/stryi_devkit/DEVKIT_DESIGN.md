@@ -57,91 +57,92 @@ stryi-devkit chaingen --config-path <path_to_config_file>
 The configuration file is in TOML format.
 Examples : 
 
+
+#### Configuration
+
+Configuration is read from a TOML file provided via `--config-path`. The file contains two main areas: `[chain]` for chain-wide settings and `[blocks]` for block-generation rules. Values are validated at startup and the tool emits clear errors for unknown or invalid keys.
+
+Top-level `[chain]` keys (comments kept immediately above fields)
+
 ```toml
 [chain]
 
-
 # Number of blocks to generate
 num_blocks = 100
-
 
 # Seed for random number generator.
 # Using the same seed will always produce the same chain.
 # You can use any integer value as seed.
 #
-# Multiply Seeds: 
-# In some cases you may want to have chain that has first N blocks always the same, but after that it may diverge.
-# It may be useful for testing LCA, Reorganizations, etc.
-# In this case you can use "multiple seeds" feature.
-# Basically you can provide multiple seeds in array mapped by block height ranges and the generator will switch to the new seed when it reaches the specified block height.
+# Multiple seeds:
+# Provide multiple seeds mapped by block height ranges to switch RNG at given heights.
 # Example:
-# seed = [ 
-#   { height = 1 value = 42 },        # use seed 42 from block 0 to block 99
-#   { height = 100, value = 43 },    # use seed 1234 from block 100 to block 199
+# seed = [
+#   { height = 1, value = 42 },     # use seed 42 from block 0 to block 99
+#   { height = 100, value = 43 },   # use seed 43 from block 100 to block 199
 # ]
-# Note: the height values must be in ascending order. The minimum height must be 1 (because block 0 is genesis and always the same). Height values are inclusive, and the last range goes to up to `num_blocks`.
+# Note: heights must be ascending; minimum height is 1 (block 0 is genesis).
 seed = 42
 
-
-# path where to initalize the chain.
-# this path will be created if not exists.
-# internally it will use `stryi_storage` crate for initalization logic.
-#
-# chaingen also will create file `CHAINGEN_PRIVATE_KEYS.txt`, with accounts created for generations in format :
-# @AccountAddress:CorrespondingPrivateKeyInHex
-# Each line - one pair. 
+# Path where to initialize the chain. This path will be created if it does not exist.
+# The tool also creates `CHAINGEN_PRIVATE_KEYS.txt` with generated account keys.
 output_path = "/tmp/testchain1"
 
-# Genesis block configuration
-# Path to genesis file in the same format as used in `stryi-node`. (see `stryi-node` docs for details)
-# this genesis defines initial state of the chain : balances, consts of the validation engine, etc.
+# Path to genesis file in the same format as used in `stryi-node`.
+# This genesis defines initial state of the chain: balances, consensus constants, etc.
 genesis_path = "/path/to/genesis.json"
 
+# How generated blocks are persisted/applied.
+# Allowed values: "consensus_engine", "direct_insert"
+# Default: "consensus_engine"
+# - "consensus_engine" - Build and feed blocks into StryiConsensusEngine; validates and applies blocks as a real node would. Recommended for most tests and benchmarks.
+# - "direct_insert" - Write blocks directly to storage without consensus validation. Faster, useful for low-level tests, but may create chains that real nodes reject. Use only when you know what you are doing.
+persistence_mode = "consensus_engine"
 
-# Configuration for block generation.
-# Defines some rules for the blocks in the chain
 
 [blocks]
 
-# Private key of one of the accounts that have pre-defined balance in genesis in StryiChains's format (just hex).
-# The available balance will be evenly distributed between all active addresses of geneneration (see `active_addresses_count`).
+# Private key (hex) of an account that has pre-defined balance in genesis.
+# The available balance will be evenly distributed among generated active addresses.
 funding_key = "8fea080a21992e9262bbd64698d4c81d995c94dd9d262f3a572d2a8f1b65575a"
 
 # Average time between blocks in seconds (sets block header timestamp increment)
 average_block_time_secs = 10
- 
+
 # Address of the miner who will mine all the blocks in this chain.
-# We use some fixed address instead of random one here so after the chain is generated user may use its private key to sign transactions from this address.
-# It's not the same as if some balance was assigned to this address in genesis, because genesis' funds are usually distributed while generating chain history.
+# Using a fixed address allows reuse of its private key after generation.
 miner_address = "@2fdf51216b8d12feb0ecd4299446465cd8c013a5"
 
-# Range for number of transactions per block. 
-# Each block will have random number of transactions in this range.
+# Range for number of transactions per block.
+# Each block will have a random number of transactions in this range.
 min_transactions_per_block = 5
 max_transactions_per_block = 25
 
 # Number of unique active addresses in the chain.
-# Basically, all the transactions will be created between these addresses.
+# All transactions will be created between these addresses.
 active_addresses_count = 50
 
-# whether to insert BlockUndo records for each block.
+# Whether to insert BlockUndo records for each block.
 # BlockUndo records are used to roll back the chain to previous state.
-# Usually not needed for testing, so can be disabled to save disk space and speed up generation.
+# Usually not needed for testing; disable to save disk space and speed up generation.
+# NOTE: if persistence_mode is "consensus_engine", this setting is ignored and BlockUndo records are always created.
 undo = false
-
 
 ```
 
-
 #### Implementation details
 
-Implementation does not rely on stryi_core's ConsensusEngine on purpose for simplicity. 
+Implementation has two modes, mode depends on whether it relies on stryi_core's ConsensusEngine, or if it just naively interacts with Storage layer.
+Initially there was only direct-insert mode, but it failed a lot when ConsensusEngine of real node tried to validate the generated chain,
+because of some hard-to-debug issues of generated blocks not passing consensus validation.
+Thats is why there are two ways.
 
-WIP
+
+**WIP**
 
 
 
 
 
 ## Load Generator Tool
-WIP
+**WIP**

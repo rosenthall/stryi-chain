@@ -132,10 +132,6 @@ impl DependencyGraph {
             .map(|edge| self.graph[edge.target()])
             .collect()
     }
-
-    /// Identifies groups of transactions that can be executed in parallel.
-    /// Returns a vector of transaction groups, where transactions within each group
-    /// have no dependencies on each other.
     pub fn get_parallel_execution_groups(&self) -> Vec<Vec<usize>> {
         let mut result = Vec::new();
         let mut processed = HashSet::new();

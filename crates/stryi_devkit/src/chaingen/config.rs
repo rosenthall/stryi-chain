@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
+use tracing::trace;
 
 /// Top-level config for chain-generator tool.
 /// Includes two tables : `[chain]` and `[blocks]` for chain-wide and block-gen settings correspondingly.
@@ -17,6 +18,46 @@ pub struct ChainGenConfig {
 
     /// Block-generation settings.
     pub blocks: BlocksSettings,
+}
+
+/// How generated blocks are persisted/applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersistenceMode {
+    ConsensusEngine,
+    DirectInsert,
+}
+
+impl std::str::FromStr for PersistenceMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "consensus_engine" => Ok(PersistenceMode::ConsensusEngine),
+            "direct_insert" => Ok(PersistenceMode::DirectInsert),
+            other => Err(format!(
+                "invalid persistence_mode: `{}`. Allowed values: \"consensus_engine\", \"direct_insert\"",
+                other
+            )),
+        }
+    }
+}
+
+impl TryFrom<String> for PersistenceMode {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.as_str().parse()
+    }
+}
+
+impl<'de> Deserialize<'de> for PersistenceMode {
+    fn deserialize<D>(deserializer: D) -> Result<PersistenceMode, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        PersistenceMode::try_from(s).map_err(serde::de::Error::custom)
+    }
 }
 
 /// Chain-wide settings: generation scope, seeding, and output/genesis paths.
@@ -33,6 +74,13 @@ pub struct ChainSettings {
 
     /// Path to genesis JSON (same format as used by `stryi-node`).
     pub genesis_path: PathBuf,
+
+    /// How generated blocks are persisted/applied.
+    /// Allowed values: "consensus_engine", "direct_insert"
+    /// Default: "consensus_engine"
+    /// - "consensus_engine" — Build and feed blocks into StryiConsensusEngine; validates and applies blocks as a real node would. Recommended for most tests and benchmarks.
+    /// - "direct_insert" — Write blocks directly to storage without consensus validation. Faster, useful for low-level tests, but may create chains that real nodes reject. Use only when you know what you are doing.
+    pub persistence_mode: PersistenceMode,
 }
 
 /// Block-generation rules for timestamps, miner, and synthetic traffic.
@@ -63,8 +111,8 @@ pub struct BlocksSettings {
 
 impl ChainGenConfig {
     /// Minimum allowed active addresses count.
-    /// Generate thousands of blocks with only 1 or 2 active addresses may be problematic.
-    const MIN_ACTIVE_ADDRESSES: u32 = 3;
+    /// Generate thousands of blocks with only a few active addresses is not very interesting and probably, quite problematic, + there is no need for that even for testing purposes.
+    const MIN_ACTIVE_ADDRESSES: u32 = 10;
 
     /// Validate the config, returning `Ok(())` if valid, or `Err(String)` with a descriptive message if invalid.
     /// Validates that all the fields are in a reasonable range, and that paths exist + some other cross-field checks.
@@ -84,14 +132,23 @@ impl ChainGenConfig {
                     .to_string(),
             );
         }
-
-        // note: I think 3 is a reasonable minimum for active addresses to ensure some diversity
         if self.blocks.active_addresses_count < Self::MIN_ACTIVE_ADDRESSES {
             return Err(format!(
                 "active_addresses_count must be >= {}",
                 Self::MIN_ACTIVE_ADDRESSES
             ));
         }
+
+        // Transactions per block vs active addresses cross-validation
+        // This is equivalent of `min_transactions_per_block / 1.5 > active_addresses_count` but avoids float operations
+        if self.blocks.min_transactions_per_block * 2 > self.blocks.active_addresses_count * 3 {
+            return Err(
+                "active_addresses_count is too low for the requested min_transactions_per_block, try doing at least x1.5 of min_transactions_per_block"
+                    .to_string(),
+            );
+        }
+
+        trace!("Persistence mode set to {:?}", &self.chain.persistence_mode);
 
         // validate seed ranges via helper
         seed::validate(&self.chain.seed, self.chain.num_blocks)?;

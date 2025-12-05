@@ -119,7 +119,8 @@ async fn main() -> Result<(), i32> {
     // and initialize tracing subscriber with environment filter and formatting layer
     let env_layer = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"))
-        .add_directive("fjall=info".parse().unwrap());
+        .add_directive("fjall=info".parse().unwrap())
+        .add_directive("lsm_tree=info".parse().unwrap());
 
     tracing_subscriber::registry()
         .with(env_layer)
