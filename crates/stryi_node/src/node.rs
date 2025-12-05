@@ -14,13 +14,13 @@ use stryi_core::block::{Block, BlockHash};
 use stryi_core::consensus::{BlockValidator, ConsensusConsts, StryiConsensusEngine};
 use stryi_core::difficulty::{DifficultyCalc, build_difficulty_calculator_from_consts};
 use stryi_core::mempool::MemPool;
-use stryi_core::storage::{BlockStorage, StorageStats};
-use stryi_core::transactions::UtxoProcessor;
+use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
+use stryi_core::transactions::{OutPoint, UTXO, UtxoProcessor};
 use stryi_network::ed25519::Keypair;
 use stryi_network::{
     NetworkCommand, NetworkEvent, PeerId, ServiceRecord, SignedServiceRecord, StryiNetworkManager,
 };
-use stryi_storage::StryiStorage;
+use stryi_storage::{StryiStorage, extract_utxos_from_block};
 use tokio::join;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio::time::{Instant, sleep};
@@ -336,6 +336,19 @@ impl StryiChainNode {
                 s.put_block(&external_genesis_block).await.map_err(|e| {
                     StryiNodeError::other(format!("failed to commit genesis block: {e}"))
                 })?;
+
+                info!("Genesis block successfully stored.");
+                // And utxos via put_utxos
+                let utxos_to_insert: Vec<(OutPoint, UTXO)> =
+                    extract_utxos_from_block(&external_genesis_block);
+
+                s.batch_put_utxos(utxos_to_insert).await.map_err(|e| {
+                    StryiNodeError::other(format!("failed to commit genesis UTXOs: {e}"))
+                })?;
+
+                info!("Genesis UTXOs successfully stored.");
+
+                info!("OMG IT WORKED")
             }
 
             info!("Genesis saved in meta and committed to storage (height=0).");

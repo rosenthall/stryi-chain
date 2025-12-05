@@ -27,7 +27,7 @@ mod miner;
 /// Simple estimation of the node's hashrate
 mod hashrate;
 
-/// Tools for proper bootstraping of the chain and genesis acquring.
+/// Tools for proper bootstrapping of the chain and genesis acquiring
 mod bootstrap;
 
 /// Helpers for performing Initial Block Download and some related functions
@@ -53,7 +53,7 @@ use std::io::{ErrorKind, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 use stryi_core::address::AccountAddress;
 use stryi_core::block::Block;
 use stryi_core::consensus::{BlockValidator, ConsensusConsts, StryiConsensusEngine};
@@ -139,13 +139,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Tracing subscriber for normal log output (filtering via env vars)
     let fmt_layer = fmt::layer().with_target(true).with_level(true);
+    //.with_thread_names(true);
 
     // Use EnvFilter to filter out some of unnecessary logs (like h2, handshakes, etc.)
     // Set default log level to info if RUST_LOG is not set
     let filter_layer = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"))
         .add_directive("hyper=info".parse().unwrap())
-        .add_directive("h2=info".parse().unwrap());
+        .add_directive("h2=info".parse().unwrap())
+        .add_directive("lsm_tree=info".parse().unwrap());
 
     // With telemetry enabled: include the console layer
     #[cfg(feature = "telemetry")]
@@ -218,8 +220,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let storage: Arc<RwLock<StryiStorage>> = match (start_mode, &storage_status) {
-        // Already initialized - just openn
-        (_, StorageStatus::Initialized { .. }) => {
+        // Already initialized - just open
+        (_start_mode, StorageStatus::Initialized { .. }) => {
             let st =
                 StryiStorage::initialize_in_path(PathBuf::from(&cfg.storage_path), None).await?;
             Arc::new(RwLock::new(st))
@@ -426,7 +428,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut node = StryiChainNode {
         storage: storage.clone(),
         mempool,
-        consensus_engine: None, // Note: Consensus engine will be created when synchronizing.
+        consensus_engine: None, // Note: Consensus engine will be created on synchronizing stage.
         network_manager,
         keypair,
         peer_id,
@@ -537,6 +539,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let block_validator = BlockValidator::new(consensus_consts, difficulty_calc.clone());
             let utxo_processor = UtxoProcessor::new();
             trace!(consensus_consts = ?consensus_consts);
+
             let engine = StryiConsensusEngine::new(
                 consensus_consts,
                 block_validator,
@@ -546,6 +549,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             )
             .await
             .map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
+
+            engine.startup_message();
+
             // set it.
             node.set_consensus_engine(engine);
             info!("Success!");
@@ -554,40 +560,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         NodeStartMode::Join => {
             info!("Join: running synchronize() to fetch genesis/chain from peers.");
             node.synchronize().await?;
-
-            /* synchronize method will prompt user about accepting block.*/
-
-            /*            // If we started with NoGenesis, the sync should have committed height=0.
-            if matches!(storage_status, StorageStatus::NoGenesis) {
-                // Expect a storage API that can retrieve block by height.
-                let genesis_block = {
-                    let s = node.storage.read().await;
-                    s.get_block_by_height(0)
-                        .await
-                        .map_err(|e| {
-                            StryiNodeError::other(format!(
-                                "failed to read genesis from storage: {e}"
-                            ))
-                        })?
-                        .ok_or_else(|| {
-                            StryiNodeError::other("genesis block not found after synchronize()")
-                        })?
-                };
-
-                genesis_bootstrap
-                    .clone()
-                    .clone()
-                    .confirm_and_save(
-                        &genesis_block,
-                        &cfg.chain_name,
-                        cfg.sync_protocol_version as u64,
-                        Some("local"),
-                    )
-                    .map_err(|e| {
-                        error!("confirm_and_save failed: {e}");
-                        e
-                    })?;
-            }*/
         }
 
         NodeStartMode::Auto => unreachable!(),

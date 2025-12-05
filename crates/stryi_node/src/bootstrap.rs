@@ -174,7 +174,10 @@ impl GenesisBootstrap {
         println!("Version          : {}", block.header.version);
         println!("Timestamp (unix) : {}", block.header.timestamp);
         println!("Merkle root      : {}", block.header.merkle_root_hash);
-        println!("Prev block hash  : {}", block.header.previous_block_hash);
+        // only print previous hash if not genesis, because it is all zeros
+        if !block.is_genesis() {
+            println!("Prev block hash  : {}", block.header.previous_block_hash);
+        }
 
         // ===== Consensus Consts =====
         if let Some(gs) = &block.header.genesis_state {
@@ -190,15 +193,20 @@ impl GenesisBootstrap {
         );
 
         let mut table = Table::new();
-        table.set_header(vec!["Account Address", "Initial Balance"]);
+        table.set_header(vec!["Account Address", "OutPoint ID", "Initial Balance"]);
+
         // Keep the same width you used before so borders align with the header banner.
         table.set_width(73);
 
         // We validated earlier that there is exactly one transaction of kind Genesis.
         // Still, handle unexpected shapes gracefully.
         if let Some(tx) = block.data.transactions.first() {
-            for tx_out in &tx.data.outputs {
-                table.add_row(vec![tx_out.recipient.to_string(), tx_out.value.to_string()]);
+            for (id, tx_out) in tx.data.outputs.iter().enumerate() {
+                table.add_row(vec![
+                    tx_out.recipient.to_string(),
+                    id.to_string(),
+                    tx_out.value.to_string(),
+                ]);
             }
         } else {
             // Fallback: no txs (should not happen if validate_candidate was called).

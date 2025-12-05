@@ -40,6 +40,12 @@ pub enum StryiStorageError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("Database is locked by another process: {0}")]
+    DatabaseLocked(String),
+
+    #[error("Invalid Genesis Block: {0}")]
+    InvalidGenesisBlock(String),
+
     #[error("Cannot construct undo object for the block: {msg}")]
     UndoCreationError { msg: String },
 }

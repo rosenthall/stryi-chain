@@ -5,7 +5,7 @@ use futures_util::StreamExt;
 use std::time::Instant;
 use stryi_core::StryiCoreError;
 use stryi_core::block::{Block, BlockHash};
-use stryi_core::consensus::{ConsensusEngine, ConsensusOnBlockVerdict};
+use stryi_core::consensus::{ConsensusEngine, ConsensusVerdict};
 use tonic::transport::Channel;
 use tracing::{debug, error, info, trace, warn};
 
@@ -89,7 +89,7 @@ where
         );
 
         match engine.on_block(b).await? {
-            ConsensusOnBlockVerdict::Applied {
+            ConsensusVerdict::Applied {
                 new_chain_complexity,
             } => {
                 cnt_applied += 1;
@@ -99,7 +99,7 @@ where
                 );
             }
 
-            ConsensusOnBlockVerdict::BufferedIntoForkTree {
+            ConsensusVerdict::BufferedIntoForkTree {
                 common_ancestor_height: (ancestor_hash, ancestor_h),
             } => {
                 cnt_buffered += 1;
@@ -109,17 +109,17 @@ where
                 );
             }
 
-            ConsensusOnBlockVerdict::AlreadyIncludedInChain => {
+            ConsensusVerdict::AlreadyIncludedInChain => {
                 cnt_already_chain += 1;
                 trace!("ALREADY_IN_CHAIN: height={}, hash={}", height, hash);
             }
 
-            ConsensusOnBlockVerdict::AlreadyKnownInForkTree => {
+            ConsensusVerdict::AlreadyKnownInForkTree => {
                 cnt_already_fork += 1;
                 trace!("ALREADY_IN_FORK_TREE: height={}, hash={}", height, hash);
             }
 
-            ConsensusOnBlockVerdict::CausedReorganization { mut deleted_blocks } => {
+            ConsensusVerdict::CausedReorganization { mut deleted_blocks } => {
                 cnt_reorgs += 1;
                 let removed_count = deleted_blocks.len();
                 warn!(
@@ -132,8 +132,13 @@ where
                 }
             }
 
-            ConsensusOnBlockVerdict::Rejected(e) => {
-                error!("REJECTED: height={}, hash={}, error={}", height, hash, e);
+            ConsensusVerdict::Rejected(e) => {
+                error!(
+                    "REJECTED: height={}, hash={}, error={}",
+                    height,
+                    hash,
+                    e.to_string()
+                );
                 return Err(e);
             }
         }
