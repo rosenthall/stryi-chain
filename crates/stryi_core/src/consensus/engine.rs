@@ -5,8 +5,6 @@ use crate::consensus::index::ChainIndex;
 use crate::consensus::validator::BlockValidator;
 use crate::difficulty::DifficultyCalc;
 use crate::error::{StorageLayer, StryiCoreError};
-#[cfg(test)]
-use crate::storage::StryiInMemoryStorage;
 use crate::storage::{BlockStorage, StorageStats, UndoStorage, UtxoStorage};
 use crate::transactions::UtxoProcessor;
 use crate::{

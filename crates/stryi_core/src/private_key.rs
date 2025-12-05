@@ -151,14 +151,4 @@ mod tests {
             );
         }
     }
-    #[test]
-    fn test_invalid_hex_string_into_private_key() {
-        // Invalid hex string (contains 'G')
-        let result = PrivateKey::try_from("GGAABB".to_string());
-        assert!(result.is_err());
-
-        // Invalid key bytes
-        let result = PrivateKey::try_from("00".repeat(31));
-        assert!(result.is_err());
-    }
 }

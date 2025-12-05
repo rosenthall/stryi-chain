@@ -28,7 +28,7 @@ pub async fn validate_transaction(
     }
 }
 
-/// Genesis tx must have **no inputs** and **≥1 output**.
+/// Genesis tx must have **no inputs** and **>=1 output**.
 fn validate_genesis_tx(tx: &Transaction) -> Result<(), StryiCoreError> {
     if tx.data.inputs.is_empty() && !tx.data.outputs.is_empty() {
         Ok(())
@@ -54,9 +54,9 @@ fn validate_coinbase_tx(tx: &Transaction) -> Result<(), StryiCoreError> {
 ///
 /// Steps  
 /// 1. Recover author key + verify signature;  
-/// 2. Iterate inputs – reserve, check ownership, accumulate Σ(inputs);  
-/// 3. Accumulate Σ(outputs);  
-/// 4. Require Σ(inputs) ≥ Σ(outputs).
+/// 2. Iterate inputs – reserve, check ownership, accumulate sum(inputs);  
+/// 3. Accumulate sum(outputs);  
+/// 4. Require sum(inputs) >= sum(outputs).
 async fn validate_payment_tx(
     tx: &Transaction,
     managed: &DashMap<OutPoint, UTXO>,
@@ -128,7 +128,7 @@ async fn validate_payment_tx(
     Ok(())
 }
 
-/// Computes **aggregate fee** (Σ(inputs) − Σ(outputs)) for all *payment* txs.
+/// Computes **aggregate fee** (sum(inputs) − sum(outputs)) for all *payment* txs.
 pub fn calculate_total_fees(
     block: &crate::block::Block,
     managed: &DashMap<OutPoint, UTXO>,
@@ -141,7 +141,7 @@ pub fn calculate_total_fees(
             continue;
         }
 
-        // Σ(inputs)
+        // sum(inputs)
         let mut inputs = 0u64;
         for inp in &tx.data.inputs {
             let u = in_block
@@ -159,7 +159,7 @@ pub fn calculate_total_fees(
                     })?;
         }
 
-        // Σ(outputs)
+        // sum(outputs)
         let outputs = tx
             .data
             .outputs
@@ -169,7 +169,7 @@ pub fn calculate_total_fees(
                 details: "Overflow while summing output values".into(),
             })?;
 
-        // fee ≥ 0
+        // fee >= 0
         let fee = inputs
             .checked_sub(outputs)
             .ok_or(StryiCoreError::ConsensusValidationFailed {

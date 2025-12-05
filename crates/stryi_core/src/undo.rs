@@ -132,10 +132,7 @@ mod tests {
         // Verify created outpoints
         let txid = block.data.transactions[0].data.hash();
         let expected_outpoint0 = OutPoint { txid, vout: 0 };
-        let expected_outpoint1 = OutPoint {
-            txid,
-            vout: 1,
-        };
+        let expected_outpoint1 = OutPoint { txid, vout: 1 };
 
         assert!(
             undo.created_outpoints.contains(&expected_outpoint0),

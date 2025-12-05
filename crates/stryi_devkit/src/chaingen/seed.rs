@@ -34,7 +34,7 @@ impl SeedRange {
 
 #[cfg(test)]
 impl SeedRange {
-    /// Test-only constructor to build ranges without deserialization.
+    /// Test-only constructor to build ranges directly from values with no need of deserialization
     pub fn new_test(height: u64, value: u64) -> Self {
         Self { height, value }
     }

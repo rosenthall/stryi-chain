@@ -53,15 +53,15 @@ use std::io::{ErrorKind, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 use stryi_core::address::AccountAddress;
 use stryi_core::block::Block;
-use stryi_core::consensus::{BlockValidator, ConsensusConsts, StryiConsensusEngine};
+use stryi_core::consensus::{BlockValidator, StryiConsensusEngine};
 use stryi_core::mempool::{MemPool, MemPoolConfig, RbfPolicy, UtxoLookup};
-use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
+use stryi_core::storage::{StorageStats, UtxoStorage};
 use stryi_core::transactions::{FeePolicy, OutPoint, UtxoProcessor};
 use stryi_network::{
-    PeerId, RendezvousMode, ServiceRecord, SignedServiceRecord, StryiBehaviourConfig,
+    PeerId, RendezvousMode, SignedServiceRecord, StryiBehaviourConfig,
     StryiNetworkManager, StryiNetworkManagerConfig,
 };
 use stryi_storage::{GenesisInitConfig, StorageStatus, StryiStorage};

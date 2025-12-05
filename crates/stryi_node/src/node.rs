@@ -572,7 +572,7 @@ impl StryiChainNode {
         let StryiChainNode {
             mempool,
             storage,
-            network_manager,
+            network_manager: _network_manager,
             keypair,
             peer_id,
             services_records,

@@ -43,7 +43,7 @@ use stryi_core::consensus::{
 use stryi_core::difficulty::build_difficulty_calculator_from_consts;
 use stryi_core::storage::{BlockStorage, UtxoStorage};
 use stryi_core::transactions::{
-    OutPoint, Transaction, TransactionData, TransactionKind, TransactionOut, UTXO, UtxoProcessor,
+    OutPoint, Transaction, TransactionData, TransactionKind, TransactionOut, UtxoProcessor,
 };
 use stryi_storage::{GenesisInitConfig, StorageStatus, StryiStorage};
 use tokio::sync::RwLock;
@@ -604,7 +604,7 @@ impl ChainGenerator {
             return Err("build_block called with height=0 (genesis)".to_string());
         }
         // Lock storage for entire block build.
-        let mut storage_guard = self.storage.write().await;
+        let storage_guard = self.storage.write().await;
 
         // Load genesis and prev block once.
         let genesis = storage_guard

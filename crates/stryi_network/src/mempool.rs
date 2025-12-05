@@ -1,6 +1,6 @@
 use crate::StryiEvent;
-use libp2p::request_response::cbor::Behaviour as RequestResponseBehaviour;
 use libp2p::request_response::Event as ReqRespEvent;
+use libp2p::request_response::cbor::Behaviour as RequestResponseBehaviour;
 use serde::{Deserialize, Serialize};
 use stryi_core::mempool::MemPoolSyncData;
 

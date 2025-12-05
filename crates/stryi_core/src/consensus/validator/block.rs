@@ -70,11 +70,11 @@ fn ensure_unique_inputs(data: &BlockData) -> Result<(), StryiCoreError> {
 ///
 /// 1. Build dependency graph & pull required UTXOs;  
 /// 2. Run per-tx validation in **parallel execution groups**;  
-/// 3. Ensure `coinbase ≤ subsidy + Σ(fees)` (non-genesis).
+/// 3. Ensure `coinbase <= subsidy + sum(fees)` (non-genesis).
 pub async fn validate_transactions<US: UtxoStorage + Send>(
     block: &Block,
     rules: &ConsensusConsts,
-    utxo_storage: &mut US,
+    utxo_storage: &US,
 ) -> Result<(), StryiCoreError> {
     let (graph, managed) = build_dependency_context(&block.data, utxo_storage).await?;
 
@@ -94,7 +94,7 @@ pub async fn validate_transactions<US: UtxoStorage + Send>(
 /// Builds dependency graph and fetches external UTXOs in one go.
 async fn build_dependency_context<US: UtxoStorage>(
     data: &BlockData,
-    utxo_storage: &mut US,
+    utxo_storage: &US,
 ) -> Result<(DependencyGraph, Arc<DashMap<OutPoint, UTXO>>), StryiCoreError> {
     let mut graph = DependencyGraph::build(data)?;
     graph.validate_order(data)?;
@@ -165,7 +165,7 @@ async fn validate_group(
     Ok(())
 }
 
-/// Ensures `coinbase ≤ block_subsidy(height) + Σ(fees)`.
+/// Ensures `coinbase <= block_subsidy(height) + sum(fees)`.
 fn reward_rule(
     block: &Block,
     rules: &ConsensusConsts,

@@ -135,9 +135,14 @@ pub struct GenesisInitConfig {
 #[cfg(test)]
 impl GenesisInitConfig {
     /// Creates new GenesisBlockConfig with some reasonable parameters for tests
+    /// NOTE: Genesis, by convention, must have at least one allocation
     pub fn new_test() -> Self {
+        let mut wanted_balances = HashMap::new();
+
+        wanted_balances.insert(AccountAddress::new(&[0u8; 20]), 1_000_000);
+
         Self {
-            wanted_balances: HashMap::new(),
+            wanted_balances,
             genesis_state: GenesisState::default(), // Use default for testing.
             version: 0,
         }

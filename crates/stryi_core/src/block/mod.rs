@@ -204,9 +204,8 @@ impl Block {
             return BlockHash::empty();
         };
 
-        let header_bytes =
-            bincode::serde::encode_to_vec(self.header, bincode::config::standard())
-                .expect("Failed to serialize block header");
+        let header_bytes = bincode::serde::encode_to_vec(self.header, bincode::config::standard())
+            .expect("Failed to serialize block header");
 
         // Create the final block hash
         BlockHash::new(&header_bytes)
