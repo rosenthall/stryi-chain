@@ -1,4 +1,4 @@
-use crate::chaingen::txgen::FundAccount;
+use crate::chaingen::funding_account::FundAccount;
 use crate::chaingen::utxo::{UtxoInfo, UtxoSelectionCriteria};
 use indexmap::{IndexMap, IndexSet};
 use k256::ecdsa::SigningKey;
@@ -10,20 +10,24 @@ use std::path::PathBuf;
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
 use stryi_core::block::Block;
-use stryi_core::transactions::OutPoint;
+use stryi_core::transactions::{OutPoint, TransactionKind};
+use stryi_storage::chaingen::StryiStorageChaingenExt;
+use stryi_storage::{StryiStorage, StryiStorageError};
 use tracing::{debug, info};
 
 /// Current state of chain's generation.
 #[derive(Clone)]
 pub struct GenerationState {
-    /// Collection of all the accounts.
+    /// Collection of all the accounts, that are used during generation process.
     /// @addr mapped by SigningKey of corresponding account.
     pub(crate) accounts: IndexMap<AccountAddress, SigningKey>,
 
-    /// Account that has balance before generation.
+    /// Account that has balance at the moment of the latest "natural" block (one, that was naturally generated in network, but not via generator tool)
+    /// It may be an account from genesis allocation, or just any account with enough balance.
     /// This balance will be distributed between `Self::accounts`,
     /// This account is used once, in very first generated block, the "distributor block" and
     /// generator never uses this one again for simplicity.
+    /// So basically, this is going to be drained.
     pub(crate) fund_account: FundAccount,
 
     /// Track available UTXOs for each account for transaction generation
@@ -37,11 +41,7 @@ impl GenerationState {
     /// Create new instance, with `n` of random accounts, that generated with `base_seed` to generate accounts.
     /// `fund_account` is AccountAddress and its corresponding PrivateKey that has funds in this chain.
     /// See `Self::generate_accounts` for more details.
-    pub fn new_with_random_accounts(
-        n: usize,
-        fund_account: (AccountAddress, PrivateKey, u64, OutPoint),
-        base_seed: u64,
-    ) -> Self {
+    pub fn new_with_random_accounts(n: usize, fund_account: FundAccount, base_seed: u64) -> Self {
         Self {
             accounts: Self::generate_accounts(n, base_seed),
             fund_account,
@@ -95,18 +95,53 @@ impl GenerationState {
             .map_err(|e| format!("Unable to write backup in file, error : {}", e))
     }
 
-    /// Removes a set of UTXOs from an account's available UTXO pool.
-    pub(crate) fn spend_utxos(&mut self, owner: &AccountAddress, utxos_to_spend: &[UtxoInfo]) {
-        if let Some(available_utxos) = self.account_utxos.get_mut(owner) {
-            for utxo in utxos_to_spend {
-                available_utxos.remove(utxo);
-            }
-        }
-    }
+    /// Print some stats about currently existing UTXOs
+    pub(crate) async fn log_utxos_state(
+        &mut self,
+        storage: &StryiStorage,
+        // true if log about generation start, false if about generation end
+        start: bool,
+    ) -> Result<(), StryiStorageError> {
+        // Lock storage and retrieve all UTXOs
+        let account_to_utxo_map = storage.get_all_utxos().await?;
 
-    /// Adds a new UTXO to an account's available UTXO pool.
-    pub(crate) fn add_utxo(&mut self, owner: AccountAddress, utxo: UtxoInfo) {
-        self.account_utxos.entry(owner).or_default().insert(utxo);
+        // Count total UTXOs
+        let total_utxos: usize = account_to_utxo_map.values().map(|m| m.len()).sum();
+        info!(
+            "There are {} UTXOs available in storage at the moment of the generation {}",
+            total_utxos,
+            if start { "start" } else { "finish" },
+        );
+
+        // Calculate balances per account
+        let mut balances: Vec<(AccountAddress, usize, u64)> = account_to_utxo_map
+            .iter()
+            .map(|(address, utxos)| {
+                let utxo_count = utxos.len();
+                let total_value: u64 = utxos.values().map(|utxo| utxo.value).sum();
+                (*address, utxo_count, total_value)
+            })
+            .collect();
+
+        // Sort by balance (descending)
+        balances.sort_by(|a, b| b.2.cmp(&a.2));
+
+        // Print top balances
+        let balances_to_print = std::cmp::min(balances.len(), 20);
+        info!("Top {} account balances:", balances_to_print);
+        for (i, (address, utxo_count, balance)) in
+            balances.iter().take(balances_to_print).enumerate()
+        {
+            info!(
+                "  #{}: {} - {} UTXOs, {} coins",
+                i + 1,
+                address,
+                utxo_count,
+                balance
+            );
+        }
+
+        Ok(())
     }
 
     /// Gets a list of the best recipients for tx outputs.
@@ -284,6 +319,7 @@ impl GenerationState {
         // Add outputs as new UTXOs
         for tx in txs.iter() {
             let tx_id = tx.data.hash();
+            let is_coinbase = tx.data.kind == TransactionKind::Coinbase;
 
             for (idx, output) in tx.data.outputs.iter().enumerate() {
                 let owner: AccountAddress = output.recipient;
@@ -300,7 +336,7 @@ impl GenerationState {
                     outpoint,
                     value,
                     height_created: height,
-                    is_coinbase: false,
+                    is_coinbase,
                 };
 
                 // Insert into account_utxos for the owner

@@ -69,10 +69,16 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io;
 
+/// Utilities specific to `chaingen` feature.
+/// It provides APIs used exclusively by the chain generation tooling (`stryi_chaingen`).
+#[cfg(feature = "chaingen")]
+pub mod chaingen;
+
 mod index;
 mod meta;
 mod stats;
 mod undo;
+
 pub use meta::*;
 
 use fjall::{Config as FjallConfig, PartitionCreateOptions, TxKeyspace, TxPartition};
@@ -90,9 +96,9 @@ use stryi_core::transactions::{OutPoint, TransactionKind, UTXO};
 
 /// `StryiStorage` manages seven partitions within a single Fjall keyspace:
 /// - `blocks_partition`: For storing blocks keyed by hash
-/// - `heights_partition`: For storing mappings from height → hash
-/// - `utxo_partition`: For storing actual UTXOs keyed by (txid+vout)
-/// - `addresses_partition`: For mapping addresses → set of outpoints
+/// - `heights_partition`: For storing mappings from height -> hash
+/// - `utxo_partition`: For storing actual UTXOs keyed by outpoints (txid+vout)
+/// - `addresses_partition`: For mapping addresses -> set of outpoints
 /// - `stats_partition`: For storing the only value with current statistics for entire chain
 /// - `undo_partition` : For storing per-block restoration data to be able to restore any previous state
 /// - `block_index_partition`: For storing some metadata like parent_hash, height, current chain work, etc

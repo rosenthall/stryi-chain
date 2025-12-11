@@ -12,7 +12,7 @@
 //!    - Key: 20 bytes of `AccountAddress`
 //!    - Value: bincode(`HashSet<OutPoint>`)
 //!
-//!    This is an index from address → the set of outpoints that belong to that address. We keep
+//!    This is an index from address -> the set of outpoints that belong to that address. We keep
 //!    this index in sync whenever we add or remove a UTXO in the main partition, so that
 //!    `get_utxos_for_address` does not require scanning all UTXOs.
 
@@ -31,7 +31,7 @@ use stryi_core::transactions::{OutPoint, UTXO};
 /// - bytes [0..32]: `txid.data`
 /// - bytes [32..36]: `vout` as a big-endian 32-bit integer.
 ///   We use 4 bytes to handle large numbers of outputs if needed.
-fn encode_utxo_key(outpoint: &OutPoint) -> [u8; 36] {
+pub fn encode_utxo_key(outpoint: &OutPoint) -> [u8; 36] {
     let mut key = [0u8; 36];
     key[..32].copy_from_slice(&outpoint.txid.data);
     key[32..36].copy_from_slice(&outpoint.vout.to_be_bytes());
@@ -39,7 +39,7 @@ fn encode_utxo_key(outpoint: &OutPoint) -> [u8; 36] {
 }
 
 /// Decodes a bincode `HashSet<OutPoint>` from a slice of bytes, returning an empty set if `None`.
-fn decode_outpoints_set(bytes: &[u8]) -> Result<HashSet<OutPoint>, StryiStorageError> {
+pub(crate) fn decode_outpoints_set(bytes: &[u8]) -> Result<HashSet<OutPoint>, StryiStorageError> {
     let (set, _) = bincode::serde::decode_from_slice::<HashSet<OutPoint>, _>(bytes, standard())
         .map_err(StryiStorageError::DeserializationError)?;
     Ok(set)
@@ -157,7 +157,7 @@ impl UtxoStorage for StryiStorage {
             Ok(())
         })();
 
-        // 2) Return a future that’s immediately ready with that result.
+        // Return a future that’s immediately ready with that result.
         Box::pin(async move { outcome })
     }
 
@@ -165,7 +165,7 @@ impl UtxoStorage for StryiStorage {
         &mut self,
         outpoints: Vec<OutPoint>,
     ) -> BoxFuture<Result<(), Self::StorageError>> {
-        // 1) Perform all removal logic synchronously
+        // Perform all removal logic synchronously
         let result: Result<(), Self::StorageError> = (|| {
             // Initialize write transaction and clone partitions we need.
             let mut tx = self.keyspace.write_tx();
@@ -193,7 +193,7 @@ impl UtxoStorage for StryiStorage {
                 removal_map.entry(utxo.owner).or_default().insert(op);
             }
 
-            // 2) Update each address’s outpoint set
+            // Update each address’s outpoint set
             for (addr, ops) in removal_map {
                 let mut existing = load_address_set_write(&tx, &ap, &addr)?;
                 for op in ops {
@@ -202,12 +202,12 @@ impl UtxoStorage for StryiStorage {
                 store_address_set_write(&mut tx, &ap, &addr, &existing)?;
             }
 
-            // 3) Commit once
+            // Commit once
             tx.commit().map_err(StryiStorageError::FjallError)?;
             Ok(())
         })();
 
-        // 4) Return a “ready” future that just yields `result`
+        // Return a “ready” future that just yields `result`
         Box::pin(async move { result })
     }
 

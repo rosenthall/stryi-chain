@@ -30,6 +30,7 @@ impl TransactionStorage {
     /// - tx_hash: the hash of the transaction (e.g., tx.data.hash()).
     /// - tx: the Transaction itself
     /// - fee: computed fee for the transaction
+    ///
     /// This method stores the entry in `transactions` and manages both output and input indices.
     pub fn insert(&mut self, tx_hash: TransactionHash, tx: Transaction, fee: u64) {
         // Calculate serialized size once during insertion

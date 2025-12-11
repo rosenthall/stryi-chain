@@ -5,6 +5,10 @@ edition = "2024"
 authors = ["Rosenthall <rosenthall@riseup.net>"]
 license = "BSD-3-Clause"
 
+
+[features]
+chaingen = []
+
 [dependencies]
 fjall = "2.10.0"
 stryi_core = { path = "../stryi_core" }
@@ -15,6 +19,7 @@ serde = { version = "1.0.217", features = ["derive"] }
 tokio = { version = "1.44.0", features = ["sync"] }
 futures = "0.3.31"
 blake3 = "1.8.2"
+futures-core = "0.3.31"
 
 [dev-dependencies] # Need these to perform tests
 tempfile = "3.1.16"

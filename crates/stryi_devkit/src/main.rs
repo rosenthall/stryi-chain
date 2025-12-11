@@ -50,10 +50,6 @@ enum DevkitCommand {
     },
 }
 
-fn run_loadgen(_config_path: PathBuf) -> i32 {
-    panic!("loadgen is not implemented yet");
-}
-
 async fn run_chaingen(config_path: PathBuf) -> Result<(), i32> {
     // read the config
     let mut config = {
@@ -119,8 +115,8 @@ async fn main() -> Result<(), i32> {
     // and initialize tracing subscriber with environment filter and formatting layer
     let env_layer = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"))
-        .add_directive("fjall=info".parse().unwrap())
-        .add_directive("lsm_tree=info".parse().unwrap());
+        .add_directive("fjall=error".parse().unwrap())
+        .add_directive("lsm_tree=error".parse().unwrap());
 
     tracing_subscriber::registry()
         .with(env_layer)

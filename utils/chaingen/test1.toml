@@ -1,6 +1,6 @@
 [chain]
 num_blocks = 100
-seed = 41
+seed = 42
 output_path = "/tmp/testchain1"
 genesis_path = "../demo_genesis.json"
 persistence_mode = "consensus_engine"
@@ -12,6 +12,6 @@ funding_key = "f719e0b4e048cc32802aac10e0a49f5d1fd7f037a4e52b23e0ce668ea1f19f3a"
 average_block_time_secs = 10
 miner_address = "@2fdf51216b8d12feb0ecd4299446465cd8c013a5"
 min_transactions_per_block = 10
-max_transactions_per_block = 20
+max_transactions_per_block = 50
 active_addresses_count = 40
 need_undo = false

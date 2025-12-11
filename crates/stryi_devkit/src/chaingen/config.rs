@@ -122,6 +122,13 @@ impl ChainGenConfig {
         if self.chain.num_blocks == 0 {
             return Err("num_blocks must be > 0".to_string());
         }
+
+        if self.chain.num_blocks < 2 {
+            return Err(
+                "`num_blocks` must be at least 2 blocks for proper generation.".to_string(),
+            );
+        }
+
         if self.blocks.average_block_time_secs == 0 {
             return Err("average_block_time_secs must be > 0".to_string());
         }

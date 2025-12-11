@@ -3,31 +3,13 @@ use crate::chaingen::utxo::{TransactionPattern, UtxoInfo};
 use k256::ecdsa::SigningKey;
 use rand::Rng;
 use rand::prelude::IndexedRandom;
+use stryi_core::StryiCoreError;
 use stryi_core::address::AccountAddress;
 use stryi_core::transactions::{
-    FeePolicy, OutPoint, Transaction, TransactionData, TransactionIn, TransactionKind,
-    TransactionOut, estimate_transaction_size,
+    FeePolicy, Transaction, TransactionData, TransactionIn, TransactionKind, TransactionOut,
+    estimate_transaction_size,
 };
-use stryi_core::{PrivateKey, StryiCoreError};
-use tracing::debug;
-
-/// FundAccount represents account, that will distribute own balance to other accounts
-/// for generating purposes.
-/// The structure is :
-/// `AccountAddress` for address
-/// `PrivateKey` for pk. that corresponds to .0
-/// `u64` for available balance
-/// `OutPoint` for exact outpoint to spend for distribution.
-pub type FundAccount = (AccountAddress, PrivateKey, u64, OutPoint);
-
-/// helper function for splitting balance.
-fn calculate_balance_per_account(total_balance: u64, account_num: usize) -> u64 {
-    let after_fee = total_balance * 99 / 100;
-    let per_account = after_fee / account_num as u64;
-
-    // Round down to nearest 10
-    (per_account / 10) * 10
-}
+use tracing::{debug, error, info};
 
 /// Transaction generation parameters that affect UTXO complexity
 #[derive(Clone, Debug)]
@@ -53,29 +35,108 @@ impl Default for TransactionGenerationParams {
     }
 }
 
-/// Generates transaction that evenly distributes balance from `generation_state`'s fund_account
 pub fn generate_distributing_transaction(
     generation_state: &mut GenerationState,
 ) -> Result<Transaction, StryiCoreError> {
-    // no outputs must exist before dist. tx
+    // Check that no UTXOs exist on generated addresses yet
     if !generation_state.account_utxos.is_empty() {
         return Err(StryiCoreError::other(
-            "No UTXOs on generated addresses must be present before the distribution block!",
+            "No UTXOs on generated addresses must be present before the distribution block",
         ));
     }
 
-    let (addr, signing_key, balance, outpoint) = generation_state.fund_account.clone();
+    // Extract fund account details
+    let fund_account = generation_state.fund_account.clone();
+    let funder_address = fund_account.address();
+    let private_key = fund_account.private_key();
+    let utxos = fund_account.utxos();
+    let total_balance = fund_account.total_balance();
+
     let account_num = generation_state.accounts.len();
+    let num_inputs = utxos.len();
+    let num_outputs = account_num;
 
-    let balance_per_account = calculate_balance_per_account(balance, account_num);
+    info!(
+        funder = %funder_address,
+        total_balance = total_balance,
+        accounts = account_num,
+        utxo_count = num_inputs,
+        "Starting fund distribution"
+    );
 
-    debug!(address = ?addr.to_string(), ?balance, ?account_num, ?balance_per_account);
+    // Calculate fees
+    let fee_policy = FeePolicy::default();
+    let actual_fee = estimate_fee(num_inputs, num_outputs, &fee_policy);
 
-    // make sure we have some leftover balance to pay fee
-    assert!(balance > balance_per_account * account_num as u64);
+    debug!(
+        num_inputs = num_inputs,
+        num_outputs = num_outputs,
+        actual_fee = actual_fee,
+        "Calculated distribution transaction fee"
+    );
 
-    // generate outputs
-    let outputs: Vec<TransactionOut> = generation_state
+    // Verify we have enough balance to cover the fee
+    if total_balance <= actual_fee {
+        error!(
+            funder = %funder_address,
+            balance = total_balance,
+            fee = actual_fee,
+            "Insufficient balance to cover distribution transaction fee"
+        );
+        return Err(StryiCoreError::other(
+            "Insufficient balance to cover transaction fee",
+        ));
+    }
+
+    // Calculate distributable amount
+    let distributable = total_balance - actual_fee;
+    let mut balance_per_account = distributable / account_num as u64;
+
+    // Round down to nearest 10 for cleaner numbers
+    balance_per_account = (balance_per_account / 10) * 10;
+
+    // Recalculate actual distribution after rounding
+    let distributed = balance_per_account * account_num as u64;
+    let leftover = distributable - distributed;
+
+    debug!(
+        per_account = balance_per_account,
+        distributed_total = distributed,
+        actual_fee = actual_fee,
+        leftover = leftover,
+        "Distribution economics"
+    );
+
+    // Verify each account will receive a viable amount
+    let min_output_value = TransactionGenerationParams::default().min_output_value;
+    if balance_per_account < min_output_value {
+        error!(
+            balance_per_account = balance_per_account,
+            min_output_value = min_output_value,
+            "Per-account distribution too small to be viable"
+        );
+        return Err(StryiCoreError::other(
+            "Distribution amount per account below minimum viable output",
+        ));
+    }
+
+    // Create inputs from all available UTXOs
+    let inputs: Vec<TransactionIn> = utxos
+        .keys()
+        .map(|outpoint| {
+            debug!(
+                outpoint = %outpoint,
+                "Using fund outpoint"
+            );
+            TransactionIn {
+                previous_output: *outpoint,
+                sequence: 0,
+            }
+        })
+        .collect();
+
+    // Create outputs for each generated account
+    let mut outputs: Vec<TransactionOut> = generation_state
         .accounts
         .keys()
         .map(|addr| TransactionOut {
@@ -84,56 +145,28 @@ pub fn generate_distributing_transaction(
         })
         .collect();
 
-    // build tx data
+    // If there's leftover due to rounding, add it to the first account
+    // This ensures no value is lost
+    if leftover > 0 && !outputs.is_empty() {
+        outputs[0].value += leftover;
+        debug!(
+            leftover = leftover,
+            first_account_total = outputs[0].value,
+            "Added leftover to first account"
+        );
+    }
+
     let data = TransactionData {
         version: 0,
         kind: TransactionKind::Payment,
-        inputs: vec![TransactionIn {
-            previous_output: outpoint,
-            sequence: 0,
-        }],
-        outputs,
+        inputs,
+        outputs: outputs.clone(),
     };
 
-    Ok(data.sign(&signing_key.into_inner().clone()))
-}
+    // Sign transaction
+    let tx = data.sign(&private_key.clone().into_inner().clone());
 
-/// Pattern generators return transaction data + outputs (already done in _generate_simple_tx)
-fn generate_transaction_by_pattern(
-    pattern: TransactionPattern,
-    sender: AccountAddress,
-    utxos_to_spend: Vec<UtxoInfo>,
-    receiver_pool: &[AccountAddress],
-    rng: &mut impl Rng,
-    params: &TransactionGenerationParams,
-) -> Option<(TransactionData, Vec<TransactionOut>)> {
-    match pattern {
-        TransactionPattern::Simple => {
-            // Simple pattern needs exactly 1 UTXO
-            let utxo = utxos_to_spend.into_iter().next()?;
-            generate_simple_tx(utxo, receiver_pool, rng, params)
-        }
-
-        TransactionPattern::Consolidation => {
-            // Consolidation needs multiple UTXOs
-            if utxos_to_spend.len() < 2 {
-                return None;
-            }
-            generate_consolidation_tx(utxos_to_spend, receiver_pool, rng, params)
-        }
-        TransactionPattern::Splitting => {
-            // Splitting needs 1 UTXO but creates multiple outputs
-            let utxo = utxos_to_spend.into_iter().next()?;
-            generate_splitting_tx(sender, utxo, receiver_pool, rng, params) // generate_splitting_tx(sender, utxos_to_spend, receiver_pool, rng, params)
-        }
-        TransactionPattern::Complex => {
-            // Complex needs multiple UTXOs and creates multiple outputs
-            if utxos_to_spend.len() < 2 {
-                return None;
-            }
-            generate_complex_tx(sender, utxos_to_spend, receiver_pool, rng, params)
-        }
-    }
+    Ok(tx)
 }
 
 /// Exact fee calculation using accurate size estimation
@@ -164,48 +197,52 @@ fn min_viable_output(params: &TransactionGenerationParams) -> u64 {
     base_minimum + (base_minimum / 2)
 }
 
-// Main entry point: build tx and update state
-#[allow(clippy::too_many_arguments)]
+/// Generates and signs a transaction using the given [`TransactionPattern`].
+///
+/// This function is **pure**:
+/// it does not update UTXO state, balances, or persistence layers.
+///
+/// Returns `None` if input UTXOs do not satisfy the selected pattern
+/// or if transaction generation fails.
 pub fn generate_transaction(
-    generation_state: &mut GenerationState,
-    sender: AccountAddress,
     signing_key: &SigningKey,
     pattern: TransactionPattern,
     utxos_to_spend: Vec<UtxoInfo>,
     receiver_pool: &[AccountAddress],
     rng: &mut impl Rng,
     params: &TransactionGenerationParams,
-    current_height: u64,
 ) -> Option<Transaction> {
     // Generate the transaction
-    let (tx_data, outputs) = generate_transaction_by_pattern(
-        pattern,
-        sender,
-        utxos_to_spend.clone(),
-        receiver_pool,
-        rng,
-        params,
-    )?;
+    let (tx_data, _outputs) = match pattern {
+        TransactionPattern::Simple => {
+            // Simple pattern needs exactly 1 UTXO
+            let utxo = utxos_to_spend.into_iter().next()?;
+            generate_simple_tx(utxo, receiver_pool, rng, params)
+        }
+
+        TransactionPattern::Consolidation => {
+            // Consolidation needs multiple UTXOs
+            if utxos_to_spend.len() < 2 {
+                return None;
+            }
+            generate_consolidation_tx(utxos_to_spend, receiver_pool, rng, params)
+        }
+        TransactionPattern::Splitting => {
+            // Splitting needs 1 UTXO but creates multiple outputs
+            let utxo = utxos_to_spend.into_iter().next()?;
+            generate_splitting_tx(utxo, receiver_pool, rng, params) // generate_splitting_tx(sender, utxos_to_spend, receiver_pool, rng, params)
+        }
+        TransactionPattern::Complex => {
+            // Complex needs multiple UTXOs and creates multiple outputs
+            if utxos_to_spend.len() < 2 {
+                return None;
+            }
+            generate_complex_tx(utxos_to_spend, receiver_pool, rng, params)
+        }
+    }?;
 
     // Sign it
     let transaction = tx_data.sign(signing_key);
-    let txid = transaction.data.hash();
-
-    // Update state: the inputs are in utxos_to_spend, outputs are in the transaction
-    generation_state.spend_utxos(&sender, &utxos_to_spend);
-
-    for (vout, output) in outputs.iter().enumerate() {
-        let new_utxo = UtxoInfo {
-            outpoint: OutPoint {
-                txid,
-                vout: vout as u32,
-            },
-            value: output.value,
-            height_created: current_height,
-            is_coinbase: false,
-        };
-        generation_state.add_utxo(output.recipient, new_utxo);
-    }
 
     Some(transaction)
 }
@@ -235,7 +272,6 @@ pub fn generate_simple_tx(
             "UTXO value {} not enough to cover fee {}",
             utxo_to_spend.value, fee
         );
-        return None;
     }
 
     // Calculate output value (entire UTXO minus fee)
@@ -338,7 +374,6 @@ pub fn generate_consolidation_tx(
 }
 
 fn generate_splitting_tx(
-    _sender: AccountAddress,
     utxo_to_spend: UtxoInfo,
     receiver_pool: &[AccountAddress],
     rng: &mut impl Rng,
@@ -462,7 +497,6 @@ fn generate_splitting_tx(
 /// Generate complex transaction: N inputs -> M outputs
 /// Combines multiple UTXOs and distributes to multiple recipients
 fn generate_complex_tx(
-    _sender: AccountAddress,
     utxos_to_spend: Vec<UtxoInfo>,
     receiver_pool: &[AccountAddress],
     rng: &mut impl Rng,

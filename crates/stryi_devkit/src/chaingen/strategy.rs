@@ -276,18 +276,12 @@ impl TxGenerationStrategy {
     ) -> (UtxoSelectionCriteria, usize) {
         let progress = self.progress();
 
-        // Calculate minimum viable UTXO value based on fee policy
-        // A UTXO should be able to pay for its own spending cost
-        let min_input_cost = params.fee_policy.fixed_fee + params.fee_policy.input_cost;
-        let min_viable_utxo = min_input_cost + params.min_output_value;
-
         match pattern {
             TransactionPattern::Simple => {
                 // For simple transactions, prefer larger UTXOs to ensure viability
                 // As we progress, occasionally use smaller UTXOs to clean them up
                 let criteria = if progress > 0.6 && rng.random_bool(0.3) {
                     // Late phase: occasionally consolidate small UTXOs
-                    // But still need them to be above min_viable_utxo
                     UtxoSelectionCriteria::Smallest
                 } else {
                     // Default: use larger UTXOs for reliability
@@ -298,19 +292,6 @@ impl TxGenerationStrategy {
 
             TransactionPattern::Splitting => {
                 // Splitting needs 1 large UTXO to split effectively
-                // The UTXO must be large enough to:
-                // - Pay transaction fee (which increases with output count)
-                // - Create multiple outputs above min_output_value
-
-                // Estimate minimum size needed for effective splitting
-                // Assume we want at least 2 outputs
-                let min_outputs = 2;
-                let fee_for_split = params.fee_policy.fixed_fee
-                    + params.fee_policy.input_cost
-                    + (min_outputs as u64 * params.fee_policy.output_cost);
-                let min_split_value =
-                    fee_for_split + (min_outputs as u64 * params.min_output_value * 2);
-
                 // Prefer largest or newest to maximize split potential
                 // Largest ensures we have enough value to split meaningfully
                 let criteria = if rng.random_bool(0.8) {
@@ -325,10 +306,7 @@ impl TxGenerationStrategy {
 
             TransactionPattern::Consolidation => {
                 // Consolidation should target smaller UTXOs to reduce UTXO set size
-                // But we need to ensure the consolidated result is economically viable
-
                 // Calculate economically optimal consolidation size
-                // More inputs = higher fee, so find the sweet spot
                 let max_reasonable_inputs = params.max_inputs.min(available_utxos);
 
                 // In early phase, consolidate fewer UTXOs (preserve diversity)
@@ -363,11 +341,6 @@ impl TxGenerationStrategy {
             TransactionPattern::Complex => {
                 // Complex transactions need balanced UTXO selection
                 // Use multiple inputs but not too many to keep tx size reasonable
-
-                // Calculate fee-optimal input count
-                // Each additional input adds input_cost to fee
-                // But we need enough total value to create multiple viable outputs
-
                 let max_reasonable_inputs = params.max_inputs.min(available_utxos);
 
                 // Complex txs should use 2-5 inputs typically for good balance
@@ -561,9 +534,9 @@ mod tests {
                 simple_count += 1;
             }
         }
-        // At 0% progress, early phase, Simple should be around 25% (not dominant)
+        // At 0% progress, early phase, Simple should be around 25% (+- 10)
         assert!(
-            simple_count >= 15 && simple_count <= 35,
+            (15..=35).contains(&simple_count),
             "With no failures, Simple should be ~25%, got {}",
             simple_count
         );
