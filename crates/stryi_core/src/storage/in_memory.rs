@@ -179,7 +179,7 @@ impl UtxoStorage for StryiInMemoryStorage {
     fn batch_put_utxos(
         &mut self,
         utxos: Vec<(OutPoint, UTXO)>,
-    ) -> BoxFuture<Result<(), Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         Box::pin(async move {
             let mut guard = self.utxos.write().await;
             for (op, u) in utxos {
@@ -192,7 +192,7 @@ impl UtxoStorage for StryiInMemoryStorage {
     fn batch_remove_utxos(
         &mut self,
         outpoints: Vec<OutPoint>,
-    ) -> BoxFuture<Result<(), Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         Box::pin(async move {
             let mut guard = self.utxos.write().await;
             for op in outpoints {
@@ -207,7 +207,7 @@ impl UtxoStorage for StryiInMemoryStorage {
     fn batch_get_utxos<I>(
         &self,
         outpoints: I,
-    ) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
+    ) -> BoxFuture<'_, Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
     where
         I: IntoIterator<Item = OutPoint> + Send,
         I::IntoIter: Send,
@@ -232,7 +232,7 @@ impl UtxoStorage for StryiInMemoryStorage {
     fn get_utxos_for_address(
         &self,
         address: AccountAddress,
-    ) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<HashMap<OutPoint, UTXO>, Self::StorageError>> {
         Box::pin(async move {
             let guard = self.utxos.read().await;
             Ok(guard
@@ -248,7 +248,7 @@ impl UtxoStorage for StryiInMemoryStorage {
 impl BlockStorage for StryiInMemoryStorage {
     type StorageError = InMemoryStorageError;
 
-    fn put_block(&mut self, block: &Block) -> BoxFuture<Result<(), Self::StorageError>> {
+    fn put_block(&mut self, block: &Block) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         let block = block.clone();
 
         // Compute the block hash from the block
@@ -294,7 +294,7 @@ impl BlockStorage for StryiInMemoryStorage {
     fn batch_get_blocks_by_hashes(
         &self,
         hashes: Vec<BlockHash>,
-    ) -> BoxFuture<Result<HashMap<BlockHash, Block>, Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<HashMap<BlockHash, Block>, Self::StorageError>> {
         // capture a reference to the map so it can be used inside the async closure
         let blocks_lock = &self.blocks;
         Box::pin(async move {
@@ -321,7 +321,7 @@ impl BlockStorage for StryiInMemoryStorage {
     fn batch_get_blocks_by_heights<I>(
         &self,
         heights: I,
-    ) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>>
+    ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>>
     where
         I: IntoIterator<Item = u64> + Send + Clone,
         I::IntoIter: Send,
@@ -356,12 +356,12 @@ impl BlockStorage for StryiInMemoryStorage {
     fn blocks_range(
         &self,
         range: RangeInclusive<usize>,
-    ) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>> {
         // Capture locks so they can be used inside async move
         let heights_lock = &self.blocks_heights;
         let blocks_lock = &self.blocks;
         let start = range.start;
-        let end = range.end;
+        let end = range.last;
 
         Box::pin(async move {
             Self::validate_range(range)?;
@@ -388,7 +388,7 @@ impl BlockStorage for StryiInMemoryStorage {
         })
     }
 
-    fn block_exists(&self, hash: BlockHash) -> BoxFuture<Result<bool, Self::StorageError>> {
+    fn block_exists(&self, hash: BlockHash) -> BoxFuture<'_, Result<bool, Self::StorageError>> {
         Box::pin(async move { Ok(ready(self.blocks.read().await.get(&hash).is_some()).await) })
     }
 }
@@ -397,28 +397,28 @@ impl BlockStorage for StryiInMemoryStorage {
 impl StorageStats for StryiInMemoryStorage {
     type StorageError = InMemoryStorageError;
 
-    fn tip(&self) -> BoxFuture<Result<(u64, BlockHash), Self::StorageError>> {
+    fn tip(&self) -> BoxFuture<'_, Result<(u64, BlockHash), Self::StorageError>> {
         Box::pin(async move {
             let st = self.current_state.read().await;
             Ok(st.latest_block)
         })
     }
 
-    fn last_updated(&self) -> BoxFuture<Result<u64, Self::StorageError>> {
+    fn last_updated(&self) -> BoxFuture<'_, Result<u64, Self::StorageError>> {
         Box::pin(async move {
             let st = self.current_state.read().await;
             Ok(st.last_update_time)
         })
     }
 
-    fn block_count(&self) -> BoxFuture<Result<u64, Self::StorageError>> {
+    fn block_count(&self) -> BoxFuture<'_, Result<u64, Self::StorageError>> {
         Box::pin(async move {
             let st = self.current_state.read().await;
             Ok(st.blocks_count)
         })
     }
 
-    fn chain_difficulty(&self) -> BoxFuture<Result<u128, Self::StorageError>> {
+    fn chain_difficulty(&self) -> BoxFuture<'_, Result<u128, Self::StorageError>> {
         Box::pin(async move {
             let st = self.current_state.read().await;
             Ok(st.chain_difficulty)
@@ -668,7 +668,7 @@ mod tests {
 
         let range = RangeInclusive {
             start: 0usize,
-            end: 1usize,
+            last: 1usize,
         };
 
         assert_eq!(store.blocks_range(range).await.unwrap().len(), 2);

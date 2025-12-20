@@ -1,6 +1,6 @@
 use crate::chaingen::seed::SeedValue;
-use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+use rand_chacha::rand_core::SeedableRng;
 
 /// Precomputed seed switches: (switch_height, seed), sorted by height.
 /// Heights are 1-based (post-genesis). Single(x) is encoded as [(1, x)].
@@ -55,9 +55,7 @@ impl SeedSchedule {
 
 #[cfg(test)]
 mod tests {
-    use rand::rng::Rng;
-use rand::rng::Rng;
-use super::*;
+    use super::*;
     use crate::chaingen::seed::{SeedRange, SeedValue};
     use rand::Rng;
     use rand_chacha::ChaCha8Rng;

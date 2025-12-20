@@ -118,7 +118,7 @@ pub trait BlockStorage: Send + Sync {
     /// * Each entry of the returned `HashMap` is guaranteed to exist;
     ///   all requested hashes **must** be present, otherwise the
     ///   implementation must return an error.
-    ///  * Returned map is keyed by height
+    ///  * height keys Returned map
     fn batch_get_blocks_by_heights<I>(
         &self,
         heights: I,

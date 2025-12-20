@@ -26,7 +26,7 @@ fn create_test_utxo(op: &OutPoint, owner: AccountAddress) -> UTXO {
     UTXO {
         txid: op.txid,
         vout: op.vout,
-        value: 123_456, // Arbitrary test value
+        value: 123_456,
         owner,
     }
 }

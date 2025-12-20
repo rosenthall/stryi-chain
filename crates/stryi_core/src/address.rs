@@ -48,7 +48,7 @@ mod tests {
             let verifying_key = signing_key.verifying_key();
 
             // Create AccountAddress from the secp256k1 public key
-            let account_address = AccountAddress::from_public_key(&verifying_key);
+            let account_address = AccountAddress::from_public_key(verifying_key);
 
             // Convert AccountAddress to string and verify prefix and length
             let address_string = account_address.to_string();
