@@ -92,13 +92,12 @@ impl DependencyGraph {
                 }
 
                 // Ensure correct transaction ordering
-                if let Some(&dep_tx_idx) = self.output_index.get(&input.previous_output) {
-                    if dep_tx_idx >= tx_idx {
+                if let Some(&dep_tx_idx) = self.output_index.get(&input.previous_output)
+                    && dep_tx_idx >= tx_idx {
                         return Err(StryiCoreError::TransactionDependencyError {
                             msg: "Invalid transaction order".to_string(),
                         });
                     }
-                }
             }
         }
         Ok(())

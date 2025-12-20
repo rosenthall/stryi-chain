@@ -55,10 +55,13 @@ impl SeedSchedule {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rand::rng::Rng;
+use rand::rng::Rng;
+use super::*;
     use crate::chaingen::seed::{SeedRange, SeedValue};
     use rand::Rng;
     use rand_chacha::ChaCha8Rng;
+    use rand_chacha::rand_core::SeedableRng;
 
     /// Build SeedValue::Ranged from (height, seed) pairs.
     fn ranged_pairs(pairs: &[(u64, u64)]) -> SeedValue {

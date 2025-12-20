@@ -28,7 +28,7 @@ pub trait UtxoStorage: Send + Sync {
     fn batch_put_utxos(
         &mut self,
         utxos: Vec<(OutPoint, UTXO)>,
-    ) -> BoxFuture<Result<(), Self::StorageError>>;
+    ) -> BoxFuture<'_, Result<(), Self::StorageError>>;
 
     /// Remove (mark as spent) **one or more** UTXOs in one call.
     ///
@@ -36,14 +36,14 @@ pub trait UtxoStorage: Send + Sync {
     fn batch_remove_utxos(
         &mut self,
         outpoints: Vec<OutPoint>,
-    ) -> BoxFuture<Result<(), Self::StorageError>>;
+    ) -> BoxFuture<'_, Result<(), Self::StorageError>>;
 
     /// Batch-fetches a heterogeneous set of outpoints.
     /// Missing or already-spent entries must result in an error.
     fn batch_get_utxos<I>(
         &self,
         outpoints: I,
-    ) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
+    ) -> BoxFuture<'_, Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
     where
         I: IntoIterator<Item = OutPoint> + Send,
         I::IntoIter: Send;
@@ -53,7 +53,7 @@ pub trait UtxoStorage: Send + Sync {
     fn get_utxos_for_address(
         &self,
         address: AccountAddress,
-    ) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>>;
+    ) -> BoxFuture<'_, Result<HashMap<OutPoint, UTXO>, Self::StorageError>>;
 
     // Default wrappers
 
@@ -64,13 +64,13 @@ pub trait UtxoStorage: Send + Sync {
         &mut self,
         outpoint: OutPoint,
         utxo: UTXO,
-    ) -> BoxFuture<Result<(), Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         Box::pin(async move { self.batch_put_utxos(vec![(outpoint, utxo)]).await })
     }
 
     /// Fetches **exactly one** UTXO. `None` means “not found or already spent”.
     /// By default, this just forwards to [`batch_get_utxos`]. Override if you need
-    fn get_utxo(&self, outpoint: OutPoint) -> BoxFuture<Result<Option<UTXO>, Self::StorageError>> {
+    fn get_utxo(&self, outpoint: OutPoint) -> BoxFuture<'_, Result<Option<UTXO>, Self::StorageError>> {
         Box::pin(async move {
             self.batch_get_utxos(std::iter::once(outpoint))
                 .await
@@ -81,7 +81,7 @@ pub trait UtxoStorage: Send + Sync {
     /// Remove (mark spent) **exactly one** UTXO.
     ///
     /// By default, this just forwards to [`batch_remove_utxos`]. Override if you need
-    fn remove_utxo(&mut self, outpoint: OutPoint) -> BoxFuture<Result<(), Self::StorageError>> {
+    fn remove_utxo(&mut self, outpoint: OutPoint) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         Box::pin(async move { self.batch_remove_utxos(vec![outpoint]).await })
     }
 }
@@ -99,7 +99,7 @@ pub trait BlockStorage: Send + Sync {
     type StorageError: Debug + Error + Send + Error;
 
     /// Atomically inserts or overwrites a single block.
-    fn put_block(&mut self, block: &Block) -> BoxFuture<Result<(), Self::StorageError>>;
+    fn put_block(&mut self, block: &Block) -> BoxFuture<'_, Result<(), Self::StorageError>>;
 
     /// Fetches **one or more** blocks by hash.
     ///
@@ -110,7 +110,7 @@ pub trait BlockStorage: Send + Sync {
     fn batch_get_blocks_by_hashes(
         &self,
         hashes: Vec<BlockHash>,
-    ) -> BoxFuture<Result<HashMap<BlockHash, Block>, Self::StorageError>>;
+    ) -> BoxFuture<'_, Result<HashMap<BlockHash, Block>, Self::StorageError>>;
 
     /// Fetches **one or more** blocks by height.
     ///
@@ -122,7 +122,7 @@ pub trait BlockStorage: Send + Sync {
     fn batch_get_blocks_by_heights<I>(
         &self,
         heights: I,
-    ) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>>
+    ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>>
     where
         I: IntoIterator<Item = u64> + Send + Clone,
         I::IntoIter: Send;
@@ -133,12 +133,12 @@ pub trait BlockStorage: Send + Sync {
     fn blocks_range(
         &self,
         range: RangeInclusive<usize>,
-    ) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>>;
+    ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>>;
 
     /// Checks whether a block with the given hash exists.
     /// Returns Ok(false) the block is absent.
     /// May return Err(_) if it can't get value for any reason.
-    fn block_exists(&self, hash: BlockHash) -> BoxFuture<Result<bool, Self::StorageError>>;
+    fn block_exists(&self, hash: BlockHash) -> BoxFuture<'_, Result<bool, Self::StorageError>>;
 
     // -- default impls for singular operations--
 
@@ -148,7 +148,7 @@ pub trait BlockStorage: Send + Sync {
     fn get_block_by_hash(
         &self,
         hash: BlockHash,
-    ) -> BoxFuture<Result<Option<Block>, Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<Option<Block>, Self::StorageError>> {
         Box::pin(async move {
             match self.batch_get_blocks_by_hashes(vec![hash]).await {
                 Ok(mut map) => Ok(map.remove(&hash)),
@@ -163,7 +163,7 @@ pub trait BlockStorage: Send + Sync {
     fn get_block_by_height(
         &self,
         height: u64,
-    ) -> BoxFuture<Result<Option<Block>, Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<Option<Block>, Self::StorageError>> {
         Box::pin(async move {
             match self.batch_get_blocks_by_heights([height]).await {
                 Ok(map) => Ok(map.get(&height).map(|b| b.to_owned())),
@@ -178,7 +178,7 @@ pub trait BlockStorage: Send + Sync {
     where
         Self::StorageError: From<RangeError>,
     {
-        let (start, end) = (range.start, range.end);
+        let (start, end) = (range.start, range.last);
 
         if start > end {
             Err(RangeError::InvalidRange { start, end }.into())
@@ -193,17 +193,17 @@ pub trait StorageStats: Sync + Sync {
     type StorageError: Debug + Error + Send + Error;
 
     /// Tip height and its block hash.
-    fn tip(&self) -> BoxFuture<Result<(u64, BlockHash), Self::StorageError>>;
+    fn tip(&self) -> BoxFuture<'_, Result<(u64, BlockHash), Self::StorageError>>;
 
     /// Unix timestamp of the most recent successful write
     /// (`put_block` / `put_blocks`).
-    fn last_updated(&self) -> BoxFuture<Result<u64, Self::StorageError>>;
+    fn last_updated(&self) -> BoxFuture<'_, Result<u64, Self::StorageError>>;
 
     /// Total number of blocks (equal to `tip.height + 1`).
-    fn block_count(&self) -> BoxFuture<Result<u64, Self::StorageError>>;
+    fn block_count(&self) -> BoxFuture<'_, Result<u64, Self::StorageError>>;
 
     /// Cumulative chain difficulty.
-    fn chain_difficulty(&self) -> BoxFuture<Result<u128, Self::StorageError>>;
+    fn chain_difficulty(&self) -> BoxFuture<'_, Result<u128, Self::StorageError>>;
 }
 
 /// Storage contract for persisting and retrieving `BlockUndo`.

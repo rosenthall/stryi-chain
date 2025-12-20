@@ -135,7 +135,7 @@ where
     fn batch_put_utxos(
         &mut self,
         utxos: Vec<(OutPoint, UTXO)>,
-    ) -> BoxFuture<Result<(), Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         // Pure in-memory update; no async work required.
         for (op, utxo) in utxos {
             // Insert the fork-local copy.
@@ -147,7 +147,7 @@ where
     fn batch_remove_utxos(
         &mut self,
         outpoints: Vec<OutPoint>,
-    ) -> BoxFuture<Result<(), Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         // overlay-only update; no async I/O required
         for op in outpoints {
             // If the UTXO was created/overridden in this fork, drop it from delta.
@@ -162,7 +162,7 @@ where
     fn batch_get_utxos<I>(
         &self,
         outpoints: I,
-    ) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
+    ) -> BoxFuture<'_, Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
     where
         I: IntoIterator<Item = OutPoint> + Send,
         I::IntoIter: Send,
@@ -223,7 +223,7 @@ where
     fn get_utxos_for_address(
         &self,
         address: AccountAddress,
-    ) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<HashMap<OutPoint, UTXO>, Self::StorageError>> {
         // Clone handles to concurrent maps/sets so they can be moved into `async`.
         let overlay_map = self.utxo_delta.clone();
         let spent_set = self.spent_from_base.clone();
@@ -267,7 +267,7 @@ where
 {
     type StorageError = StryiCoreError;
 
-    fn put_block(&mut self, block: &Block) -> BoxFuture<Result<(), Self::StorageError>> {
+    fn put_block(&mut self, block: &Block) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         // overlay-only write – the base DB is untouched
         let cloned = block.clone();
         self.block_delta.insert(block.block_hash(), cloned);
@@ -277,7 +277,7 @@ where
     fn batch_get_blocks_by_hashes(
         &self,
         hashes: Vec<BlockHash>,
-    ) -> BoxFuture<Result<HashMap<BlockHash, Block>, Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<HashMap<BlockHash, Block>, Self::StorageError>> {
         let delta = self.block_delta.clone();
         let base = Arc::clone(&self.base);
 
@@ -312,7 +312,7 @@ where
     fn batch_get_blocks_by_heights<I>(
         &self,
         heights: I,
-    ) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>>
+    ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>>
     where
         I: IntoIterator<Item = u64> + Send + Clone,
         I::IntoIter: Send,
@@ -357,7 +357,7 @@ where
     fn blocks_range(
         &self,
         range: RangeInclusive<usize>,
-    ) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>> {
         let delta = self.block_delta.clone();
         let base = Arc::clone(&self.base);
 
@@ -400,7 +400,7 @@ where
         })
     }
 
-    fn block_exists(&self, hash: BlockHash) -> BoxFuture<Result<bool, Self::StorageError>> {
+    fn block_exists(&self, hash: BlockHash) -> BoxFuture<'_, Result<bool, Self::StorageError>> {
         let exists = self.block_delta.contains_key(&hash);
         if exists {
             return Box::pin(ready(Ok(true)));
@@ -422,7 +422,7 @@ where
 {
     type StorageError = StryiCoreError;
 
-    fn tip(&self) -> BoxFuture<Result<(u64, BlockHash), Self::StorageError>> {
+    fn tip(&self) -> BoxFuture<'_, Result<(u64, BlockHash), Self::StorageError>> {
         let delta = self.block_delta.clone();
         Box::pin(async move {
             let block = delta
@@ -437,7 +437,7 @@ where
         })
     }
 
-    fn last_updated(&self) -> BoxFuture<Result<u64, Self::StorageError>> {
+    fn last_updated(&self) -> BoxFuture<'_, Result<u64, Self::StorageError>> {
         let delta = self.block_delta.clone();
         Box::pin(async move {
             let ts = delta
@@ -452,7 +452,7 @@ where
         })
     }
 
-    fn block_count(&self) -> BoxFuture<Result<u64, Self::StorageError>> {
+    fn block_count(&self) -> BoxFuture<'_, Result<u64, Self::StorageError>> {
         let delta_len = self.block_delta.len() as u64;
         let base = Arc::clone(&self.base);
         let delta = self.block_delta.clone(); // need hash set of overlay hashes

@@ -1,6 +1,6 @@
 network_rendezvous_mode = "server"
 network_listen_addr     = "/ip4/127.0.0.1/tcp/4001"
-genesis_config_path     = "../../utils/demo_genesis.json"
+genesis_config_path     = "/Users/vydrator/RustroverProjects/stryi-chain/utils/demo_genesis.json"
 start_mode = "bootstrap"
 
 miner_enabled           = true

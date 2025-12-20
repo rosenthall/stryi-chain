@@ -273,7 +273,7 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + 'static> Cons
 {
     type Error = StryiCoreError;
 
-    fn on_block(&mut self, block: Block) -> BoxFuture<Result<ConsensusVerdict, Self::Error>> {
+    fn on_block(&mut self, block: Block) -> BoxFuture<'_, Result<ConsensusVerdict, Self::Error>> {
         let block = block.clone();
 
         // generate a simple table log for this block's most important fields

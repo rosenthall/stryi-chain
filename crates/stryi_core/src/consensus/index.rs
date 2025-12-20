@@ -74,11 +74,10 @@ impl ChainIndex {
         if !existed {
             return false;
         }
-        if let Some(t) = &self.tip {
-            if &t.hash == hash {
+        if let Some(t) = &self.tip
+            && &t.hash == hash {
                 self.recompute_tip();
             }
-        }
         true
     }
 

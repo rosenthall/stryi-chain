@@ -124,7 +124,7 @@ impl UtxoStorage for StryiStorage {
     fn batch_put_utxos(
         &mut self,
         utxos: Vec<(OutPoint, UTXO)>,
-    ) -> BoxFuture<Result<(), Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         // Do all the writes, map‐building, and commit in one synchronous block.
         let outcome: Result<(), Self::StorageError> = (|| {
             // Initialize write transaction and clone partitions we need.
@@ -164,7 +164,7 @@ impl UtxoStorage for StryiStorage {
     fn batch_remove_utxos(
         &mut self,
         outpoints: Vec<OutPoint>,
-    ) -> BoxFuture<Result<(), Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         // Perform all removal logic synchronously
         let result: Result<(), Self::StorageError> = (|| {
             // Initialize write transaction and clone partitions we need.
@@ -214,7 +214,7 @@ impl UtxoStorage for StryiStorage {
     fn batch_get_utxos<I>(
         &self,
         outpoints: I,
-    ) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
+    ) -> BoxFuture<'_, Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
     where
         I: IntoIterator<Item = OutPoint> + Send,
         I::IntoIter: Send,
@@ -254,7 +254,7 @@ impl UtxoStorage for StryiStorage {
     fn get_utxos_for_address(
         &self,
         address: AccountAddress,
-    ) -> BoxFuture<Result<HashMap<OutPoint, UTXO>, Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<HashMap<OutPoint, UTXO>, Self::StorageError>> {
         // Setup read transaction
         let read_tx = self.keyspace.read_tx();
 

@@ -300,7 +300,7 @@ impl MemPool {
     /// - package fee rate (transaction and its ancestors)
     /// - individual fee rate
     /// - dependency constraints
-    /// Returns transactions in valid inclusion order (parents before children).
+    ///   Returns transactions in valid inclusion order (parents before children).
     pub async fn get_best_transactions(
         &self,
         limit: usize,
@@ -311,8 +311,8 @@ impl MemPool {
         // Calculate individual fee rates for each transaction
         let mut individual_scores: HashMap<NodeIndex, f64> = HashMap::new();
         for &node_idx in &order {
-            if let Some(tx_hash) = self.dependency_tracker.get_tx_by_node(node_idx) {
-                if let Some(mem_tx) = self.storage.get(&tx_hash) {
+            if let Some(tx_hash) = self.dependency_tracker.get_tx_by_node(node_idx)
+                && let Some(mem_tx) = self.storage.get(&tx_hash) {
                     let fee_rate = if mem_tx.serialized_size > 0 {
                         mem_tx.fee as f64 / mem_tx.serialized_size as f64
                     } else {
@@ -320,7 +320,6 @@ impl MemPool {
                     };
                     individual_scores.insert(node_idx, fee_rate);
                 }
-            }
         }
 
         // Calculate ancestor package scores
@@ -353,8 +352,8 @@ impl MemPool {
                 continue;
             }
 
-            if let Some(tx_hash) = self.dependency_tracker.get_tx_by_node(node_idx) {
-                if self.storage.get(&tx_hash).is_some() {
+            if let Some(tx_hash) = self.dependency_tracker.get_tx_by_node(node_idx)
+                && self.storage.get(&tx_hash).is_some() {
                     // Get all required ancestors in topological order
                     let ancestors = self.dependency_tracker.gather_ancestors(node_idx);
 
@@ -367,20 +366,16 @@ impl MemPool {
                     // Check if all ancestors fit in remaining space
                     if new_txs.len() <= remaining_space {
                         for anc in new_txs {
-                            if used_nodes.insert(anc) {
-                                if let Some(anc_tx_hash) =
+                            if used_nodes.insert(anc)
+                                && let Some(anc_tx_hash) =
                                     self.dependency_tracker.get_tx_by_node(anc)
-                                {
-                                    if let Some(anc_tx) = self.storage.get(&anc_tx_hash) {
+                                    && let Some(anc_tx) = self.storage.get(&anc_tx_hash) {
                                         result.push(anc_tx.transaction.clone());
                                         remaining_space -= 1;
                                     }
-                                }
-                            }
                         }
                     }
                 }
-            }
         }
 
         Ok(result)
@@ -415,13 +410,12 @@ fn build_ancestor_scores(
         let mut total_size = 0usize;
 
         for anc in ancestors {
-            if let Some(tx_hash) = tracker.get_tx_by_node(anc) {
-                if let Some(mem_tx) = storage.get(&tx_hash) {
+            if let Some(tx_hash) = tracker.get_tx_by_node(anc)
+                && let Some(mem_tx) = storage.get(&tx_hash) {
                     total_fee = total_fee.saturating_add(mem_tx.fee);
                     // Use cached size instead of recalculating
                     total_size = total_size.saturating_add(mem_tx.serialized_size);
                 }
-            }
         }
 
         let score = if total_size == 0 {

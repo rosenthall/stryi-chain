@@ -73,5 +73,5 @@ pub trait ConsensusEngine {
     type Error: Debug + Send + Error + Clone;
 
     /// Method called for each new block
-    fn on_block(&mut self, block: Block) -> BoxFuture<Result<ConsensusVerdict, Self::Error>>;
+    fn on_block(&mut self, block: Block) -> BoxFuture<'_, Result<ConsensusVerdict, Self::Error>>;
 }

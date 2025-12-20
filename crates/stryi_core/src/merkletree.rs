@@ -87,7 +87,7 @@ impl MerkleTree {
         // Build the tree upward until we reach the root
         while current_level.len() > 1 {
             // If odd number of nodes, duplicate the last one
-            if current_level.len() % 2 != 0 {
+            if !current_level.len().is_multiple_of(2) {
                 current_level.push(*current_level.last().unwrap());
             }
 
@@ -144,7 +144,7 @@ impl MerkleTree {
 
         // Traverse each level except the root level to gather sibling hashes
         for level in &self.levels[..self.levels.len() - 1] {
-            let sibling_index = if index % 2 == 0 { index + 1 } else { index - 1 };
+            let sibling_index = if index.is_multiple_of(2) { index + 1 } else { index - 1 };
             // If sibling index is out-of-bound, duplicate the last element as sibling.
             let sibling = if sibling_index < level.len() {
                 level[sibling_index]
@@ -206,7 +206,7 @@ impl MerkleProof {
 
         // Reconstruct the path from leaf to root using sibling hashes
         for sibling_hash in &self.sibling_hashes {
-            computed_hash = if index % 2 == 0 {
+            computed_hash = if index.is_multiple_of(2) {
                 MerkleTree::combine_hashes(&computed_hash, sibling_hash)
             } else {
                 MerkleTree::combine_hashes(sibling_hash, &computed_hash)

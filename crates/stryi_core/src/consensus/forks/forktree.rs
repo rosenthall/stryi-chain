@@ -30,14 +30,13 @@ impl ForkTree {
     pub fn put(&mut self, entry: ForkEntry) -> Result<(), StryiCoreError> {
         let hash = entry.block.block_hash();
         // if overwriting, clean up the old height index first
-        if let Some(old) = self.entries.remove(&hash) {
-            if let Some(set) = self.by_height.get_mut(&old.block.header.height) {
+        if let Some(old) = self.entries.remove(&hash)
+            && let Some(set) = self.by_height.get_mut(&old.block.header.height) {
                 set.remove(&hash);
                 if set.is_empty() {
                     self.by_height.remove(&old.block.header.height);
                 }
             }
-        }
         self.by_height
             .entry(entry.block.header.height)
             .or_default()

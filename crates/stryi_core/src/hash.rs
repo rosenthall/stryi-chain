@@ -2,6 +2,15 @@ use crate::error::StryiCoreError;
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::fmt;
+use std::convert::TryFrom;
+
+// --- Sealed helper to avoid recursive "well-formed" obligations that cause E0275 ---
+// Implementing a blanket trait for arrays prevents the compiler from re-entering
+// the same obligation while still guaranteeing arrays of any const size are valid.
+mod sealed {
+    pub trait ValidSize {}
+    impl<const N: usize> ValidSize for [u8; N] {}
+}
 
 /// Trait defines how a specific object in the blockchain should be hashed.
 pub trait HashKind: Default {
@@ -14,14 +23,6 @@ pub trait HashKind: Default {
     const PREFIX: &'static str;
 
     /// Hashes the input bytes and returns a fixed-size byte array.
-    ///
-    /// # Arguments
-    ///
-    /// * `input` - A slice of bytes to be hashed.
-    ///
-    /// # Returns
-    ///
-    /// * A fixed-size array of bytes representing the hash.
     fn hash(input: &[u8]) -> [u8; Self::SIZE];
 }
 
@@ -29,7 +30,7 @@ pub trait HashKind: Default {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Hash<K: HashKind>
 where
-    [u8; K::SIZE]:,
+    [u8; K::SIZE]: sealed::ValidSize,
 {
     /// The type of hash, defining the hashing algorithm and prefix.
     pub(crate) kind: K,
@@ -39,7 +40,7 @@ where
 
 impl<K: HashKind> Hash<K>
 where
-    [u8; K::SIZE]:,
+    [u8; K::SIZE]: sealed::ValidSize,
 {
     /// Creates a new `Hash` by hashing the provided input bytes.
     pub fn new(input: &[u8]) -> Self {
@@ -79,7 +80,7 @@ where
 
 impl<K: HashKind> TryFrom<&[u8]> for Hash<K>
 where
-    [u8; K::SIZE]:,
+    [u8; K::SIZE]: sealed::ValidSize,
 {
     type Error = StryiCoreError;
 
@@ -100,7 +101,7 @@ where
 
 impl<K: HashKind> TryFrom<Vec<u8>> for Hash<K>
 where
-    [u8; K::SIZE]:,
+    [u8; K::SIZE]: sealed::ValidSize,
 {
     type Error = StryiCoreError;
 
@@ -111,7 +112,7 @@ where
 
 impl<K: HashKind> fmt::Display for Hash<K>
 where
-    [u8; K::SIZE]:,
+    [u8; K::SIZE]: sealed::ValidSize,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Hex-encode and prepend the prefix
@@ -125,7 +126,7 @@ where
 /// We are serializing hash value as a string
 impl<K: HashKind> Serialize for Hash<K>
 where
-    [u8; K::SIZE]:,
+    [u8; K::SIZE]: sealed::ValidSize,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -138,7 +139,7 @@ where
 /// Custom Deserialize implementations for `Hash<K>`.
 impl<'de, K: HashKind> Deserialize<'de> for Hash<K>
 where
-    [u8; K::SIZE]:,
+    [u8; K::SIZE]: sealed::ValidSize,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -148,7 +149,7 @@ where
 
         impl<'de, K: HashKind> Visitor<'de> for HashVisitor<K>
         where
-            [u8; K::SIZE]:,
+            [u8; K::SIZE]: sealed::ValidSize,
         {
             type Value = Hash<K>;
 
@@ -176,7 +177,7 @@ where
 // which looks like "StryiHash({HashKindName}){hash_string}"
 impl<K: HashKind> fmt::Debug for Hash<K>
 where
-    [u8; K::SIZE]:,
+    [u8; K::SIZE]: sealed::ValidSize,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // get kind name e.g. stryi_core::address::AddressHasher
@@ -190,13 +191,6 @@ where
             .unwrap_or(hash_kind_name);
 
         // get rid of "Hasher" or "HashKind" suffix if present
-
-        // It will make
-        // "AddressHasher" -> "Address"
-        // "BlockHashKind" -> "Block"
-        // "MerkleRootHashKind" -> "Merkle
-        // "TransactionHash" -> "Transaction"
-
         let kind_name = kind_name
             .strip_suffix("Hasher")
             .or_else(|| kind_name.strip_suffix("HashKind"))

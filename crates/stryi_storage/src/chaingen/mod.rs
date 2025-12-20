@@ -16,11 +16,11 @@ pub trait StryiStorageChaingenExt: Send + Sync {
     /// Retrieves all existing UTXOs from storage.
     ///
     /// Returns accounts mapped to their outputs: `Address -> (OutPoint -> UTXO)`
-    fn get_all_utxos(&self) -> BoxFuture<Result<AccountUtxoMap, StryiStorageError>>;
+    fn get_all_utxos(&self) -> BoxFuture<'_, Result<AccountUtxoMap, StryiStorageError>>;
 }
 
 impl StryiStorageChaingenExt for StryiStorage {
-    fn get_all_utxos(&self) -> BoxFuture<Result<AccountUtxoMap, StryiStorageError>> {
+    fn get_all_utxos(&self) -> BoxFuture<'_, Result<AccountUtxoMap, StryiStorageError>> {
         let read_tx = self.keyspace.read_tx();
         let addresses_partition = self.addresses_partition.clone();
         let utxo_partition = self.utxo_partition.clone();

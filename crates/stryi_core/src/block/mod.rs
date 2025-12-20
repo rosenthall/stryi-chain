@@ -145,7 +145,7 @@ impl Block {
         };
 
         // Compute the Merkle root from the transactions
-        let merkle_hash = Self::compute_merkle_root(&[transaction.clone()]);
+        let merkle_hash = Self::compute_merkle_root(std::slice::from_ref(&transaction));
 
         let empty_block_hash = BlockHash::empty();
         let header = BlockHeader {

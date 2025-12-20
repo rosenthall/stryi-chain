@@ -46,7 +46,7 @@ impl StryiStorage {
 impl BlockStorage for StryiStorage {
     type StorageError = StryiStorageError;
 
-    fn put_block(&mut self, block: &Block) -> BoxFuture<Result<(), Self::StorageError>> {
+    fn put_block(&mut self, block: &Block) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         let block = block.clone();
 
         Box::pin(async move {
@@ -118,7 +118,7 @@ impl BlockStorage for StryiStorage {
     fn batch_get_blocks_by_hashes(
         &self,
         hashes: Vec<BlockHash>,
-    ) -> BoxFuture<Result<HashMap<BlockHash, Block>, Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<HashMap<BlockHash, Block>, Self::StorageError>> {
         // in fact this method is not performing *real* batch-read but just reading blocks ony-by-one, so batching is only api-level thing.
         Box::pin(async move {
             let mut result_map = HashMap::new();
@@ -139,7 +139,7 @@ impl BlockStorage for StryiStorage {
     fn batch_get_blocks_by_heights<I>(
         &self,
         heights: I,
-    ) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>>
+    ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>>
     where
         I: IntoIterator<Item = u64> + Send,
         I::IntoIter: Send,
@@ -173,7 +173,7 @@ impl BlockStorage for StryiStorage {
     fn blocks_range(
         &self,
         range: RangeInclusive<usize>,
-    ) -> BoxFuture<Result<HashMap<u64, Block>, Self::StorageError>> {
+    ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>> {
         let blocks_partition = self.blocks_partition.clone();
         let heights_partition = self.heights_partition.clone();
 
@@ -227,7 +227,7 @@ impl BlockStorage for StryiStorage {
         })
     }
 
-    fn block_exists(&self, hash: BlockHash) -> BoxFuture<Result<bool, Self::StorageError>> {
+    fn block_exists(&self, hash: BlockHash) -> BoxFuture<'_, Result<bool, Self::StorageError>> {
         Box::pin(async move {
             let present = self
                 .blocks_partition

@@ -317,7 +317,7 @@ impl From<Block> for PbBlock {
             difficulty_bits: block.header.difficulty_bits as u32,
             timestamp: block.header.timestamp,
             nonce: block.header.nonce,
-            genesis_data: bincode::serde::encode_to_vec(&block.header.genesis_state, standard())
+            genesis_data: bincode::serde::encode_to_vec(block.header.genesis_state, standard())
                 .expect("I bet it won't ever happen 1"),
         };
 

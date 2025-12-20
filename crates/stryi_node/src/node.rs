@@ -611,7 +611,7 @@ impl StryiChainNode {
 
             let tonic_identity =
                 tonic::transport::Identity::from_pem(&tls_identity.cert_pem, &tls_identity.key_pem);
-            let tls_config = ServerTlsConfig::new().identity(tonic_identity);
+            let _tls_config = ServerTlsConfig::new().identity(tonic_identity);
 
             // Wrap the instance in Tonic’s generated server
             let svc = BlockchainSyncServer::new(service_impl);
@@ -708,7 +708,7 @@ pub(crate) async fn build_consensus_engine(
     difficulty_calc: DifficultyCalc<StryiStorage>,
 ) -> Result<StryiConsensusEngine<StryiStorage>, StryiNodeError> {
     let rules = build_consensus_constants(&storage.clone()).await?;
-    let block_validator = BlockValidator::new(rules.clone(), difficulty_calc.clone());
+    let block_validator = BlockValidator::new(rules, difficulty_calc.clone());
     let utxo_processor = UtxoProcessor::new();
 
     let engine = StryiConsensusEngine::new(

@@ -2,7 +2,7 @@ use crate::chaingen::state::GenerationState;
 use crate::chaingen::utxo::{TransactionPattern, UtxoInfo};
 use k256::ecdsa::SigningKey;
 use rand::Rng;
-use rand::prelude::IndexedRandom;
+use rand::seq::IndexedRandom;
 use stryi_core::StryiCoreError;
 use stryi_core::address::AccountAddress;
 use stryi_core::transactions::{
@@ -441,7 +441,13 @@ fn generate_splitting_tx(
     }
 
     // Select random receivers
-    let receivers: Vec<AccountAddress> = receiver_pool.sample(rng, num_outputs).copied().collect();
+    let receivers: Vec<AccountAddress> = receiver_pool
+        .choose_multiple(rng, num_outputs)
+        .copied()
+        .collect();
+
+
+
 
     // Split value among outputs with some randomization
     let mut outputs = Vec::with_capacity(num_outputs);
@@ -562,7 +568,12 @@ fn generate_complex_tx(
     let available_for_outputs = total_input - fee;
 
     // Select random receivers
-    let receivers: Vec<AccountAddress> = receiver_pool.sample(rng, num_outputs).copied().collect();
+    let receivers: Vec<AccountAddress> = receiver_pool
+        .choose_multiple(rng, num_outputs)
+        .copied()
+        .collect();
+
+
 
     // Distribute value among outputs with randomization
     let mut outputs = Vec::with_capacity(num_outputs);

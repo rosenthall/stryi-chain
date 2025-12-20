@@ -1,10 +1,12 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)] // This feature was added to avoid a known bug: https://github.com/rust-lang/rust/issues/133199
+mod node;
 
 mod error;
 mod grpc;
+
+/// Helpers for backing up the keys of the peer.
 mod keys;
-mod node;
 
 /// Common middlewares for node's services
 mod middleware;
