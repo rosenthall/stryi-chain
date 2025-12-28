@@ -503,7 +503,8 @@ impl ChainGenerator {
             let avg_tx_count = height as f64 / tx_count as f64;
 
             // insert undo if needed
-            if self.config.blocks.need_undo {
+            // note: if config is set to PersistenceMode::ConsensusEngine, this will be done by consensus engine automatically.
+            if self.config.blocks.need_undo && self.config.chain.persistence_mode == PersistenceMode::DirectInsert {
                 todo!("Fix inserting BlockUndo in chaingen if `need_undo` flag provided.");
             }
 
@@ -534,7 +535,7 @@ impl ChainGenerator {
         Ok(())
     }
 
-    /// generates deterministic and valid block at `height` that has only one transaction which evenly distributes all the balance of funding account.
+    /// generates a deterministic and valid block at `height` that has only one transaction which evenly distributes all the balance of funding account.
     /// It uses all the existing UTXOs outputs of funder.
     pub async fn build_distributing_block(
         &self,

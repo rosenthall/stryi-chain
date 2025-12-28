@@ -6,7 +6,7 @@ use tracing::error;
 use crate::http::{StryiHttpService, model::NodeStateBody};
 use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 
-/// `/nodestate` – one-stop snapshot of the node’s current position in the chain.
+/// `/api/nodestate` – one-stop snapshot of the node’s current position in the chain.
 #[utoipa::path(
     get,
     path = "/api/nodestate",

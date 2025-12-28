@@ -106,6 +106,7 @@ pub struct BlocksSettings {
 
     /// Whether to insert undo data for each block.
     /// This will increase the size of the generated chain, but allows testing of reorg-related logic
+    /// NOTE: Ignored when using persistence_mode consensus_engine, becasue it does it anyway
     pub need_undo: bool,
 }
 

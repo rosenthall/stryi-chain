@@ -7,10 +7,10 @@ persistence_mode = "consensus_engine"
 #persistence_mode = "direct_insert"
 
 [blocks]
-# This key is bound to `@ee4a3a385d2bc7c46bc0925a5b3052f70e5f7b87` address from demo_genesis.json
+# This key is bound to the @2fdf51216b8d12feb0ecd4299446465cd8c013a5 ddress from demo_genesis.json
 funding_key = "f719e0b4e048cc32802aac10e0a49f5d1fd7f037a4e52b23e0ce668ea1f19f3a"
 average_block_time_secs = 10
-miner_address = "@2fdf51216b8d12feb0ecd4299446465cd8c013a5"
+miner_address = "@ee4a3a385d2bc7c46bc0925a5b3052f70e5f7b87"
 min_transactions_per_block = 10
 max_transactions_per_block = 50
 active_addresses_count = 40
