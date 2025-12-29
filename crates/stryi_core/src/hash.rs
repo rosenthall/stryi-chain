@@ -22,8 +22,16 @@ pub trait HashKind: Default {
     /// The `PREFIX` should have a maximum length of 4 characters.
     const PREFIX: &'static str;
 
-    /// Hashes the input bytes and returns a fixed-size byte array.
-    fn hash(input: &[u8]) -> [u8; Self::SIZE];
+    /// Hashes the input bytes using blake3 and returns a fixed-size byte array.
+    fn hash(public_key: &[u8]) -> [u8; Self::SIZE] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(public_key);
+
+        let mut data = [0u8; Self::SIZE];
+        hasher.finalize_xof().fill(&mut data);
+
+        data
+    }
 }
 
 /// Generic `Hash` struct parameterized by a `HashKind`.

@@ -14,13 +14,7 @@ impl HashKind for MerkleRootHashKind {
     const SIZE: usize = 32;
     const PREFIX: &'static str = "MKR";
 
-    /// Hash function using Blake3 (fixed 32-byte digest).
-    fn hash(data: &[u8]) -> [u8; Self::SIZE] {
-        let h = blake3::hash(data);
-        let mut out = [0u8; Self::SIZE];
-        out.copy_from_slice(h.as_bytes());
-        out
-    }
+    // NOTE: using default hash() implementation, based on blake3
 }
 
 /// A 32-byte hash produced by Blake3, serialized as a human-friendly string (e.g., "MKR<hex...>")

@@ -1,5 +1,4 @@
 use crate::hash::{Hash, HashKind};
-use blake3;
 
 /// A specific hash kind for transactions.
 //  We derive `Hash` to let it be used as a key in HashMaps if needed.
@@ -13,15 +12,7 @@ impl HashKind for TransactionHasher {
     /// Prefix used in string form, e.g. "Tx...hex..."
     const PREFIX: &'static str = "Tx";
 
-    /// Hash function using Blake3.
-    fn hash(data: &[u8]) -> [u8; Self::SIZE] {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(data);
-
-        let mut output = [0u8; Self::SIZE];
-        hasher.finalize_xof().fill(&mut output);
-        output
-    }
+    // NOTE: using default hash() implementation, based on blake3
 }
 
 /// A typed alias for `Hash<TransactionHasher>`.

@@ -1,5 +1,4 @@
 use crate::hash::{Hash, HashKind};
-use blake3;
 use k256::ecdsa::VerifyingKey;
 
 /// Specific hash kind for account addresses (20 bytes).
@@ -10,16 +9,7 @@ impl HashKind for AddressHasher {
     const SIZE: usize = 20;
     const PREFIX: &'static str = "@";
 
-    fn hash(public_key: &[u8]) -> [u8; Self::SIZE] {
-        // We use Blake3 to hash the serialized public key, then take 20 bytes of output.
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(public_key);
-
-        let mut data = [0u8; Self::SIZE];
-        hasher.finalize_xof().fill(&mut data);
-
-        data
-    }
+    // NOTE: using default hash() implementation, based on blake3
 }
 
 /// Type alias for AccountAddress using the Hash<AddressHasher> abstraction.
