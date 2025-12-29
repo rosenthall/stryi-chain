@@ -408,6 +408,7 @@ impl ChainGenerator {
         let mut tx_count = 0;
 
         // Main generation loop
+        // TODO: Fix chaingen's 2..=total_to_generate logic, so we can generate blocks from any given height
         for height in 2..=total_to_generate {
             debug!("Building block at height {}...", height);
 

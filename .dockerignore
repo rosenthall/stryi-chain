@@ -1,0 +1,35 @@
+# Rust build artifacts
+target/
+**/target/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Version control
+.git/
+.gitignore
+.gitmodules
+
+# GitHub
+.github/
+
+# Documentation
+README.md
+*.md
+**/README.md
+**/*.md
+
+# E2E tests (run in separate Docker context)
+e2e/
+
+# Utils and demos
+utils/
+
+
+# Docker files
+.dockerignore

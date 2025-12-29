@@ -47,14 +47,15 @@ impl GenesisBootstrap {
         StorageStatus::from_path(&self.datadir)
             .map_err(|e| StryiNodeError::other(format!("failed to probe storage meta: {e}")))
     }
-
     /// Show a concise summary and atomically save into storage::meta.
     ///
     /// Arguments:
     /// - `block`: validated candidate genesis block.
     /// - `chain_name`: human-readable network name for meta (current meta schema).
     /// - `protocol_version`: protocol version for meta (current meta schema).
-    /// - `origin`: optional source of this genesis so the user can verify it, e.g. {PeerId} or "local"
+    /// - `origin`: optional source of this genesis so the user can verify it, e.g. {PeerId} or "local".
+    /// - `accept_genesis`: if true, skip interactive confirmation and auto-accept the genesis.
+    ///   Intended for non-interactive environments (e.g. E2E tests, CI, Docker).
     ///
     /// Returns:
     /// - `AlreadySaved` if meta already indicates an initialized datadir.
@@ -68,7 +69,16 @@ impl GenesisBootstrap {
         chain_name: &str,
         protocol_version: u64,
         origin: Option<&str>,
+        accept_genesis: bool,
     ) -> Result<SaveOutcome, StryiNodeError> {
+
+        if accept_genesis {
+            println!(
+                "{} Genesis auto-accepted via --accept-genesis",
+                "INFO".green().bold()
+            );
+        }
+
         // If meta is already initialized, do nothing.
         match self.probe_meta()? {
             StorageStatus::Initialized { .. } => return Ok(SaveOutcome::AlreadySaved),
@@ -88,27 +98,33 @@ impl GenesisBootstrap {
         // Present a concise summary
         self.print_block_summary(block);
 
-        // Confirmation prompt
-        let mut input = String::new();
-        println!(
-            "{} You are about to accept the shown genesis for this node.\n \
+        // Confirmation prompt (skipped if --accept-genesis is provided)
+        if !accept_genesis {
+            let mut input = String::new();
+
+            println!(
+                "{} You are about to accept the shown genesis for this node.\n \
             This choice is permanent unless you reinitialize the node.",
-            "WARNING".on_yellow().black().bold(),
-        );
-        println!(
-            "Before continuing, verify origin, all the header values (height, state/Merkle root) \n and EVERY allocation (recipient -> amount)."
-        );
-        println!("Origin: {}", origin.unwrap_or("<unknown>").bold());
-        println!("Type 'yes' to confirm; anything else cancels.");
-        print!("Accept genesis (yes/no): ");
-        io::stdout()
-            .flush()
-            .map_err(|e| StryiNodeError::other(format!("stdout flush failed: {e}")))?;
-        io::stdin()
-            .read_line(&mut input)
-            .map_err(|e| StryiNodeError::other(format!("stdin read failed: {e}")))?;
-        if !input.trim().eq_ignore_ascii_case("yes") {
-            return Err(StryiNodeError::other("user rejected the provided genesis"));
+                "WARNING".on_yellow().black().bold(),
+            );
+            println!(
+                "Before continuing, verify origin, all the header values (height, state/Merkle root) \n \
+            and EVERY allocation (recipient -> amount)."
+            );
+            println!("Origin: {}", origin.unwrap_or("<unknown>").bold());
+            println!("Type 'yes' to confirm; anything else cancels.");
+            print!("Accept genesis (yes/no): ");
+
+            io::stdout()
+                .flush()
+                .map_err(|e| StryiNodeError::other(format!("stdout flush failed: {e}")))?;
+            io::stdin()
+                .read_line(&mut input)
+                .map_err(|e| StryiNodeError::other(format!("stdin read failed: {e}")))?;
+
+            if !input.trim().eq_ignore_ascii_case("yes") {
+                return Err(StryiNodeError::other("user rejected the provided genesis"));
+            }
         }
 
         // Atomically save into storage::meta
@@ -130,10 +146,10 @@ impl GenesisBootstrap {
         // must be performed by the caller immediately after this function returns.
         //
         // TODO: introduce quorum of independent sources before the confirmation prompt.
-        // TODO: add non-interactive acceptance via CLI flag (e.g., --accept-genesis-hash).
 
         Ok(SaveOutcome::SavedNow)
     }
+
 
     fn print_consensus_consts(cs: &ConsensusConsts) {
         use comfy_table::Table;

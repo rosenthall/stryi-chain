@@ -327,6 +327,7 @@ impl StryiChainNode {
                     &self.sync_service_config.chain_name,
                     self.sync_service_config.protocol_version as u64,
                     Some(&*format!("peer {peer}")),
+                    true
                 )
                 .map_err(|e| StryiNodeError::other(format!("confirm_and_save failed: {e}")))?;
 

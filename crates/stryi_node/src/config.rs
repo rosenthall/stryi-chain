@@ -35,6 +35,7 @@ pub struct NodeConfig {
 
     /* storage */
     pub storage_path: String,
+    pub auto_accept_genesis: bool,
 
     /* mempool */
     pub mempool_max_transactions: usize,
@@ -81,6 +82,7 @@ impl Default for NodeConfig {
             network_gossipsub_heartbeat_secs: 10,
 
             storage_path: "/var/lib/stryi_chain".into(),
+            auto_accept_genesis: false,
 
             mempool_max_transactions: 100,
 

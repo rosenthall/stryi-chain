@@ -89,6 +89,10 @@ pub struct CliArgs {
     #[arg(long)]
     pub genesis_config_path: Option<String>,
 
+    /// Automatically accept the provided genesis without interactive confirmation.
+    #[arg(long)]
+    pub auto_accept_genesis: Option<bool>,
+
     /* mempool */
     /// Maximum number of transactions kept in memory.
     #[arg(long)]

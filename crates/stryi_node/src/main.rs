@@ -63,8 +63,8 @@ use stryi_core::mempool::{MemPool, MemPoolConfig, RbfPolicy, UtxoLookup};
 use stryi_core::storage::{StorageStats, UtxoStorage};
 use stryi_core::transactions::{FeePolicy, OutPoint, UtxoProcessor};
 use stryi_network::{
-    PeerId, RendezvousMode, SignedServiceRecord, StryiBehaviourConfig,
-    StryiNetworkManager, StryiNetworkManagerConfig,
+    PeerId, RendezvousMode, SignedServiceRecord, StryiBehaviourConfig, StryiNetworkManager,
+    StryiNetworkManagerConfig,
 };
 use stryi_storage::{GenesisInitConfig, StorageStatus, StryiStorage};
 use tokio::io;
@@ -253,6 +253,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     &cfg.chain_name,
                     cfg.sync_protocol_version as u64,
                     Some("local"),
+                    cfg.auto_accept_genesis
                 )
                 .map_err(|e| {
                     error!("confirm_and_save failed: {e}");

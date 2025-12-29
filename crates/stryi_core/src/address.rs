@@ -39,6 +39,7 @@ mod tests {
     use crate::hash::HashKind;
     use k256::ecdsa::SigningKey;
     use k256::elliptic_curve::rand_core::OsRng;
+    use crate::PrivateKey;
 
     #[test]
     fn test_create_multiple_account_addresses() {
@@ -64,7 +65,7 @@ mod tests {
                 i + 1
             );
 
-            // Ensure the hash data is of correct size
+            // Ensure the hash data is of the correct size
             assert_eq!(
                 account_address.data.len(),
                 AddressHasher::SIZE,
@@ -84,5 +85,19 @@ mod tests {
 
             println!("Account Address {}: {}", i + 1, address_string);
         }
+    }
+
+    /// Just a helper to generate key and address, for manual testing or debugging.
+    #[ignore]
+    #[test]
+    fn generate_key_and_address() {
+        let signing_key = SigningKey::random(&mut OsRng);
+        let s_pk = PrivateKey::new(signing_key.clone());
+
+        let verifying_key = signing_key.verifying_key();
+
+        let account_address = AccountAddress::from_public_key(verifying_key);
+        println!("Account private key: {}", s_pk);
+        println!("Account Address: {}", account_address);
     }
 }

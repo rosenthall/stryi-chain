@@ -1,1 +1,0 @@
-# TODO: Implement check-node-state.bash script

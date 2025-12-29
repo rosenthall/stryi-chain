@@ -31,18 +31,60 @@ services:
     command: ["/bin/sh", "-lc", "/scripts/check-chaingen.sh /data/chain"]
     restart: "no"
 
-
-  # TODO: Implement the rest of the docker-compose.e2e.yml
-  # Note: for now just keep an infinite loop
-  hold:
-    image: busybox:1.36
+  server-node:
+    networks:
+      - e2e
+    build:
+      context: ../..
+      dockerfile: e2e/docker/node.Dockerfile
     depends_on:
-      chaingen:
+      check-chaingen:
         condition: service_completed_successfully
-    command: ["/bin/sh", "-lc", "while true; do echo '[hold] still alive'; sleep 5; done"]
     volumes:
       - chain-data:/data
+      - ../config:/config:ro
+    environment:
+      - RUST_LOG=info
+    command:
+      [
+        "--config-path",
+        "/config/e2e_server_node.toml",
+        "--accept-genesis",
+        "true"
+      ]
+    restart: "no"
+    # for local debugging purpose
+    ports:
+      - "2080:2080"
+      - "2090:2090"
+
+  wait-for-server-node:
+    networks:
+      - e2e
+    build:
+      context: ../..
+      dockerfile: e2e/docker/tools.Dockerfile
+    depends_on:
+      server-node:
+        condition: service_started
+    volumes:
+      - ../scripts:/scripts:ro
+    entrypoint: ["/bin/sh", "/scripts/assert-node-ready.sh"]
+    command:
+      - --address
+      - server-node
+      - --http
+      - "2090"
+      - --expected-hash
+      - Bx02f4b49f47b6f5506bd0c20fbe5739e4a23493353713bfa673c72567dc482241
+    restart: "no"
+
+
+
+  # TODO: Implement the rest of the docker-compose.e2e.yml
 
 volumes:
   chain-data:
 
+networks:
+  e2e:

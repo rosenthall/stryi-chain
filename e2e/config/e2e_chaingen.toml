@@ -6,8 +6,8 @@ genesis_path = "/config/e2e_genesis.json"
 persistence_mode = "consensus_engine"
 
 [blocks]
-# This key is bound to `@ee4a3a385d2bc7c46bc0925a5b3052f70e5f7b87` address from demo_genesis.json
-funding_key = "f719e0b4e048cc32802aac10e0a49f5d1fd7f037a4e52b23e0ce668ea1f19f3a"
+# This key is bound to address @69d168b888f9399791664057523a87621365b876 from demo_genesis.json
+funding_key = "7c7e8339ddd63ff1f974534892b10d31b19812267a31a5d7f4fdb4efcbb40b99"
 average_block_time_secs = 10
 miner_address = "@2fdf51216b8d12feb0ecd4299446465cd8c013a5"
 min_transactions_per_block = 10

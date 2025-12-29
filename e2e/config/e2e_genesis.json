@@ -1,8 +1,8 @@
 {
   "version" : 1,
   "wanted_balances" : {
-    "@2fdf51216b8d12feb0ecd4299446465cd8c013a5" : 88003553535,
-    "@ee4a3a385d2bc7c46bc0925a5b3052f70e5f7b87" : 10000000000
+    "@2fdf51216b8d12feb0ecd4299446465cd8c013a5" : 21,
+    "@69d168b888f9399791664057523a87621365b876" : 100000000
   },
   "genesis_state" : {
     "consts" : {
