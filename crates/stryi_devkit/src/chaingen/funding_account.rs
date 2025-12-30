@@ -1,5 +1,5 @@
 //! Utils to deal with funding accounts.
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
 use stryi_core::storage::UtxoStorage;
@@ -7,7 +7,7 @@ use stryi_core::transactions::{OutPoint, UTXO};
 use stryi_storage::StryiStorage;
 use tracing::{debug, trace};
 
-/// FundAccount represents account, that will distribute own balance to other accounts
+/// FundAccount represents an account that will distribute own balance to other accounts
 /// for generating purposes.
 #[derive(Clone, PartialEq, Debug)]
 pub struct FundAccount {
@@ -18,7 +18,7 @@ pub struct FundAccount {
     private_key: PrivateKey,
 
     /// List of all the available UTXOs for this address mapped by their outputs.
-    utxos: HashMap<OutPoint, UTXO>,
+    utxos: IndexMap<OutPoint, UTXO>,
 }
 
 static MINIMAL_TOTAL_AVAILABLE_BALANCE_FUNDING_ACCOUNT: u64 = 1_000_000;
@@ -39,6 +39,7 @@ impl FundAccount {
         );
 
         let utxos = storage.get_utxos_for_address(funder_address).await.unwrap();
+        let utxos = IndexMap::from_iter(utxos);
         debug!("All the available utxos of funder account : {:#?}", utxos);
 
         // quick check if this account even has balance
@@ -60,7 +61,7 @@ impl FundAccount {
         Ok(Self {
             funder_address,
             private_key,
-            utxos,
+            utxos
         })
     }
 
@@ -82,8 +83,8 @@ impl FundAccount {
         &self.private_key
     }
 
-    /// Gets list of all the available UTXOs for this address mapped by their outputs.
-    pub fn utxos(&self) -> HashMap<OutPoint, UTXO> {
+    /// Gets a list of all the available UTXOs for this address mapped by their outputs.
+    pub fn utxos(&self) -> IndexMap<OutPoint, UTXO> {
         self.utxos.clone()
     }
 }

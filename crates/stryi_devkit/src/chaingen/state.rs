@@ -146,6 +146,7 @@ impl GenerationState {
 
     /// Gets a list of the best recipients for tx outputs.
     /// The best are ones with lower amount of inputs they own.
+    /// Get the top `n` accounts with the most available UTXOs for generating transactions in a new block.
     pub(crate) fn get_best_receivers(&self, n: usize) -> Option<Vec<AccountAddress>> {
         if self.accounts.is_empty() || n == 0 {
             return Some(Vec::new());
@@ -161,24 +162,28 @@ impl GenerationState {
             .keys()
             .map(|addr| {
                 let count = self.account_utxos.get(addr).map_or(0, |utxos| utxos.len());
-                (addr, count)
+                (*addr, count)
             })
             .collect();
 
-        // Sort by UTXO count ascending (least UTXOs first)
-        addr_counts.sort_by_key(|&(_, count)| count);
+        // Sort by UTXO count ascending (least UTXOs first), tie-breaker: address bytes
+        addr_counts.sort_by(|(a_addr, a_cnt), (b_addr, b_cnt)| {
+            a_cnt
+                .cmp(b_cnt)
+                .then_with(|| a_addr.data.cmp(&b_addr.data))
+        });
 
         // Take first n addresses
         Some(
             addr_counts
                 .into_iter()
                 .take(n)
-                .map(|(addr, _)| *addr)
+                .map(|(addr, _)| addr)
                 .collect(),
         )
     }
 
-    /// Get the top `n` accounts with the most available UTXOs for generating transactions in a new block.
+
     /// Returns accounts sorted by their UTXO count in descending order.
     /// Only includes accounts that have at least one available UTXO.
     pub(crate) fn get_top_accounts_with_utxos(&self, n: usize) -> AccountsWithUtxos {
@@ -187,18 +192,36 @@ impl GenerationState {
             .iter()
             // Filter out accounts with no UTXOs
             .filter(|(_addr, utxos)| !utxos.is_empty())
-            // Map to include signing key and UTXO count for sorting
             .filter_map(|(addr, utxos)| {
-                // Get the signing key for this account
                 self.accounts.get(addr).map(|signing_key| {
-                    let utxo_count = utxos.len();
-                    (*addr, signing_key.clone(), utxos.clone(), utxo_count)
+                    // Собираем вектор, сортируем канонично и только потом строим IndexSet
+                    let mut utxos_vec: Vec<_> = utxos.iter().cloned().collect();
+
+                    // Canonical, deterministic order (txid, then vout)
+                    utxos_vec.sort_by(|a, b| {
+                        a.outpoint.txid.data
+                            .cmp(&b.outpoint.txid.data)
+                            .then(a.outpoint.vout.cmp(&b.outpoint.vout))
+                    });
+
+                    let utxos_sorted: IndexSet<_> = utxos_vec.into_iter().collect();
+
+                    let utxo_count = utxos_sorted.len();
+
+                    (*addr, signing_key.clone(), utxos_sorted, utxo_count)
                 })
             })
             .collect();
 
-        // Sort by UTXO count in descending order (most UTXOs first)
-        accounts_with_utxos.sort_by(|a, b| b.3.cmp(&a.3));
+
+
+
+        // Sort by UTXO count in descending order (most UTXOs first) with deterministic tie-break
+        accounts_with_utxos.sort_by(|a, b| {
+            b.3
+                .cmp(&a.3)
+                .then_with(|| a.0.data.cmp(&b.0.data))
+        });
 
         // Take first `n` accounts and remove the utxo_count field so we can return proper AccountsWithUtxos
         accounts_with_utxos
@@ -290,6 +313,7 @@ impl GenerationState {
 
         utxo_vec.into_iter().take(count).collect()
     }
+
 
     /// Applies block to GenerationState.
     pub fn apply_block(&mut self, block: &Block) {

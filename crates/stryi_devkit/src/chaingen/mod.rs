@@ -40,7 +40,7 @@ use crate::chaingen::utxo::UtxoInfo;
 use funding_account::FundAccount;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use stryi_core::address::AccountAddress;
-use stryi_core::block::{Block, BlockData, BlockHash, meets_difficulty};
+use stryi_core::block::{Block, BlockHash, meets_difficulty};
 use stryi_core::consensus::{
     BlockValidator, ConsensusEngine, ConsensusVerdict, StorageStats, StryiConsensusEngine,
 };
@@ -281,15 +281,28 @@ impl ChainGenerator {
         info!("Starting chain generation and persistence...");
 
         // Number of post-genesis blocks to generate.
-        let total_to_generate = self.config.chain.num_blocks.saturating_sub(1);
+        // If chain already has blocks, num_blocks means "blocks after current tip".
+        let total_to_generate = if self.pre_generation_height == 0 {
+            self.config.chain.num_blocks.saturating_sub(1)
+        } else {
+            self.config.chain.num_blocks
+        };
+
         if total_to_generate == 0 {
-            info!("Nothing to generate (num_blocks = 1: only genesis).");
+            info!("Nothing to generate.");
             return Ok(());
         }
 
+        // chain height where distributor will be placed
+        let distributor_chain_height = (self.pre_generation_height as u64) + 1;
+        // the first normal block should start after distributor
+        let start_chain_height = distributor_chain_height + 1;
+        // last chain height we will generate to (inclusive)
+        let end_chain_height = (self.pre_generation_height as u64) + total_to_generate;
+
         // Initialize seed schedule and the first active seed/rng.
         let schedule = SeedSchedule::new(&self.config.chain.seed);
-        let mut current_seed = schedule.seed_at(1);
+        let mut current_seed = schedule.seed_at(distributor_chain_height);
         let mut rng = SeedSchedule::rng_from_seed(current_seed);
 
         info!(
@@ -333,22 +346,19 @@ impl ChainGenerator {
         // back the accounts&keys up
         generation_state.save_accounts(self.config.chain.output_path.clone())?;
 
-        debug!("Building distributing block");
-
         // Insert block that distributes balances
         // distributing block always will be first after pre-generation state.
-        let distributor_height = self.pre_generation_height + 1;
+        debug!("Building distributing block");
+
         info!(
             "Distribution block will be placed at height #{}.",
-            &distributor_height
+            distributor_chain_height
         );
 
         let distributor = self.build_distributing_block(&mut generation_state).await?;
         debug!("Distributor block : {:#?}", distributor);
 
         // Persist distribution block with a short-lived write lock
-
-        // Persist distribution block
         // If consensus engine is configured -> call on_block (do not hold storage lock).
         // Otherwise -> direct insert into storage.
         let dist_utxo_count = distributor.data.transactions[1].data.outputs.len();
@@ -398,37 +408,42 @@ impl ChainGenerator {
         generation_state.apply_block(&distributor);
 
         info!(
-            "Successfully built and persisted distributing block at height 1. It created {} outputs.",
-            dist_utxo_count
+            "Successfully built and persisted distributing block at height {}. It created {} outputs.",
+            distributor_chain_height, dist_utxo_count
         );
 
         /* TODO: inserting undo here if flag passed */
 
-        // acc for tx count
-        let mut tx_count = 0;
+        // acc for tx count; include distributor transactions if you want to count them
+        let mut tx_count = distributor.data.transactions.len();
 
         // Main generation loop
-        // TODO: Fix chaingen's 2..=total_to_generate logic, so we can generate blocks from any given height
-        for height in 2..=total_to_generate {
+        for height in start_chain_height..=end_chain_height {
             debug!("Building block at height {}...", height);
 
-            // If this exact height is a switch point, reseed before building the block.
-            if height != 1 && schedule.is_switch_height(height) {
+            // If this exact chain height is a switch point, reseed before building the block.
+            if schedule.is_switch_height(height) {
                 current_seed = schedule.seed_at(height);
                 rng = SeedSchedule::rng_from_seed(current_seed);
                 info!("Switching seed at height {} -> {}", height, current_seed);
             }
 
-            // Helper to update tx count after block is built
-            let mut update_tx_count = |data: &BlockData| {
-                tx_count += data.transactions.len();
-            };
+            // generation_height: 1 == distribution block, 2 == first normal after distribution, etc.
+            // For normal blocks here generation_height will be >= 2.
+            let generation_height = height - (self.pre_generation_height as u64);
 
-            // Build block and persist it.
+            debug_assert!(
+                generation_height >= 2,
+                "generation_height for main loop must be >= 2"
+            );
+
             let block = self
-                .build_block(height, &mut rng, &mut generation_state)
+                .build_block(generation_height, &mut rng, &mut generation_state)
                 .await
-                .map_err(|e| format!("failed to build block at height {}: {}", height, e))?;
+                .map_err(|e| format!(
+                    "failed to build block at chain height {} (gen height {}): {}",
+                    height, generation_height, e
+                ))?;
 
             // Persist block depending on persistence mode.
             if let Some(engine) = &mut self.consensus_engine {
@@ -500,19 +515,28 @@ impl ChainGenerator {
             );
 
             // Update counter
-            update_tx_count(&block.data);
-            let avg_tx_count = height as f64 / tx_count as f64;
+            tx_count += block.data.transactions.len();
+
+            let blocks_done = height - start_chain_height + 1;
+            let avg_tx_count = blocks_done as f64 / tx_count as f64;
 
             // insert undo if needed
             // note: if config is set to PersistenceMode::ConsensusEngine, this will be done by consensus engine automatically.
-            if self.config.blocks.need_undo && self.config.chain.persistence_mode == PersistenceMode::DirectInsert {
+            if self.config.blocks.need_undo
+                && self.config.chain.persistence_mode == PersistenceMode::DirectInsert
+            {
                 todo!("Fix inserting BlockUndo in chaingen if `need_undo` flag provided.");
             }
 
-            if height % 10 == 0 || height == total_to_generate {
+            if blocks_done.is_multiple_of(10) || height == end_chain_height {
                 info!(
                     "|->  persisted {}/{} blocks (seed {}). total transactions : {}, per block(avg) : {:.2}",
-                    height, total_to_generate, current_seed, tx_count, avg_tx_count
+                    blocks_done,
+                    // total_to_generate includes distributor, so subtract 1 here to show number of normal blocks
+                    total_to_generate.saturating_sub(1),
+                    current_seed,
+                    tx_count,
+                    avg_tx_count
                 );
             }
         }
@@ -535,6 +559,9 @@ impl ChainGenerator {
 
         Ok(())
     }
+
+
+
 
     /// generates a deterministic and valid block at `height` that has only one transaction which evenly distributes all the balance of funding account.
     /// It uses all the existing UTXOs outputs of funder.
@@ -605,7 +632,8 @@ impl ChainGenerator {
         // Lock storage for entire block build.
         let storage_guard = self.storage.write().await;
 
-        // Load genesis and prev block once.
+        // Load genesis and prev block once
+        // TODO: TF we do read genesis each time for each block?.
         let genesis = storage_guard
             .get_block_by_height(0)
             .await

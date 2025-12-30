@@ -84,6 +84,7 @@ pub use meta::*;
 use fjall::{Config as FjallConfig, PartitionCreateOptions, TxKeyspace, TxPartition};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use indexmap::IndexMap;
 use tracing::{debug, info};
 
 pub use crate::error::StryiStorageError;
@@ -133,7 +134,7 @@ pub struct StryiStorage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 // This struct stores the data needed to create a custom genesis block: balances for each address, plus block header fields.
 pub struct GenesisInitConfig {
-    pub wanted_balances: HashMap<AccountAddress, u64>,
+    pub wanted_balances: IndexMap<AccountAddress, u64>,
     pub genesis_state: GenesisState,
     pub version: u16,
 }
@@ -143,7 +144,7 @@ impl GenesisInitConfig {
     /// Creates new GenesisBlockConfig with some reasonable parameters for tests
     /// NOTE: Genesis, by convention, must have at least one allocation
     pub fn new_test() -> Self {
-        let mut wanted_balances = HashMap::new();
+        let mut wanted_balances = IndexMap::new();
 
         wanted_balances.insert(AccountAddress::new(&[0u8; 20]), 1_000_000);
 
@@ -373,7 +374,7 @@ impl StryiStorage {
         cfg: GenesisInitConfig,
     ) -> Result<(), StryiStorageError> {
         // Build the genesis block from user config
-        let genesis_block = Block::new_genesis(cfg.version, cfg.wanted_balances, cfg.genesis_state);
+        let genesis_block = Block::new_genesis(cfg.version, HashMap::from_iter(cfg.wanted_balances), cfg.genesis_state);
 
         // Validate the genesis block before storing
         validate_genesis(&genesis_block).map_err(|e| {

@@ -9,7 +9,7 @@ use stryi_core::transactions::{
     FeePolicy, Transaction, TransactionData, TransactionIn, TransactionKind, TransactionOut,
     estimate_transaction_size,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 /// Transaction generation parameters that affect UTXO complexity
 #[derive(Clone, Debug)]
@@ -34,6 +34,7 @@ impl Default for TransactionGenerationParams {
         }
     }
 }
+
 
 pub fn generate_distributing_transaction(
     generation_state: &mut GenerationState,
@@ -77,12 +78,6 @@ pub fn generate_distributing_transaction(
 
     // Verify we have enough balance to cover the fee
     if total_balance <= actual_fee {
-        error!(
-            funder = %funder_address,
-            balance = total_balance,
-            fee = actual_fee,
-            "Insufficient balance to cover distribution transaction fee"
-        );
         return Err(StryiCoreError::other(
             "Insufficient balance to cover transaction fee",
         ));
@@ -95,47 +90,43 @@ pub fn generate_distributing_transaction(
     // Round down to nearest 10 for cleaner numbers
     balance_per_account = (balance_per_account / 10) * 10;
 
-    // Recalculate actual distribution after rounding
     let distributed = balance_per_account * account_num as u64;
     let leftover = distributable - distributed;
 
-    debug!(
-        per_account = balance_per_account,
-        distributed_total = distributed,
-        actual_fee = actual_fee,
-        leftover = leftover,
-        "Distribution economics"
-    );
-
-    // Verify each account will receive a viable amount
     let min_output_value = TransactionGenerationParams::default().min_output_value;
     if balance_per_account < min_output_value {
-        error!(
-            balance_per_account = balance_per_account,
-            min_output_value = min_output_value,
-            "Per-account distribution too small to be viable"
-        );
         return Err(StryiCoreError::other(
             "Distribution amount per account below minimum viable output",
         ));
     }
 
-    // Create inputs from all available UTXOs
-    let inputs: Vec<TransactionIn> = utxos
+    info!(
+        "FUND UTXOS (canonical): {:?}",
+        fund_account
+        .utxos()
         .keys()
-        .map(|outpoint| {
-            debug!(
-                outpoint = %outpoint,
-                "Using fund outpoint"
-            );
-            TransactionIn {
-                previous_output: *outpoint,
-                sequence: 0,
-            }
+        .map(|op| (op.txid, op.vout))
+        .collect::<Vec<_>>()
+    );
+
+    // Inputs - canonical order (txid, vout)
+    let mut inputs: Vec<TransactionIn> = utxos
+        .keys()
+        .map(|outpoint| TransactionIn {
+            previous_output: *outpoint,
+            sequence: 0,
         })
         .collect();
 
-    // Create outputs for each generated account
+    inputs.sort_by(|a, b| {
+        a.previous_output
+            .txid
+            .data
+            .cmp(&b.previous_output.txid.data)
+            .then(a.previous_output.vout.cmp(&b.previous_output.vout))
+    });
+
+    // Outputs - canonical order (recipient)
     let mut outputs: Vec<TransactionOut> = generation_state
         .accounts
         .keys()
@@ -145,28 +136,26 @@ pub fn generate_distributing_transaction(
         })
         .collect();
 
-    // If there's leftover due to rounding, add it to the first account
-    // This ensures no value is lost
+    outputs.sort_by(|a, b| {
+        a.recipient
+            .data
+            .cmp(&b.recipient.data)
+    });
+
+    // Add leftover AFTER sorting
     if leftover > 0 && !outputs.is_empty() {
         outputs[0].value += leftover;
-        debug!(
-            leftover = leftover,
-            first_account_total = outputs[0].value,
-            "Added leftover to first account"
-        );
     }
 
     let data = TransactionData {
         version: 0,
         kind: TransactionKind::Payment,
         inputs,
-        outputs: outputs.clone(),
+        outputs,
     };
 
     // Sign transaction
-    let tx = data.sign(&private_key.clone().into_inner().clone());
-
-    Ok(tx)
+    Ok(data.sign(&private_key.clone().into_inner()))
 }
 
 /// Exact fee calculation using accurate size estimation

@@ -38,6 +38,7 @@ mod ibd;
 /// Last Common Ancestor detecting utils.
 mod lca;
 
+use std::collections::HashMap;
 use crate::bootstrap::GenesisBootstrap;
 use crate::cli::NodeStartMode;
 use crate::config::NodeConfig;
@@ -242,7 +243,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             let preview_block = Block::new_genesis(
                 genesis_cfg.version,
-                genesis_cfg.wanted_balances.clone(),
+                HashMap::from_iter(genesis_cfg.wanted_balances.clone()),
                 genesis_cfg.genesis_state,
             );
 

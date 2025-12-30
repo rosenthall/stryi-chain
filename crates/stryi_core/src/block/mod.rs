@@ -113,8 +113,8 @@ impl Block {
 
     /// Creates a new genesis block with a given balances in HashMap in format
     /// @AccountAddress => 10000
-    ///
     /// Function converts TxOuts from this hashmap `balances`
+    /// NOTE: Internally it sorts balances in ascending order
     ///
     /// This function calculates the Merkle root from the provided transactions.
     pub fn new_genesis(
@@ -125,11 +125,17 @@ impl Block {
         // convert balances to TxOuts
         let mut tx_outs: Vec<TransactionOut> = vec![];
 
-        for (account_address, balance) in wanted_balances {
+
+        // sort by highest balance
+        let mut wanted_balances_vec: Vec<(AccountAddress, u64)> = wanted_balances.into_iter().collect();
+
+        wanted_balances_vec.sort_by(|a, b| b.1.cmp(&a.1));
+
+        for (account_address, balance) in wanted_balances_vec {
             tx_outs.push(TransactionOut {
                 recipient: account_address,
                 value: balance,
-            })
+            });
         }
 
         // Constructs single transaction with all required UTXOs
