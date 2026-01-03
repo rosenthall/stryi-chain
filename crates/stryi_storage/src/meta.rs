@@ -11,10 +11,13 @@ const META_MAGIC: &[u8; 8] = b"STRYIMBI"; // "Stryi Meta BIN"
 const META_VERSION: u32 = 1;
 const META_HEADER_SIZE: usize = 8 + 4 + 4 + 32;
 
-/// The metadata we store about current chain.
+/// The metadata we store about the current chain.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum StorageStatus {
     /// No committed genesis yet (directory may or may not exist).
+    ///
+    /// NOTE: This does NOT guarantee that the chain is empty.
+    /// It only means that `metainfo.bin` does not exist.
     NoGenesis,
     /// Storage has a committed genesis and carries essential metadata.
     Initialized {

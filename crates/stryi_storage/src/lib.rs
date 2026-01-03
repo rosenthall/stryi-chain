@@ -65,10 +65,6 @@ mod utxo;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
-use std::error::Error;
-use std::io;
-
 /// Utilities specific to `chaingen` feature.
 /// It provides APIs used exclusively by the chain generation tooling (`stryi_chaingen`).
 #[cfg(feature = "chaingen")]
@@ -82,12 +78,15 @@ mod undo;
 pub use meta::*;
 
 use fjall::{Config as FjallConfig, PartitionCreateOptions, TxKeyspace, TxPartition};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use indexmap::IndexMap;
 use tracing::{debug, info};
 
 pub use crate::error::StryiStorageError;
+use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::io;
 use stryi_core::address::AccountAddress;
 
 use crate::stats::StorageStateInformation;
@@ -341,7 +340,7 @@ impl StryiStorage {
                     storage.init_with_genesis(gconfig.clone()).await?;
 
                     info!(
-                        "Genesis inserted: {} allocations, genesis's chain statics = {:?}, version={}",
+                        "Genesis inserted: {} allocations, genesis's chain statics = {:#?}, version={}",
                         gconfig.wanted_balances.len(),
                         gconfig.genesis_state,
                         gconfig.version
@@ -374,7 +373,11 @@ impl StryiStorage {
         cfg: GenesisInitConfig,
     ) -> Result<(), StryiStorageError> {
         // Build the genesis block from user config
-        let genesis_block = Block::new_genesis(cfg.version, HashMap::from_iter(cfg.wanted_balances), cfg.genesis_state);
+        let genesis_block = Block::new_genesis(
+            cfg.version,
+            HashMap::from_iter(cfg.wanted_balances),
+            cfg.genesis_state,
+        );
 
         // Validate the genesis block before storing
         validate_genesis(&genesis_block).map_err(|e| {
@@ -398,10 +401,10 @@ impl StryiStorage {
         Ok(())
     }
 
-    /// Creates initial storage state if it doesn't exist.
+    /// Creates an initial storage state if it doesn't exist.
     /// Note: This should only be called when we know state doesn't exist (after NoStorageStatsFound error).
     fn initialize_storage_state(&mut self) -> Result<(), StryiStorageError> {
-        // Create initial state
+        // Create an initial state
         let initial_state = StorageStateInformation {
             latest_block: (0, BlockHash::empty()), // Empty is basically genesis block
             last_update_time: 0,
