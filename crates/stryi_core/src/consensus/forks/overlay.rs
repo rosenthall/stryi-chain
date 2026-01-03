@@ -9,18 +9,17 @@ use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::future::ready;
 use std::range::RangeInclusive;
-use std::sync::Arc;
 
 /// An overlay database for a specific fork.
 /// Stores only fork-specific delta over actual db in memory, delegating reads
 /// to the base database when no fork-local entry exists.
-pub struct ForkDbOverlay<DB>
+pub struct ForkDbOverlay<'a, DB>
 where
     DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
 {
     /// canonical state.
     /// by default, all reads are delegated to this DB unless overridden in the overlay
-    base: Arc<DB>,
+    base: &'a DB,
 
     /// cumulative work up to (and incl.) the fork point
     inherited_work: u128,
@@ -38,11 +37,11 @@ where
     undo_delta: DashMap<BlockHash, BlockUndo>,
 }
 
-impl<DB> ForkDbOverlay<DB>
+impl<'a, DB> ForkDbOverlay<'a, DB>
 where
     DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
 {
-    pub fn new(base: Arc<DB>, work: u128) -> Self {
+    pub fn new(base: &'a DB, work: u128) -> Self {
         Self {
             base,
             inherited_work: work,
@@ -126,7 +125,7 @@ where
     }
 }
 
-impl<DB> UtxoStorage for ForkDbOverlay<DB>
+impl<'a, DB> UtxoStorage for ForkDbOverlay<'a, DB>
 where
     DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
 {
@@ -169,14 +168,14 @@ where
     {
         let mut hit: HashMap<OutPoint, UTXO> = HashMap::new();
         let mut miss: Vec<OutPoint> = Vec::new();
-        let base = Arc::clone(&self.base);
+        let base = &self.base;
 
         // clone outpoints
         let outpoints = outpoints.into_iter().collect::<Vec<_>>().clone();
 
         Box::pin(async move {
             for outpoint in outpoints {
-                // firstly try get utxo from overlay state
+                // firstly try to get utxo from overlay state
                 match self.overlay_get_utxo(&outpoint) {
                     // Some(Some(_)) means UTXO really here
                     Some(Some(utxo)) => {
@@ -224,10 +223,10 @@ where
         &self,
         address: AccountAddress,
     ) -> BoxFuture<'_, Result<HashMap<OutPoint, UTXO>, Self::StorageError>> {
-        // Clone handles to concurrent maps/sets so they can be moved into `async`.
+        // Clone handles to concurrent maps/sets, so they can be moved into `async`.
         let overlay_map = self.utxo_delta.clone();
         let spent_set = self.spent_from_base.clone();
-        let base = Arc::clone(&self.base);
+        let base = &self.base;
 
         Box::pin(async move {
             // Collect UTXOs created/overridden in this fork
@@ -245,11 +244,11 @@ where
                 .expect("TODO: Better error handling");
 
             for (op, utxo) in base_map {
-                // Skip if fork has already spent this outpoint
+                // Skip if the fork has already spent this outpoint
                 if spent_set.contains(&op) {
                     continue;
                 }
-                // Skip if fork overrides this outpoint (already in `result`)
+                // Skip if the fork overrides this outpoint (already in `result`)
                 if overlay_map.contains_key(&op) {
                     continue;
                 }
@@ -261,7 +260,7 @@ where
     }
 }
 
-impl<DB> BlockStorage for ForkDbOverlay<DB>
+impl<'a, DB> BlockStorage for ForkDbOverlay<'a, DB>
 where
     DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
 {
@@ -279,7 +278,7 @@ where
         hashes: Vec<BlockHash>,
     ) -> BoxFuture<'_, Result<HashMap<BlockHash, Block>, Self::StorageError>> {
         let delta = self.block_delta.clone();
-        let base = Arc::clone(&self.base);
+        let base = &self.base;
 
         Box::pin(async move {
             let mut hit = HashMap::with_capacity(hashes.len());
@@ -318,7 +317,7 @@ where
         I::IntoIter: Send,
     {
         let delta = self.block_delta.clone();
-        let base = Arc::clone(&self.base);
+        let base = &self.base;
         let requested: Vec<u64> = heights.into_iter().collect();
 
         Box::pin(async move {
@@ -359,7 +358,7 @@ where
         range: RangeInclusive<usize>,
     ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>> {
         let delta = self.block_delta.clone();
-        let base = Arc::clone(&self.base);
+        let base = &self.base;
 
         let heights: Vec<u64> = range.into_iter().map(|k| k as u64).collect();
 
@@ -376,7 +375,7 @@ where
                 }
             }
 
-            // fill gaps from base
+            // fill gaps from the base
             let mut gaps = Vec::new();
             for h in &heights {
                 if !result.contains_key(h) {
@@ -406,7 +405,7 @@ where
             return Box::pin(ready(Ok(true)));
         }
 
-        let base = Arc::clone(&self.base);
+        let base = &self.base;
         Box::pin(async move {
             Ok(base
                 .block_exists(hash)
@@ -416,7 +415,7 @@ where
     }
 }
 
-impl<DB> StorageStats for ForkDbOverlay<DB>
+impl<'a, DB> StorageStats for ForkDbOverlay<'a, DB>
 where
     DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
 {
@@ -454,7 +453,7 @@ where
 
     fn block_count(&self) -> BoxFuture<'_, Result<u64, Self::StorageError>> {
         let delta_len = self.block_delta.len() as u64;
-        let base = Arc::clone(&self.base);
+        let base = &self.base;
         let delta = self.block_delta.clone(); // need hash set of overlay hashes
 
         Box::pin(async move {
@@ -483,7 +482,7 @@ where
     fn chain_difficulty(&self) -> BoxFuture<'_, Result<u128, Self::StorageError>> {
         let delta = self.block_delta.clone();
         let base_work = self.inherited_work;
-        let base = Arc::clone(&self.base);
+        let base = &self.base;
         Box::pin(async move {
             // start value
             let mut sum = base_work;
@@ -507,7 +506,7 @@ where
     }
 }
 
-impl<DB> UndoStorage for ForkDbOverlay<DB>
+impl<'a, DB> UndoStorage for ForkDbOverlay<'a, DB>
 where
     DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
 {

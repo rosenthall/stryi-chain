@@ -15,12 +15,12 @@ pub mod overlay;
 pub mod forktree;
 
 /// Manager for overlays associated with different forks.
-pub struct OverlaysManager<DB>
+pub struct OverlaysManager<'a, DB>
 where
     DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
 {
-    /// Inner mapping of LCA block to its corresponding fork database overlay.
-    inner: DashMap<ForkOverlayId, ForkDbOverlay<DB>>,
+    /// Inner mapping of the LCA block to its corresponding fork database overlay.
+    inner: DashMap<ForkOverlayId, ForkDbOverlay<'a, DB>>,
 }
 
 /// Unique identifier for a fork overlay.
@@ -31,7 +31,7 @@ pub struct ForkOverlayId {
     // TODO: update fork overlay id.
 }
 
-impl<DB> OverlaysManager<DB>
+impl<'a, DB> OverlaysManager<'a, DB>
 where
     DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
 {

@@ -1,6 +1,7 @@
 use crate::block::BlockHash;
 use crate::consensus::ConsensusVerdict;
 use crate::consensus::forks::forktree::{ForkEntry, ForkTree};
+use crate::consensus::forks::overlay::ForkDbOverlay;
 use crate::consensus::index::ChainIndex;
 use crate::consensus::validator::BlockValidator;
 use crate::difficulty::DifficultyCalc;
@@ -60,7 +61,7 @@ where
     ///
     /// Stores blocks that are valid but have **not** yet won fork-choice.
     /// Each entry remembers cumulative work and the common ancestor,
-    /// allowing quick reorganisation if this branch becomes "better" than main one.
+    /// allowing quick reorganization if this branch becomes "better" than main one.
     pub(crate) forks: ForkTree,
 }
 
@@ -93,7 +94,7 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage> StryiConsensus
         Ok(engine)
     }
 
-    /// Prints a welcome message with current consensus engine state and some settings.
+    /// Prints a welcome message with the current consensus engine state and some settings.
     /// Meant to be called once on startup.
     pub fn startup_message(&self) {
         // print some info about consensus engine state
@@ -329,32 +330,25 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + 'static> Cons
                 }
             );
 
-            // // Validate the block against appropriate storage view
-            // let validation_result = if parent_in_main {
-            //     // Parent is in main chain - validate against canonical DB
-            //     let read_db = self.db.read().await;
-            //     self.block_validator.validate(&block, &*read_db).await
-            // } else {
-            //     // Parent is in fork tree - need to validate against fork overlay
-            //     // For now, we'll create an overlay and validate
-            //     let fork_entry = parent_in_fork.expect("parent must be in fork tree");
-            //     let parent_work = fork_entry.cumulative_difficulty;
-            //
-            //     // Create fork overlay starting from the fork's common ancestor
-            //     let overlay = ForkDbOverlay::new(self.db.clone(), parent_work);
-            //
-            //     // TODO: Need to replay fork blocks onto overlay before validation
-            //     // This is a simplified approach - in production you'd reconstruct the full fork state
-            //     self.block_validator.validate(&block, &overlay).await
-            // };
-
-            // Validate the block against appropriate storage view
+            // Validate the block against the appropriate storage view
             let validation_result = if parent_in_main {
-                // Parent is in main chain - validate against canonical DB
+                // Parent is in the main chain - validate against canonical DB
                 let read_db = self.db.read().await;
                 self.block_validator.validate(&block, &*read_db).await
             } else {
-                todo!()
+                // Parent is in the fork tree, so we need to validate against fork overlay
+                // For now, we'll create an overlay and validate
+                let fork_entry = parent_in_fork.clone().expect("parent must be in fork tree");
+                let parent_work = fork_entry.cumulative_difficulty;
+
+                // Create a fork overlay starting from the fork's common ancestor
+                // NOTE: ForkOverlay, even theoretically, cannot change real persistent storage, since it only has read lock.
+                let db = self.db.read().await;
+
+                let overlay = ForkDbOverlay::new(&*db, parent_work);
+
+                // TODO: Need to replay fork blocks onto overlay before validation
+                self.block_validator.validate(&block, &overlay).await
             };
 
             match validation_result {
