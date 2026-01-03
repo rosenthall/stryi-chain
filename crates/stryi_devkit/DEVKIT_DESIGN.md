@@ -1,10 +1,10 @@
 ## `stryi-devkit` Design Overview
 
-
 This subcrate provides CLI tools and utilities for development and testing of StryiChain.
 It includes:
+
 - chain generation tool
-  - http load generator for node testing
+    - http load generator for node testing
 
 Both of tools are provided by single binary `stryi-devkit`.
 So you can run them as:
@@ -13,40 +13,40 @@ So you can run them as:
 stryi-devkit chaingen --help
 stryi-devkit loadgen --help
 ```
+
 ##### Note: CLI arguments
+
     None of the binaries meant to be run with any arguments except for `--config-path <path>` to specify custom config file location. 
     Why? - because these tools are meant to be used in automated testing, CI/CD pipelines, and benchmarks.
     So you can create a config file with all the parameters you need and run the tool with that config file.
     I think it's more convenient than passing a lot of arguments via CLI, and the `overload case` (when you want to use config, but overload some values via CLI/ENV) is not that common as in `stryi-node` binary.
 
-
 ##### Note: Why TOML?
+
     Config files are in TOML format.
     Why TOML? - Initially I wanted to use YAML (which widely used in many CI/CD systems and configurations), but the Rust ecosystem for YAML is not that great as for TOML.
 
-
-
 ## Chain Generation Tool
-
 
 ### Overview
 
-The chain generation tool is a command-line application that allows users to generate a deterministic blockchain history for testing purposes.
-It helps test first-time node startup and Initial Block Download (IBD) performance, different consensus rules, and other scenarios such as : 
-  - "Will the ConsensusEngine of node still work in chain of 100k blocks?"
-  - "How fast can node sync 50k blocks from scratch?"
-  - Experiment with different block intervals, difficulty adjustment algorithms, and other consensus parameters.
-  - Benchmark "How fast can node validate 10k blocks with 100 txs each?", "How much memory ChainIndex will use?"
-  - See how fast node can find LCA (Last Common Ancestor) from other peer when local chain diverged from the peer's chain at block 3k and the peer has 5k blocks.
-  - etc.
+The chain generation tool is a command-line application that allows users to generate a deterministic blockchain history
+for testing purposes.
+It helps test first-time node startup and Initial Block Download (IBD) performance, different consensus rules, and other
+scenarios such as :
+
+- "Will the ConsensusEngine of node still work in chain of 100k blocks?"
+- "How fast can node sync 50k blocks from scratch?"
+- Experiment with different block intervals, difficulty adjustment algorithms, and other consensus parameters.
+- Benchmark "How fast can node validate 10k blocks with 100 txs each?", "How much memory ChainIndex will use?"
+- See how fast node can find LCA (Last Common Ancestor) from other peer when local chain diverged from the peer's chain
+  at block 3k and the peer has 5k blocks.
+- etc.
   So basically helps to see if blockchain is really working as expected.
   This tool is meant to be used in automated testing, CI/CD pipelines, and benchmarks.
 
-
-
-
-
 ### How to use
+
 The chain generation tool can be run from the command line with provided configuration file.
 
 ```bash 
@@ -54,20 +54,24 @@ stryi-devkit chaingen --config-path <path_to_config_file>
 ```
 
 #### Configuration
-The configuration file is in TOML format.
-Examples : 
 
+The configuration file is in TOML format.
+Examples :
 
 #### Configuration
 
-Configuration is read from a TOML file provided via `--config-path`. The file contains two main areas: `[chain]` for chain-wide settings and `[blocks]` for block-generation rules. Values are validated at startup and the tool emits clear errors for unknown or invalid keys.
+Configuration is read from a TOML file provided via `--config-path`. The file contains two main areas: `[chain]` for
+chain-wide settings and `[blocks]` for block-generation rules. Values are validated at startup and the tool emits clear
+errors for unknown or invalid keys.
 
 Top-level `[chain]` keys (comments kept immediately above fields)
 
 ```toml
 [chain]
 
-# Number of blocks to generate
+# Number of blocks to generate.
+# This number already includes the Distribution Block.
+# So for 100 blocks the tool will generate 1 dist. block and 99 real blocks after it.
 num_blocks = 100
 
 # Seed for random number generator.
@@ -132,17 +136,31 @@ undo = false
 
 #### Implementation details
 
-Implementation has two modes, mode depends on whether it relies on stryi_core's ConsensusEngine, or if it just naively interacts with Storage layer.
-Initially there was only direct-insert mode, but it failed a lot when ConsensusEngine of real node tried to validate the generated chain,
+Implementation has two modes, mode depends on whether it relies on stryi_core's ConsensusEngine, or if it just naively
+interacts with Storage layer.
+Initially there was only direct-insert mode, but it failed a lot when ConsensusEngine of real node tried to validate the
+generated chain,
 because of some hard-to-debug issues of generated blocks not passing consensus validation.
-Thats is why there are two ways.
+For now, direct-insert mode is *probably* slightly faster, and because of its bugginess it may help to detect some other
+kinds of ConsensusEngine's or node issues that are unlikely to appear on totally valid chains.
+That is why there are kept two modes.
 
+##### Account generation
 
-**WIP**
+After config is read, and validation is passed, tool generates a list of addresses to use for transactions.
+All the generated transactions will be sent from these addresses to each other.
+The addresses are generated deterministically from the seed.
+Right after generation, the tool backups the private keys of all the addresses to a file in the output directory.
+File name includes start and end height of the generated chain, so it's possible to find the keys for a given chain
+piece.
 
+##### Distribution Block
 
-
-
+The Distribution Block is a special block inserted into the chain at the beginning of the generation process.
+The purpose of this block is to evenly distribute funds among all the generated active addresses.
+The block contains a single transaction that transfers all the funds from the funding address to all the active
+addresses.
 
 ## Load Generator Tool
+
 **WIP**

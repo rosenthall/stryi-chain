@@ -1,21 +1,21 @@
 {
-  "version" : 1,
-  "wanted_balances" : {
-    "@a95d973d087e891a693e10eb1e51bcdb1104f48d" : 1,
-    "@d27bb8073da6ad7207dea08c7f8b95e890e73a71" : 100000,
-    "@bb3e3820bf02d04cfbb1660addd20b84e31cfb28" : 200000,
-    "@f439dcbe64ddb0e6934cb910ab660747e85eee98" : 300000,
-    "@0c2167a086b628624426a32f096b0070855fae96" : 400000,
-    "@9456fcd6622e03b68e95eea097845f75d745a248" : 555555,
-    "@2fdf51216b8d12feb0ecd4299446465cd8c013a5" : 88003553535,
-    "@a25bf8b23a8e9351e0f26b8faf2639bb212301ac" : 100000000
+  "version": 1,
+  "wanted_balances": {
+    "@a95d973d087e891a693e10eb1e51bcdb1104f48d": 1,
+    "@d27bb8073da6ad7207dea08c7f8b95e890e73a71": 100000,
+    "@bb3e3820bf02d04cfbb1660addd20b84e31cfb28": 200000,
+    "@f439dcbe64ddb0e6934cb910ab660747e85eee98": 300000,
+    "@0c2167a086b628624426a32f096b0070855fae96": 400000,
+    "@9456fcd6622e03b68e95eea097845f75d745a248": 555555,
+    "@2fdf51216b8d12feb0ecd4299446465cd8c013a5": 88003553535,
+    "@a25bf8b23a8e9351e0f26b8faf2639bb212301ac": 100000000
   },
-  "genesis_state" : {
-    "consts" : {
-      "difficulty_adjustment_interval_blocks": 50,
-      "initial_subsidy" : 10000,
-      "decay_interval" : 1000,
-      "decay_step" : 100
+  "genesis_state": {
+    "consts": {
+      "difficulty_adjustment_interval_blocks": 25,
+      "initial_subsidy": 10000,
+      "decay_interval": 1000,
+      "decay_step": 100
     }
   }
 }

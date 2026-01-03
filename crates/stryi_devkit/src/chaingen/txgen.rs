@@ -35,7 +35,6 @@ impl Default for TransactionGenerationParams {
     }
 }
 
-
 pub fn generate_distributing_transaction(
     generation_state: &mut GenerationState,
 ) -> Result<Transaction, StryiCoreError> {
@@ -100,13 +99,13 @@ pub fn generate_distributing_transaction(
         ));
     }
 
-    info!(
-        "FUND UTXOS (canonical): {:?}",
+    debug!(
+        "FUND UTXOS: {:?}",
         fund_account
-        .utxos()
-        .keys()
-        .map(|op| (op.txid, op.vout))
-        .collect::<Vec<_>>()
+            .utxos()
+            .keys()
+            .map(|op| (op.txid, op.vout))
+            .collect::<Vec<_>>()
     );
 
     // Inputs - canonical order (txid, vout)
@@ -136,11 +135,7 @@ pub fn generate_distributing_transaction(
         })
         .collect();
 
-    outputs.sort_by(|a, b| {
-        a.recipient
-            .data
-            .cmp(&b.recipient.data)
-    });
+    outputs.sort_by(|a, b| a.recipient.data.cmp(&b.recipient.data));
 
     // Add leftover AFTER sorting
     if leftover > 0 && !outputs.is_empty() {
@@ -435,9 +430,6 @@ fn generate_splitting_tx(
         .copied()
         .collect();
 
-
-
-
     // Split value among outputs with some randomization
     let mut outputs = Vec::with_capacity(num_outputs);
     let mut remaining = available_for_outputs;
@@ -561,8 +553,6 @@ fn generate_complex_tx(
         .choose_multiple(rng, num_outputs)
         .copied()
         .collect();
-
-
 
     // Distribute value among outputs with randomization
     let mut outputs = Vec::with_capacity(num_outputs);

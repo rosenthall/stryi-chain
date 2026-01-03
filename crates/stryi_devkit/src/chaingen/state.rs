@@ -18,14 +18,14 @@ use tracing::{debug, info};
 /// Current state of chain's generation.
 #[derive(Clone)]
 pub struct GenerationState {
-    /// Collection of all the accounts, that are used during generation process.
-    /// @addr mapped by SigningKey of corresponding account.
+    /// Collection of all the accounts that are used during a generation process.
+    /// @addr mapped by SigningKey of a corresponding account.
     pub(crate) accounts: IndexMap<AccountAddress, SigningKey>,
 
-    /// Account that has balance at the moment of the latest "natural" block (one, that was naturally generated in network, but not via generator tool)
-    /// It may be an account from genesis allocation, or just any account with enough balance.
-    /// This balance will be distributed between `Self::accounts`,
-    /// This account is used once, in very first generated block, the "distributor block" and
+    /// Account that has balance at the moment of the latest "natural" block (one that was naturally generated in network, but not via generator tool)
+    /// It may be an account from genesis allocation, or just any account with enough balances.
+    /// This balance will be distributed between `Self::accounts`;
+    /// This account is used once, in the very first generated block, the "distributor block" and
     /// generator never uses this one again for simplicity.
     /// So basically, this is going to be drained.
     pub(crate) fund_account: FundAccount,
@@ -40,66 +40,27 @@ pub type AccountsWithUtxos = Vec<(AccountAddress, SigningKey, IndexSet<UtxoInfo>
 impl GenerationState {
     /// Create new instance, with `n` of random accounts, that generated with `base_seed` to generate accounts.
     /// `fund_account` is AccountAddress and its corresponding PrivateKey that has funds in this chain.
-    /// See `Self::generate_accounts` for more details.
-    pub fn new_with_random_accounts(n: usize, fund_account: FundAccount, base_seed: u64) -> Self {
+    /// `start_height` is the height from which the accounts are generated, this is used for accounts generation.
+    /// See `Self::generate_accounts` for more details
+    // TODO: Maybe add GenerationState::new_with_accounts(accounts: Vec<SigningKey>, base_seed: u64)
+    pub fn new_with_random_accounts(
+        n: usize,
+        fund_account: FundAccount,
+        base_seed: u64,
+        start_height: u64,
+    ) -> Self {
         Self {
-            accounts: Self::generate_accounts(n, base_seed),
+            accounts: Self::generate_accounts(n, base_seed, start_height),
             fund_account,
             account_utxos: Default::default(),
         }
-    }
-
-    /// Saves accounts in provided dir, in file `.txt`
-    /// Saving format is @AccountAddress:CorrespondingPrivateKeyInHex line for each address
-    pub fn save_accounts(&self, path: PathBuf) -> Result<(), String> {
-        // Check that path is dir and exists
-        if !path.is_dir() {
-            return Err(format!(
-                "Provided path ({}) is either not a path, or not a valid dir",
-                &path.to_str().unwrap_or("UNPRINTABLE")
-            ));
-        }
-
-        let file_path = path.join("CHAINGEN_PRIVATE_KEY.txt");
-        debug!(
-            "Path to generate private key backup : {}",
-            file_path.to_str().unwrap()
-        );
-        let mut file = File::create_new(&file_path).map_err(|e| {
-            format!(
-                "Unable to create file for creating private keys backup, error: `{}`.",
-                e
-            )
-        })?;
-
-        info!("Backing up generated accounts in {:?}", path);
-
-        let pairs: Vec<(AccountAddress, PrivateKey)> = self
-            .accounts
-            .clone()
-            .iter()
-            .map(|(addr, signing_key)| (addr.to_owned(), PrivateKey::new(signing_key.clone())))
-            .collect();
-
-        // Create buffer before writing
-        let mut buffer = String::with_capacity(pairs.len() * 100);
-
-        // construct lines in our format
-        for (account_address, private_key) in pairs {
-            let line = format!("{}:{}\n", account_address, private_key);
-            buffer.push_str(&line);
-        }
-
-        // write in file
-        file.write_all(buffer.as_bytes())
-            .map_err(|e| format!("Unable to write backup in file, error : {}", e))
     }
 
     /// Print some stats about currently existing UTXOs
     pub(crate) async fn log_utxos_state(
         &mut self,
         storage: &StryiStorage,
-        // true if log about generation start, false if about generation end
+        // true if log about generation start, false if about the generation end
         start: bool,
     ) -> Result<(), StryiStorageError> {
         // Lock storage and retrieve all UTXOs
@@ -168,9 +129,7 @@ impl GenerationState {
 
         // Sort by UTXO count ascending (least UTXOs first), tie-breaker: address bytes
         addr_counts.sort_by(|(a_addr, a_cnt), (b_addr, b_cnt)| {
-            a_cnt
-                .cmp(b_cnt)
-                .then_with(|| a_addr.data.cmp(&b_addr.data))
+            a_cnt.cmp(b_cnt).then_with(|| a_addr.data.cmp(&b_addr.data))
         });
 
         // Take first n addresses
@@ -182,7 +141,6 @@ impl GenerationState {
                 .collect(),
         )
     }
-
 
     /// Returns accounts sorted by their UTXO count in descending order.
     /// Only includes accounts that have at least one available UTXO.
@@ -199,7 +157,9 @@ impl GenerationState {
 
                     // Canonical, deterministic order (txid, then vout)
                     utxos_vec.sort_by(|a, b| {
-                        a.outpoint.txid.data
+                        a.outpoint
+                            .txid
+                            .data
                             .cmp(&b.outpoint.txid.data)
                             .then(a.outpoint.vout.cmp(&b.outpoint.vout))
                     });
@@ -213,15 +173,8 @@ impl GenerationState {
             })
             .collect();
 
-
-
-
         // Sort by UTXO count in descending order (most UTXOs first) with deterministic tie-break
-        accounts_with_utxos.sort_by(|a, b| {
-            b.3
-                .cmp(&a.3)
-                .then_with(|| a.0.data.cmp(&b.0.data))
-        });
+        accounts_with_utxos.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| a.0.data.cmp(&b.0.data)));
 
         // Take first `n` accounts and remove the utxo_count field so we can return proper AccountsWithUtxos
         accounts_with_utxos
@@ -231,13 +184,23 @@ impl GenerationState {
             .collect()
     }
 
-    /// Helper to generate N deterministic accounts from a base seed.
+    /// Helper to generate N deterministic accounts from a base seed and from a start height.
+    /// Determinism in generation includes start height. If we generate accounts from the same seed and start height,
+    /// we will get the same accounts, and if we run chaingen tool multiple times, it may actually break our logic.
     /// Uses deterministic key generation for reproducibility.
     /// All the accounts must be generated before even the first block is generated.
-    pub(crate) fn generate_accounts(
+    fn generate_accounts(
         amount: usize,
         base_seed: u64,
+        start_height: u64,
     ) -> IndexMap<AccountAddress, SigningKey> {
+        // Add start height to the base seed
+        let base_seed = base_seed.wrapping_pow(if start_height == 0 {
+            1
+        } else {
+            start_height as u32
+        });
+
         // Create a wrapper that bridges rand::StdRng to k256's rand_core
         struct StdRngWrapper(rand::rngs::StdRng);
 
@@ -280,6 +243,59 @@ impl GenerationState {
         accounts
     }
 
+    /// Saves accounts in a provided dir, in file `CHAINGEN_ACCOUNTS_{start_height}_{end_height}.txt`
+    /// In this file, each line contains an account address and corresponding private key in hex format separated by colon (:)
+    pub fn save_accounts(
+        &self,
+        path: PathBuf,
+        start_height: u64,
+        end_height: u64,
+    ) -> Result<(), String> {
+        // Check that path is dir and exists
+        if !path.is_dir() {
+            return Err(format!(
+                "Provided path ({}) is either not a path, or not a valid dir",
+                &path.to_str().unwrap_or("UNPRINTABLE PATH")
+            ));
+        }
+        let file_path = path.join(format!(
+            "CHAINGEN_ACCOUNTS_{}_{}.txt",
+            start_height, end_height
+        ));
+        debug!(
+            "Path to generate private key backup : {}",
+            file_path.to_str().unwrap()
+        );
+        let mut file = File::create_new(&file_path).map_err(|e| {
+            format!(
+                "Unable to create file for creating private keys backup, error: `{}`.",
+                e
+            )
+        })?;
+
+        info!("Backing up generated accounts in {:?}", path);
+
+        let pairs: Vec<(AccountAddress, PrivateKey)> = self
+            .accounts
+            .clone()
+            .iter()
+            .map(|(addr, signing_key)| (addr.to_owned(), PrivateKey::new(signing_key.clone())))
+            .collect();
+
+        // Create buffer before writing
+        let mut buffer = String::with_capacity(pairs.len() * 100);
+
+        // construct lines in our format
+        for (account_address, private_key) in pairs {
+            let line = format!("{}:{}\n", account_address, private_key);
+            buffer.push_str(&line);
+        }
+
+        // write in file
+        file.write_all(buffer.as_bytes())
+            .map_err(|e| format!("Unable to write backup in file, error : {}", e))
+    }
+
     /// Select multiple UTXOs based on the given criteria
     /// Returns up to `count` distinct UTXOs sorted according to the criteria
     /// Each UTXO will appear at most once in the result
@@ -313,7 +329,6 @@ impl GenerationState {
 
         utxo_vec.into_iter().take(count).collect()
     }
-
 
     /// Applies block to GenerationState.
     pub fn apply_block(&mut self, block: &Block) {
@@ -379,14 +394,14 @@ mod tests {
 
     #[test]
     fn test_generate_accounts_deterministic() {
-        // Generate accounts with same seed twice
-        let accounts1 = GenerationState::generate_accounts(10, 42);
-        let accounts2 = GenerationState::generate_accounts(10, 42);
+        // Generate accounts with the same seed and start_height twice
+        let accounts1 = GenerationState::generate_accounts(10, 42, 0);
+        let accounts2 = GenerationState::generate_accounts(10, 42, 0);
 
         // Check we get exactly 10 accounts
         assert_eq!(accounts1.len(), 10, "Should generate exactly 10 accounts");
 
-        // Check determinism by comparing against second generation
+        // Check determinism by comparing against the second generation
         assert_eq!(
             accounts1.len(),
             accounts2.len(),

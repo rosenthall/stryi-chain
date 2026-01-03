@@ -63,7 +63,7 @@ impl<'de> Deserialize<'de> for PersistenceMode {
 /// Chain-wide settings: generation scope, seeding, and output/genesis paths.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ChainSettings {
-    /// Total number of blocks to generate (including genesis).
+    /// Total number of blocks to generate after genesis, including distributor block.
     pub num_blocks: u64,
 
     /// Seed strategy: either a single seed (`42`) or multiple ranges.
