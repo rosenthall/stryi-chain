@@ -42,25 +42,25 @@ pub enum ConsensusVerdict {
         common_ancestor_height: (BlockHash, u64),
     },
 
-    /// Block was successfully applied to local chain
+    /// Block was successfully applied to a local chain
     Applied {
         /// New complexity of the chain including this new block.
         new_chain_complexity: u64,
     },
 
-    /// Block is already in local chain.
+    /// Block is already in the local chain.
     AlreadyIncludedInChain,
 
-    /// Block is already buffered in fork tree.
+    /// Block is already buffered in a fork tree.
     AlreadyKnownInForkTree,
 
     /// Block was rejected for any reason like failed validation, etc.
     Rejected(StryiCoreError),
 
-    /// Block caused reorganization in local chain.
+    /// Block caused reorganization in a local chain.
     /// It either was included by itself or with some fork it belongs to.
     CausedReorganization {
-        /// HashMap with deleted block's hashes keyed by its pre-reorganization height.
+        /// HashMap with a deleted block's hashes keyed by its pre-reorganization height.
         deleted_blocks: HashMap<u64, BlockHash>,
     },
 }

@@ -17,7 +17,7 @@ use futures::future::BoxFuture;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info};
+use tracing::{debug, info, trace};
 
 // StryiConsensusEngine is responsible for validating and processing blocks according to the consensus rules.
 ///
@@ -145,94 +145,55 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage> StryiConsensus
     /// May return an error if chain refers to unknown block.
     /// TODO: ChainIndex does not validates existing of BlockUndo in db for each block
     async fn build_chain_index(db: Arc<RwLock<DB>>) -> Result<ChainIndex, StryiCoreError> {
-        // Hold lock on db
-        let db = db.read().await; // block_read?
-
+        // hold lock on db
+        let db = db.read().await;
         info!("Starting collecting chain index!");
 
+        let mut blocks = Vec::new();
+
+        // try to get the latest block
+        let (_, mut cursor_hash) = db.tip().await.map_err(|e| {
+            StryiCoreError::storage(
+                StorageLayer::Block,
+                format!("Cannot get tip block from storage: {e:#?}"),
+            )
+        })?;
+
+        // iterate from the tip to the genesis
+        loop {
+            let block = db
+                .get_block_by_hash(cursor_hash)
+                .await
+                .unwrap()
+                .ok_or_else(|| {
+                    StryiCoreError::storage(
+                        StorageLayer::Block,
+                        format!("Cannot find block {cursor_hash} in persistent storage"),
+                    )
+                })?;
+
+            blocks.push(block.clone());
+
+            if block.header.height == 0 {
+                break;
+            }
+
+            cursor_hash = block.header.previous_block_hash;
+        }
+
+        blocks.reverse();
+
+        // initialize index
         let mut index = ChainIndex::new();
 
-        // Get latest block.
-        let mut cursor_hash = db
-            .tip()
-            .await
-            // Map error if any
-            .map_err(|e| {
-                StryiCoreError::storage(
-                    StorageLayer::Block,
-                    format!("Cannot get tip block from storage: {e:#?}"),
-                )
-            })?
-            // (block_height, block_hash)
-            .1;
-
-        // acc
+        // calculate cumulative work and insert entries to the index
         let mut cumulative_work: u128 = 0;
-
-        // Iterate over blocks one by one
-        loop {
-            match db.get_block_by_hash(cursor_hash).await {
-                Ok(Some(block)) => {
-                    debug!(
-                        "Indexing block {} at height {} with difficulty bits {}",
-                        cursor_hash, block.header.height, block.header.difficulty_bits
-                    );
-                    cumulative_work += 1u128 << block.header.difficulty_bits;
-
-                    // Add this block in index with specified cumulative work.
-                    index.insert(&block, cumulative_work);
-
-                    // reached genesis - success
-                    if block.header.height == 0 {
-                        break;
-                    }
-
-                    cursor_hash = block.header.previous_block_hash;
-                }
-
-                // Block not found -> error
-                Ok(None) => {
-                    error!(
-                        "Cannot find block {} in persistent storage to build chain index",
-                        cursor_hash
-                    );
-
-                    return Err(StryiCoreError::storage(
-                        StorageLayer::Block,
-                        format!(
-                            "Cannot find block {} in persistent storage to build chain index",
-                            cursor_hash
-                        ),
-                    ));
-                }
-
-                // If got any error while traversing blocks -> return.
-                Err(e) => {
-                    error!("Error while traversing blocks to build chain index: {e:?}");
-                    return Err(StryiCoreError::storage(
-                        StorageLayer::Block,
-                        format!("{e:?}"),
-                    ));
-                }
-            };
+        for block in blocks {
+            cumulative_work += 1u128 << block.header.difficulty_bits;
+            index.insert(&block, cumulative_work);
         }
 
         Ok(index)
-    }
-
-    /// Computes the cumulative chain work for a given slice of blocks.
-    ///
-    /// For each block, the work is defined as 2^(difficulty_bits).
-    /// The total chain work is the sum of these values.
-    /// This metric is used in chain selection algorithms to determine which fork is "heavier."
-    // TODO: New trait + generic parameter for better computation of chain's difficulty?
-    pub fn compute_chain_difficulty(&self, chain: &[Block]) -> u128 {
-        let mut total = 0u128;
-        for block in chain {
-            let bits = block.header.difficulty_bits;
-            total = total.saturating_add(1u128 << bits);
-        }
-        total
     }
 
     /// walks back from `from_hash` until it reaches `stop` (exclusive).
@@ -284,6 +245,15 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + 'static> Cons
             block.block_hash(),
             block.header.height,
             block.header.difficulty_bits
+        );
+        trace!(
+            "on_block hash={} prev={} height={} | chain_has_parent={} fork_has_parent={} | chain_index_tip={:?}",
+            block.block_hash(),
+            block.header.previous_block_hash,
+            block.header.height,
+            self.chain_index.has(&block.header.previous_block_hash),
+            self.forks.get(&block.header.previous_block_hash).is_some(),
+            self.chain_index.tip()
         );
 
         Box::pin(async move {
@@ -414,7 +384,7 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + 'static> Cons
                     // Update chain index
                     self.chain_index.insert(&block, cumulative_work);
 
-                    info!(
+                    debug!(
                         "Applied block {} at height {} to main chain",
                         hash, block.header.height
                     );

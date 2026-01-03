@@ -28,7 +28,7 @@ pub struct ChainIndex {
 }
 
 impl ChainIndex {
-    /// Creates new empty instance of `ChainIndex`
+    /// Creates a new empty instance of `ChainIndex`
     #[inline(always)]
     pub fn new() -> Self {
         Self {
@@ -75,9 +75,10 @@ impl ChainIndex {
             return false;
         }
         if let Some(t) = &self.tip
-            && &t.hash == hash {
-                self.recompute_tip();
-            }
+            && &t.hash == hash
+        {
+            self.recompute_tip();
+        }
         true
     }
 
