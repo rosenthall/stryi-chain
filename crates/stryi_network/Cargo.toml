@@ -16,8 +16,8 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 tokio-util = "0.7.13" # just for CancelationToken
 tracing = "0.1.41"
-libp2p = { version = "0.55.0", features = ["rendezvous", "ed25519", "ping", "serde", "gossipsub", "identify", "request-response", "cbor", "tcp", "noise", "yamux", "tokio", "macros"] }
+libp2p = { version = "0.55.0", features = ["rendezvous", "ed25519", "ping", "serde", "gossipsub", "identify", "request-response", "cbor", "tcp", "noise", "yamux", "tokio", "macros", "dns"] }
 futures = "0.3.31"
-stryi_core = {path = "../stryi_core"}
+stryi_core = { path = "../stryi_core" }
 bincode = "2.0.0-rc.3"
 rand = "0.9.2"

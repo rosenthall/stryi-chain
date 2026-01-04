@@ -100,7 +100,7 @@ impl Default for StryiBehaviourConfig {
 pub struct StryiBehaviour {
     pub gossipsub: Gossipsub,
     #[behaviour(ignore_events)]
-    // todo: Do we need more complex logic for pining? Some analytics for RTT, latency, etc
+    // todo: Do we need more complex logic for pinging? Some analytics for RTT, latency, etc
     pub ping: Ping,
     pub identify: Identify,
     pub rendezvous_server: Toggle<RzvServer>,
