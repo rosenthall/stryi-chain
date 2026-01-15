@@ -4,13 +4,14 @@ services:
     build:
       context: ../..
       dockerfile: e2e/docker/devkit.Dockerfile
+    env_file: .env.e2e
     volumes:
-      - chain-data:/data
+      - stryi-e2e:/data
       - ../config:/config:ro # map repo/e2e/config -> /config in container
     environment:
-      - RUST_LOG=info
+      - RUST_LOG=${RUST_LOG}
     # NOTE: ENTRYPOINT in the image is ["stryi-devkit"], so we pass args as "command"
-    command: ["chaingen", "--config-path", "/config/e2e_chaingen.toml"]
+    command: [ "chaingen", "--config-path", "/config/e2e_chaingen.toml" ]
     restart: "no"
     logging:
       driver: "json-file"
@@ -19,17 +20,19 @@ services:
         max-file: "3"
 
 
-# test that chaingen did generate *something*
+  # test that chaingen did generate *something*
   check-chaingen:
     image: busybox:1.36
+    env_file: .env.e2e
     depends_on:
       chaingen:
         condition: service_completed_successfully
     volumes:
-      - chain-data:/data
+      - stryi-e2e:/data
       - ../scripts:/scripts:ro
-    command: ["/bin/sh", "-lc", "/scripts/check-chaingen.sh /data/chain"]
+    command: [ "/bin/sh", "-lc", "/scripts/check-chaingen.sh /data/chain" ]
     restart: "no"
+
 
   server-node:
     networks:
@@ -37,26 +40,41 @@ services:
     build:
       context: ../..
       dockerfile: e2e/docker/node.Dockerfile
+    env_file: .env.e2e
     depends_on:
       check-chaingen:
         condition: service_completed_successfully
     volumes:
-      - chain-data:/data
+      - stryi-e2e:/data
       - ../config:/config:ro
     environment:
-      - RUST_LOG=info
+      - RUST_LOG=${RUST_LOG}
     command:
       [
         "--config-path",
         "/config/e2e_server_node.toml",
-        "--accept-genesis",
+        "--auto-accept-genesis",
         "true"
       ]
     restart: "no"
     # for local debugging purpose
     ports:
-      - "2080:2080"
-      - "2090:2090"
+      - "${SERVER_NODE_GRPC_API_PORT}:${SERVER_NODE_GRPC_API_PORT}"
+      - "${SERVER_NODE_HTTP_API_PORT}:${SERVER_NODE_HTTP_API_PORT}"
+    # healthcheck to wait for the node to be ready (uses interpolated API_PORT)
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-f",
+          "http://localhost:${SERVER_NODE_HTTP_API_PORT}/api/nodestate"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
 
   wait-for-server-node:
     networks:
@@ -64,27 +82,99 @@ services:
     build:
       context: ../..
       dockerfile: e2e/docker/tools.Dockerfile
+    env_file: .env.e2e
+    # Prefer service_healthy so this container starts only after server-node passes healthcheck.
+    # NOTE: some compose/platform versions differ in support for condition: service_healthy;
+    # if your setup doesn't wait, the assert script will still poll /api/nodestate as a fallback.
     depends_on:
       server-node:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - ../scripts:/scripts:ro
-    entrypoint: ["/bin/sh", "/scripts/assert-node-ready.sh"]
+    entrypoint: [ "/bin/sh", "/scripts/assert-node-ready.sh" ]
     command:
       - --address
-      - server-node
+      - ${SERVER_NODE_HTTP_API_ADDRESS}
       - --http
-      - "2090"
+      - "${SERVER_NODE_HTTP_API_PORT}"
+      - --expected-height
+      - "${EXPECTED_HEIGHT}"
       - --expected-hash
-      - Bx02f4b49f47b6f5506bd0c20fbe5739e4a23493353713bfa673c72567dc482241
+      - "${EXPECTED_HASH}"
     restart: "no"
 
+
+  # Start one client node, that connects to the server node and syncs
+  client-node-1:
+    networks:
+      - e2e
+    build:
+      context: ../..
+      dockerfile: e2e/docker/node.Dockerfile
+    env_file: .env.e2e
+    depends_on:
+      server-node:
+        condition: service_healthy
+    volumes:
+      - stryi-e2e:/data
+      - ../config:/config:ro
+    environment:
+      - RUST_LOG=${RUST_LOG}
+    command:
+      [
+        "--config-path",
+        "/config/e2e_client_node1.toml",
+        "--auto-accept-genesis",
+        "true"
+      ]
+    ports:
+      - "${CLIENT1_NODE_GRPC_API_PORT}:${CLIENT1_NODE_GRPC_API_PORT}"
+      - "${CLIENT1_NODE_HTTP_API_PORT}:${CLIENT1_NODE_HTTP_API_PORT}"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-f",
+          "http://localhost:${CLIENT1_NODE_HTTP_API_PORT}/api/nodestate"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: "no"
+
+
+  wait-for-client-node-1:
+    networks:
+      - e2e
+    build:
+      context: ../..
+      dockerfile: e2e/docker/tools.Dockerfile
+    env_file: .env.e2e
+    depends_on:
+      client-node-1:
+        condition: service_healthy
+    volumes:
+      - ../scripts:/scripts:ro
+    entrypoint: [ "/bin/sh", "/scripts/assert-node-ready.sh" ]
+    command:
+      - --address
+      - ${CLIENT1_NODE_HTTP_API_ADDRESS}
+      - --http
+      - "${CLIENT1_NODE_HTTP_API_PORT}"
+      - --expected-height
+      - "${EXPECTED_HEIGHT}"
+      - --expected-hash
+      - "${EXPECTED_HASH}"
+    restart: "no"
 
 
   # TODO: Implement the rest of the docker-compose.e2e.yml
 
+
 volumes:
-  chain-data:
+  stryi-e2e:
 
 networks:
   e2e:

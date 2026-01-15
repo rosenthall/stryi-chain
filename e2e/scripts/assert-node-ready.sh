@@ -4,14 +4,16 @@ set -eu
 ADDR=""
 HTTP_PORT=""
 EXPECTED_HASH=""
+EXPECTED_HEIGHT=""
 
-# simple arg parsing
+# Argument parsing
 while [ $# -gt 0 ]; do
   case "$1" in
     --address) ADDR="$2"; shift 2 ;;
     --http) HTTP_PORT="$2"; shift 2 ;;
     --expected-hash) EXPECTED_HASH="$2"; shift 2 ;;
-    *) echo "Unknown arg: $1"; exit 1 ;;
+    --expected-height) EXPECTED_HEIGHT="$2"; shift 2 ;;
+    *) echo "[assert-node] Unknown arg: $1"; exit 1 ;;
   esac
 done
 
@@ -29,6 +31,7 @@ i=1
 while [ "$i" -le "$MAX_ATTEMPTS" ]; do
   echo "[assert-node] attempt $i/$MAX_ATTEMPTS"
 
+  # Fetch nodestate
   if ! STATE="$(curl -sf "$URL" 2>/dev/null)"; then
     echo "[assert-node] nodestate not reachable yet"
     sleep "$SLEEP_SEC"
@@ -41,19 +44,32 @@ while [ "$i" -le "$MAX_ATTEMPTS" ]; do
 
   echo "[assert-node] height=$HEIGHT hash=$HASH"
 
-  if [ "$HEIGHT" = "null" ] || [ "$HEIGHT" -le 0 ]; then
+  # Height sanity check
+  if ! echo "$HEIGHT" | grep -Eq '^[0-9]+$' || [ "$HEIGHT" -le 0 ]; then
     echo "[assert-node] chain not initialized yet"
     sleep "$SLEEP_SEC"
     i=$((i+1))
     continue
   fi
 
+  # Hash check (FATAL)
   if [ -n "$EXPECTED_HASH" ] && [ "$HASH" != "$EXPECTED_HASH" ]; then
-    echo "[assert-node] hash mismatch, waiting for full sync"
+    echo "[assert-node] FATAL: hash mismatch"
+    echo "[assert-node] expected=$EXPECTED_HASH"
+    echo "[assert-node] got     =$HASH"
+    exit 1
+  fi
+
+  # Height expectation check
+  if [ -n "$EXPECTED_HEIGHT" ] && [ "$HEIGHT" -lt "$EXPECTED_HEIGHT" ]; then
+    echo "[assert-node] waiting for height $EXPECTED_HEIGHT"
     sleep "$SLEEP_SEC"
     i=$((i+1))
     continue
   fi
+
+  # TODO: Add grpcurl checks here
+
 
   echo "[assert-node] node is ready"
   exit 0

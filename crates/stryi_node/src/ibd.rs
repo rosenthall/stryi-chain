@@ -43,9 +43,9 @@ pub(crate) async fn fetch_blocks_batch(
     Ok(batch)
 }
 
-/// IBD helper, feeds blocks to the consensus engine in-order
+/// IBD helper feeds blocks to the consensus engine in-order
 /// and logs everything (batch start/end, per-block details, verdicts, and summary).
-/// Immediately exists if any of blocks is `Rejected`
+/// Immediately exists if any of the blocks is `Rejected`
 #[tracing::instrument(level = "info", skip(engine, blocks_in_order))]
 pub async fn ingest_ibd_batch<E>(
     engine: &mut E,

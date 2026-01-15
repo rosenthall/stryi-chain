@@ -26,12 +26,12 @@ required-features = ["telemetry"]
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 console-subscriber = { version = "0.5.0", optional = true, default-features = false, features = ["parking_lot", "env-filter"] }
-tokio = {version = "1.45.0", features = ["rt", "macros", "rt-multi-thread", "tracing"]}
+tokio = { version = "1.45.0", features = ["rt", "macros", "rt-multi-thread", "tracing"] }
 tokio-stream = "0.1.17"
 tokio-util = "0.7.14"
-stryi_network = {path = "../stryi_network"}
-stryi_core = {path = "../stryi_core"}
-stryi_storage = {path = "../stryi_storage"}
+stryi_network = { path = "../stryi_network" }
+stryi_core = { path = "../stryi_core" }
+stryi_storage = { path = "../stryi_storage" }
 futures-util = "0.3.31"
 clap = { version = "4.5.27", features = ["derive"] }
 tonic = { version = "0.13.0", features = ["tls-aws-lc"] }
@@ -60,10 +60,11 @@ rand = "0.9.2"
 rayon = "1.10.0"
 indicatif = "0.18.0"
 comfy-table = "7.2.1"
+multiaddr = "0.18.2"
 
 [dev-dependencies]
 x509-parser = "0.17.0"
 
 [build-dependencies]
 prost = "0.13.5"
-tonic-build = { version = "0.13.0", features = ["prost"]}
+tonic-build = { version = "0.13.0", features = ["prost"] }

@@ -29,7 +29,7 @@ pub enum StorageStatus {
     Corrupted { reason: String },
 }
 
-// helper to build path to file with metainfo about storage
+// helper to build a path to a file with metainfo about storage
 fn meta_file_path(root: &Path) -> PathBuf {
     root.join("metainfo.bin")
 }

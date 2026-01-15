@@ -59,6 +59,6 @@ mod private_key;
 pub use private_key::*;
 
 // Contains tests for some matter functionality.
-// Some of the tests are present in the concrete modules, but this module contains larger ones with more complex cases like integration tests
+// Some tests are present in the concrete modules, but this module contains larger ones with more complex cases like integration tests
 #[cfg(test)]
 mod tests;

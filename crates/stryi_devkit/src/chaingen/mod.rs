@@ -330,7 +330,7 @@ impl ChainGenerator {
                 .log_utxos_state(&s, false)
                 .await
                 .map_err(|e| e.to_string())?;
-            
+
             info!(
                 "Done. Persisted {} blocks. With total transactions created: {}",
                 total_to_generate, tx_count

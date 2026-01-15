@@ -65,7 +65,6 @@ impl ChainGenerator {
     }
 }
 
-
 fn read_genesis_config(path: &Path) -> Result<GenesisInitConfig, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read genesis config {}: {e}", path.display()))?;
