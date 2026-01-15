@@ -1,7 +1,7 @@
-//! This file defines our RequestResponse-based custom behaviour for obtaining up-to-date information about the peer's services
+//! This file defines our RequestResponse-based custom behavior for collecting up-to-date information about the peer's services
 
 use crate::ed25519::PublicKey;
-use crate::{Keypair, PeerId, StryiEvent, StryiNetworkError};
+use crate::{Keypair, Multiaddr, PeerId, StryiEvent, StryiNetworkError};
 use bincode::config::standard;
 use libp2p::core::SignedEnvelope;
 use libp2p::identity;
@@ -11,7 +11,6 @@ use serde::de::Error as SerdeError;
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
-use std::net::SocketAddr;
 
 /// Requests enum for ServicesInfo api
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -22,14 +21,14 @@ pub enum ServicesInfoRequest {
 /// Response type: list of services
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServicesResponse {
-    pub services: Vec<SignedServiceRecord>,
+    pub(crate) services: Vec<SignedServiceRecord>,
 }
 
 /// ServiceInfo defines information we can gather about service(like gRPC api, json-rpc, etc.) which is running on some node/peer.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ServiceRecord {
     /// Address of this service
-    address: SocketAddr,
+    address: Multiaddr,
 
     /// PeerId of the owner of the service
     owner: PeerId,
@@ -42,8 +41,8 @@ pub struct ServiceRecord {
 }
 
 impl ServiceRecord {
-    /// Create new instance of ServiceRecord
-    pub fn new(address: SocketAddr, owner: PeerId, kind: String, version: u32) -> Self {
+    /// Create a new instance of ServiceRecord
+    pub fn new(address: Multiaddr, owner: PeerId, kind: String, version: u32) -> Self {
         Self {
             address,
             owner,
@@ -53,7 +52,7 @@ impl ServiceRecord {
     }
 
     /// Returns the address of the service.
-    pub fn address(&self) -> &SocketAddr {
+    pub fn address(&self) -> &Multiaddr {
         &self.address
     }
 
@@ -78,8 +77,9 @@ const SIGNED_SERVICE_RECORD_DOMAIN: &str = "stryichain.service";
 const SIGNED_SERVICE_PAYLOAD_TYPE: &[u8] = b"\x71stryichain/service";
 
 /// Signed version of ServiceRecord
+/// This API is meant to be used only by network components itself, for better encapsulation
 #[derive(Clone, Debug)]
-pub struct SignedServiceRecord {
+pub(crate) struct SignedServiceRecord {
     inner: SignedEnvelope,
 }
 
@@ -123,7 +123,7 @@ impl SignedServiceRecord {
             )
             .map_err(|e| StryiNetworkError::other(format!("read payload: {e}")))?;
 
-        // 2. Check if envelope's signing_key is ed25519 and is equals to expected one
+        // 2. Check if envelope's signing_key is ed25519 and is equal to the expected one
         match signing_key.clone().try_into_ed25519() {
             Ok(ref pk) if pk == expected_pk => {} // OK
             _ => return Err(StryiNetworkError::other("signing key mismatch")),

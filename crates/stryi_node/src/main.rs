@@ -20,6 +20,9 @@ mod config;
 /// Command-line overrides for node configuration.
 mod cli;
 
+/// Some util functions used in main()
+mod util;
+
 /// High-level http api for users of the node.
 mod http;
 
@@ -38,7 +41,6 @@ mod ibd;
 /// Last Common Ancestor detecting utils.
 mod lca;
 
-use std::collections::HashMap;
 use crate::bootstrap::GenesisBootstrap;
 use crate::cli::NodeStartMode;
 use crate::config::NodeConfig;
@@ -50,9 +52,10 @@ use crate::middleware::ready::ReadyFlag;
 use crate::miner::StryiMinerConfig;
 use crate::node::{StryiChainNode, build_consensus_constants};
 use crate::tls::cert_and_key_from_peer;
+use crate::util::{resolve_ipv4_advertise, try_genesis_config_from_path};
 use colored::Colorize;
+use std::collections::HashMap;
 use std::error::Error;
-use std::io::{ErrorKind, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
@@ -64,11 +67,9 @@ use stryi_core::mempool::{MemPool, MemPoolConfig, RbfPolicy, UtxoLookup};
 use stryi_core::storage::{StorageStats, UtxoStorage};
 use stryi_core::transactions::{FeePolicy, OutPoint, UtxoProcessor};
 use stryi_network::{
-    PeerId, RendezvousMode, SignedServiceRecord, StryiBehaviourConfig, StryiNetworkManager,
-    StryiNetworkManagerConfig,
+    PeerId, RendezvousMode, StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig,
 };
-use stryi_storage::{GenesisInitConfig, StorageStatus, StryiStorage};
-use tokio::io;
+use stryi_storage::{StorageStatus, StryiStorage};
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
@@ -79,32 +80,6 @@ use tracing_subscriber::{EnvFilter, fmt};
 
 pub(crate) mod grpc_services {
     tonic::include_proto!("stryi.sync");
-}
-
-/// Reads and deserializes the config from provided path.
-fn try_genesis_config_from_path(path: PathBuf) -> Result<GenesisInitConfig, StryiNodeError> {
-    // Check if file exists and if it is a file.
-    if !path.is_file() {
-        return Err(StryiNodeError::Io(io::Error::new(
-            ErrorKind::NotFound,
-            format!(
-                "Provided path with genesis configuration is not a file or doesn't exists. Path : {}",
-                path.display()
-            ),
-        )));
-    }
-
-    let mut file = std::fs::File::open(&path)?;
-    let mut buf = String::new();
-    file.read_to_string(&mut buf)?;
-
-    // Try to deserialize
-    serde_json::from_str(&buf).map_err(|e| {
-        StryiNodeError::other(format!(
-            "Cannot deserialize genesis configuration, error : {}",
-            e
-        ))
-    })
 }
 
 fn print_essentials() {
@@ -144,13 +119,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let fmt_layer = fmt::layer().with_target(true).with_level(true);
     //.with_thread_names(true);
 
-    // Use EnvFilter to filter out some of unnecessary logs (like h2, handshakes, etc.)
-    // Set default log level to info if RUST_LOG is not set
+    // Use EnvFilter to filter out some of the unnecessary logs (like h2, handshakes, etc.)
+    // Set the default log level to info if RUST_LOG is not set
     let filter_layer = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"))
-        .add_directive("hyper=info".parse().unwrap())
-        .add_directive("h2=info".parse().unwrap())
-        .add_directive("lsm_tree=info".parse().unwrap());
+        .add_directive("hyper=info".parse()?)
+        .add_directive("h2=info".parse()?)
+        .add_directive("lsm_tree=info".parse()?);
 
     // With telemetry enabled: include the console layer
     #[cfg(feature = "telemetry")]
@@ -183,18 +158,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
     print_essentials();
 
     let sync_service_config = StryiSyncServiceConfig {
-        address: cfg.grpc_sync_address.parse()?,
+        address: cfg.grpc_sync_listen.parse()?,
         chain_name: cfg.chain_name.to_string(),
         protocol_version: cfg.sync_protocol_version as usize,
         max_blocks_range_per_request: cfg.sync_max_blocks_per_request,
     };
 
     let mut http_service_config = StryiHttpServiceConfig {
-        address: cfg.http_service_address.parse()?,
+        address: cfg.http_service_listen.parse()?,
         chain_name: cfg.chain_name.clone(),
         peer_id: PeerId::random(), // Setup it later
         api_version: cfg.http_service_version,
     };
+
+    let grpc_advertise = resolve_ipv4_advertise(
+        cfg.grpc_sync_advertise.clone(),
+        &cfg.grpc_sync_listen,
+        "grpc_sync",
+    )
+    .map_err(StryiNodeError::other)?;
+
+    let http_advertise = resolve_ipv4_advertise(
+        cfg.http_service_advertise.clone(),
+        &cfg.http_service_listen,
+        "http_service",
+    )
+    .map_err(StryiNodeError::other)?;
 
     let mut start_mode = cfg.start_mode;
 
@@ -210,9 +199,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Setup bootstrap helper
     let genesis_bootstrap = GenesisBootstrap::new(cfg.storage_path.clone().into());
 
-    // Initializing storage in configured provided path
+    // Initializing storage in the configured provided path
 
-    // probe storage meta information
+    // probe storage's meta-information
     let storage_status = StorageStatus::from_path(&cfg.storage_path).map_err(|e| {
         error!("Failed to probe storage at {}: {e}", &cfg.storage_path);
         StryiNodeError::other(format!("probe storage: {e}"))
@@ -254,7 +243,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     &cfg.chain_name,
                     cfg.sync_protocol_version as u64,
                     Some("local"),
-                    cfg.auto_accept_genesis
+                    cfg.auto_accept_genesis,
                 )
                 .map_err(|e| {
                     error!("confirm_and_save failed: {e}");
@@ -294,7 +283,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         cfg.mempool_max_transactions,
         FeePolicy::default(),
         RbfPolicy::disabled(), // Disable RBF for now
-        60 * 60,               // 1 hour expiry time
+        60 * 60,               // 1-hour expiry time
     );
 
     // Create utxo_lookup for mempool that reads UTXO by outpoint from storage
@@ -334,7 +323,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Err(_) => {
             info!("No existing peer key, generating a fresh one");
             let fresh = PeerKey::generate_random();
-            // Ignore I/O error on first run; report only if backup fails later.
+            // Ignore I/O error on the first run; report only if backup fails later.
             let _ = fresh.backup(&cfg.peer_key_path);
             fresh
         }
@@ -411,13 +400,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let network_manager_cancellation_token = CancellationToken::new();
 
-    // An initially empty list – we'll fill it later when services start.
-    let services_records: Arc<RwLock<Vec<SignedServiceRecord>>> = Arc::new(RwLock::new(Vec::new()));
-
     let network_manager = StryiNetworkManager::new(
         &network_manager_config,
         mempool.clone(),
-        services_records.clone(),
         network_manager_cancellation_token,
     )?;
 
@@ -436,7 +421,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         network_manager,
         keypair,
         peer_id,
-        services_records,
         tls_identity,
         grpc_tls_root,
         net_cmd: None,
@@ -467,7 +451,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             })
         };
 
-        // Try to get reward address
+        // Try to get a reward address
         let reward_address =
             if let Ok(addr) = AccountAddress::from_hash_string(&cfg.miner_reward_address) {
                 addr
@@ -479,7 +463,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 return Err(StryiNodeError::other("Invalid miner reward address").into());
             };
 
-        // Pretty print the miner reward address so user will not miss it
+        // Pretty print the miner reward address so the user will not miss it
         println!(
             "{}",
             "==================================MINER=================================="
@@ -535,7 +519,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         NodeStartMode::Bootstrap => {
             info!("Bootstrap: skipping synchronize(); this node is the source of genesis.");
 
-            // Construct ConsensusEngine instance and set the field.
+            // Construct a ConsensusEngine instance and set the field.
             debug!("No synchronizing required, building ConsensusEngine immediately.");
             let consensus_consts = build_consensus_constants(&storage.clone()).await?;
             let difficulty_calc =
@@ -570,8 +554,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Start the node's services: gRPC sync service, HTTP API service, etc.
-
-    node.start_services().await?;
+    node.start_services(http_advertise, grpc_advertise).await?;
 
     // Keep the node running indefinitely.
     // TODO: Graceful stop for the node

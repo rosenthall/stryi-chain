@@ -8,6 +8,7 @@ use crate::http::{HTTP_SERVICE_TAG, StryiHttpServiceConfig};
 use crate::ibd::{fetch_blocks_batch, ingest_ibd_batch};
 use crate::middleware::ready::{ReadyFlag, ReadyGateLayer};
 use crate::tls::NodeTlsIdentity;
+use multiaddr::{Multiaddr, Protocol};
 use std::sync::Arc;
 use std::time::Duration;
 use stryi_core::block::{Block, BlockHash};
@@ -18,7 +19,7 @@ use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 use stryi_core::transactions::{OutPoint, UTXO, UtxoProcessor};
 use stryi_network::ed25519::Keypair;
 use stryi_network::{
-    NetworkCommand, NetworkEvent, PeerId, ServiceRecord, SignedServiceRecord, StryiNetworkManager,
+    NetworkCommand, NetworkEvent, PeerId, ServiceRecord, StryiNetworkError, StryiNetworkManager,
 };
 use stryi_storage::{StryiStorage, extract_utxos_from_block};
 use tokio::join;
@@ -58,9 +59,6 @@ pub struct StryiChainNode {
     /// The peer id of this node.
     pub(crate) peer_id: PeerId,
 
-    /// A list of services that this node runs
-    pub(crate) services_records: Arc<RwLock<Vec<SignedServiceRecord>>>,
-
     /// A node's tls identity (based on PeerKey)
     pub(crate) tls_identity: NodeTlsIdentity,
 
@@ -77,10 +75,10 @@ pub struct StryiChainNode {
     /// Genesis bootstrap orchestrator
     pub(crate) genesis_bootstrap: GenesisBootstrap,
 
-    /// Configuration for the gRPC-based synchronization service.
+    // Configuration for the gRPC-based synchronization service.
     pub(crate) sync_service_config: StryiSyncServiceConfig,
 
-    /// Configuration for high-level http api service for node's users.
+    /// Configuration for a high-level http api service for node's users.
     pub(crate) http_service_config: StryiHttpServiceConfig,
 
     /// The readiness flag used by the gRPC middleware.
@@ -88,6 +86,37 @@ pub struct StryiChainNode {
 
     /// The readiness flag used by the http middleware.
     pub(crate) http_is_ready: ReadyFlag,
+}
+
+/// Converts multiaddr to grpc uri
+/// TODO: Make gRPC be tlsed again
+fn grpc_uri_from_multiaddr(addr: &Multiaddr) -> Result<tonic::transport::Uri, String> {
+    let mut host: Option<String> = None;
+    let mut port: Option<u16> = None;
+
+    for p in addr.iter() {
+        match p {
+            Protocol::Dns4(h) => {
+                host = Some(h.to_string());
+            }
+            Protocol::Ip4(ip) => {
+                host = Some(ip.to_string());
+            }
+            Protocol::Tcp(p) => {
+                port = Some(p);
+            }
+            _ => {}
+        }
+    }
+
+    let host = host.ok_or("multiaddr missing host (dns4/ip4)")?;
+    let port = port.ok_or("multiaddr missing tcp port")?;
+
+    let uri_str = format!("http://{}:{}", host, port);
+
+    uri_str
+        .parse::<tonic::transport::Uri>()
+        .map_err(|e| format!("invalid grpc uri '{}': {e}", uri_str))
 }
 
 impl StryiChainNode {
@@ -232,19 +261,13 @@ impl StryiChainNode {
             grpc_peer_service_info.version()
         );
 
-        // Connect to gRPC !
+        // Connect to gRPC
 
         // Parse the address into a tonic::transport::Uri
-        let formatted_addr = format!("http://{}", grpc_peer_service_info.address());
+        let uri = grpc_uri_from_multiaddr(grpc_peer_service_info.address())
+            .map_err(StryiNodeError::other)?;
 
-        let uri = formatted_addr
-            .parse::<tonic::transport::Uri>()
-            .map_err(|e| StryiNodeError::other(format!("Failed to parse URI: {e}")))?;
-
-        // create TLS channel and gRPC client
-        let channel = Endpoint::from(uri)
-            // .tls_config(tls_cfg)
-            // .map_err(|e| StryiNodeError::other(format!("TLS config error: {e}")))?
+        let channel = tonic::transport::Endpoint::from(uri)
             .connect()
             .await
             .map_err(|e| StryiNodeError::other(format!("gRPC dial error: {e}")))?;
@@ -327,7 +350,7 @@ impl StryiChainNode {
                     &self.sync_service_config.chain_name,
                     self.sync_service_config.protocol_version as u64,
                     Some(&*format!("peer {peer}")),
-                    true
+                    true,
                 )
                 .map_err(|e| StryiNodeError::other(format!("confirm_and_save failed: {e}")))?;
 
@@ -553,15 +576,22 @@ impl StryiChainNode {
 
     /// Starts the node instance and basic services, like mempool, grpc sync server, mining-loop (if set in the config), handles network events
     /// Meant to be called after `connect()` and `synchronize()`.
-    pub async fn start_services(self) -> Result<(), Box<dyn std::error::Error>> {
-        // Some asserts, just in case.
+    /// Takes `http_advertise_address` and `grpc_advertise_address` as parameters;
+    /// these are the addresses that other nodes will use to connect to this node's services.
+    /// They will be registered and signed by the network manager.
+    pub async fn start_services(
+        self,
+        http_advertise_address: Multiaddr,
+        grpc_advertise_address: Multiaddr,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Some assertions, just in case.
         assert!(
             &self.consensus_engine.is_some(),
             "ConsensusEngine must be initialized before start_services()"
         );
         assert!(
             &self.network_manager.is_none(),
-            "NetworkManager's loop must be spawned in connect(), so it must be unaccessable in start_services()"
+            "NetworkManager's loop must be spawned in connect(), so it must be unaccessible in start_services()"
         );
         assert!(
             self.net_cmd.is_some() && self.net_events.is_some(),
@@ -573,10 +603,8 @@ impl StryiChainNode {
         let StryiChainNode {
             mempool,
             storage,
-            network_manager: _network_manager,
-            keypair,
+            net_cmd,
             peer_id,
-            services_records,
             tls_identity,
 
             sync_service_config,
@@ -585,6 +613,9 @@ impl StryiChainNode {
             http_is_ready,
             ..
         } = self;
+
+        // safely unwrap net_cmd, since it must be already initialized
+        let net_cmd = net_cmd.expect("net_cmd must be initialized before start_services()");
 
         // clone once per task
         let storage_for_http = Arc::clone(&storage);
@@ -633,7 +664,7 @@ impl StryiChainNode {
                 // .tls_config(tls_config).unwrap()
                 // Compress responses
                 .layer(CompressionLayer::new())
-                // High level logging of requests and responses
+                // High-level logging of requests and responses
                 .layer(TraceLayer::new_for_grpc())
                 .add_service(svc)
                 .serve(sync_service_config.address)
@@ -643,28 +674,58 @@ impl StryiChainNode {
         // Register gRPC and HTTP service in ServiceRecords
         {
             let grpc_record = ServiceRecord::new(
-                sync_service_config.address,
+                grpc_advertise_address,
                 peer_id,
                 GRPC_SERVICE_TAG.to_string(),
                 sync_service_config.protocol_version as u32,
             );
 
-            let signed_grpc_record = SignedServiceRecord::sign(keypair.clone(), grpc_record)?;
-
-            info!("Successfully signed node's gRPC service with own keypair!");
-
             let http_record = ServiceRecord::new(
-                http_service_config.address,
+                http_advertise_address,
                 peer_id,
                 HTTP_SERVICE_TAG.to_string(),
                 http_service_config.api_version,
             );
-            let signed_http_record = SignedServiceRecord::sign(keypair.clone(), http_record)?;
 
             info!("Successfully signed node's http service with own keypair!");
 
-            services_records.write().await.push(signed_grpc_record);
-            services_records.write().await.push(signed_http_record);
+            // Register both services by sending messages to network_manager
+
+            // helper closure
+            let register = async |service: ServiceRecord| -> Result<(), StryiNetworkError> {
+                let (respond_to, receive_here) =
+                    tokio::sync::oneshot::channel::<Result<(), StryiNetworkError>>();
+
+                net_cmd
+                    .send(NetworkCommand::AddService {
+                        service: service.clone(),
+                        respond_to,
+                    })
+                    .await
+                    .map_err(|e| {
+                        StryiNetworkError::other(format!(
+                            "Failed to send AddService message: {:?}",
+                            e
+                        ))
+                    })?;
+
+                let _ = receive_here.await.map_err(|e| {
+                    StryiNetworkError::other(format!(
+                        "Failed to receive AddService response: {:?}",
+                        e
+                    ))
+                })?;
+
+                info!(
+                    "Successfully registered own {} service for advertising to other peers!",
+                    service.kind()
+                );
+
+                Ok(())
+            };
+
+            register(grpc_record).await?;
+            register(http_record).await?;
         }
 
         // run all the services concurrently

@@ -1,4 +1,4 @@
-//! Strongly-typed, merged configuration for StryiNode.
+//! Strongly typed, merged configuration for StryiNode.
 //!
 //! Precedence: hard-coded defaults < TOML file < explicit CLI flags.
 
@@ -48,12 +48,14 @@ pub struct NodeConfig {
     pub miner_reward_address: String,
 
     /* gRPC sync */
-    pub grpc_sync_address: String,
+    pub grpc_sync_listen: String,
+    pub grpc_sync_advertise: Option<String>,
     pub sync_protocol_version: u32,
     pub sync_max_blocks_per_request: usize,
 
     /* http service */
-    pub http_service_address: String,
+    pub http_service_listen: String,
+    pub http_service_advertise: Option<String>,
     pub http_service_version: u32,
 
     /* keys */
@@ -92,11 +94,13 @@ impl Default for NodeConfig {
             miner_max_delay_secs: 20,
             miner_reward_address: "@nah".to_string(),
 
-            grpc_sync_address: "0.0.0.0:5555".into(),
+            grpc_sync_listen: "0.0.0.0:5555".into(),
+            grpc_sync_advertise: None,
             sync_protocol_version: 1,
             sync_max_blocks_per_request: 100,
 
-            http_service_address: "0.0.0.0:5556".to_string(),
+            http_service_listen: "0.0.0.0:5556".to_string(),
+            http_service_advertise: None,
             http_service_version: 1,
 
             peer_key_path: "/var/lib/stryi_chain/peer.stryi_keys".into(),
@@ -108,7 +112,7 @@ impl Default for NodeConfig {
 
 impl NodeConfig {
     /// Merge defaults  <  TOML file  <  explicit CLI flags.
-    /// Will return error if config_path was provided in CLI parameters but does not exist
+    /// Will return an error if config_path was provided in CLI parameters but does not exist
     pub fn load() -> Result<Self, StryiNodeError> {
         let cli = CliArgs::parse();
 

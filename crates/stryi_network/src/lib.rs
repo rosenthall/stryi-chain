@@ -16,7 +16,7 @@ pub use error::StryiNetworkError;
 pub use libp2p::{Multiaddr, PeerId};
 pub use manager::*;
 
-pub use crate::services::{ServiceRecord, SignedServiceRecord};
+pub use crate::services::ServiceRecord;
 use libp2p::identity::PublicKey;
 pub use libp2p::identity::{DecodingError, Keypair, SigningError, ed25519};
 use stryi_core::transactions::Transaction;
@@ -85,7 +85,7 @@ pub enum NetworkCommand {
     PublishTransaction(Transaction),
 
     /// Get the current network status, including connected peers and their addresses.
-    /// This returns only service-records that was signed and already validated.
+    /// This returns only service-records that were signed and already validated.
     QueryPeersWithService {
         service: String,
         respond_to: tokio::sync::oneshot::Sender<Vec<(PeerId, ServiceRecord)>>,
@@ -95,6 +95,13 @@ pub enum NetworkCommand {
     QueryPeerPublicKey {
         peer: PeerId,
         respond_to: tokio::sync::oneshot::Sender<Option<PublicKey>>,
+    },
+
+    /// Signs with an own private key and adds service record to advertise registry
+    /// After that, any peer can query this service record and use it.
+    AddService {
+        service: ServiceRecord,
+        respond_to: tokio::sync::oneshot::Sender<Result<(), StryiNetworkError>>,
     },
 
     /// Gets current mempool state from random connected node and synchronizes it with own.

@@ -1,12 +1,20 @@
 network_rendezvous_mode = "server"
-network_listen_addr     = "/ip4/0.0.0.0/tcp/0"
-genesis_config_path     = "/config/e2e_genesis.json"
+network_listen_addr = "/ip4/0.0.0.0/tcp/2070"
+genesis_config_path = "/config/e2e_genesis.json"
 start_mode = "bootstrap"
 
-miner_enabled           = false
+miner_enabled = false
 #miner_reward_address    = "@74e67a9ad28b9ac964b8a39779617271980b35bb"
 
-storage_path            = "/data/chain"
-grpc_sync_address       = "0.0.0.0:2080"
-http_service_address    = "0.0.0.0:2090"
-peer_key_path           = "/data/keys/server/peer.stryi_keys"
+storage_path = "/data/chain"
+
+
+grpc_sync_listen = "0.0.0.0:2080"
+grpc_sync_advertise = "/dns4/server-node/tcp/2080"
+
+http_service_listen = "0.0.0.0:2090"
+http_service_advertise = "/dns4/server-node/tcp/2090"
+
+
+
+peer_key_path = "/data/keys/server/peer.stryi_keys"

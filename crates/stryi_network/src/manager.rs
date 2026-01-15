@@ -11,6 +11,7 @@ use libp2p::gossipsub::IdentTopic;
 use libp2p::{
     Multiaddr, PeerId, Transport,
     core::upgrade,
+    dns,
     identity::Keypair,
     noise,
     swarm::{Config as SwarmConfig, Swarm},
@@ -52,7 +53,7 @@ pub struct StryiNetworkManager {
     /// Thread-safe, mutable registry of this node’s active services.
     /// Wrapped in an `RwLock` to allow concurrent reads and real-time updates
     /// (e.g. when a service starts, stops, or changes its listening port).
-    pub(crate) services_info: Arc<RwLock<Vec<SignedServiceRecord>>>,
+    pub(crate) own_services_registry: Arc<RwLock<Vec<SignedServiceRecord>>>,
 
     /// Connected peers tracking TODO : Actually track peers
     pub(crate) connected_peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
@@ -69,11 +70,11 @@ pub const BLOCKS_TOPIC_NAME: &str = "stryichain-blocks";
 pub const TRANSACTIONS_TOPIC_NAME: &str = "stryichain-txs";
 
 impl StryiNetworkManager {
-    /// Creates a new StryiNetworkManager based on the provided configuration, Arc-ed mempool, and cancellation_token
+    /// Creates a new StryiNetworkManager based on the provided configuration,
+    /// shared mempool instance, and global cancellation_token
     pub fn new(
         config: &StryiNetworkManagerConfig,
         mempool: Arc<RwLock<MemPool>>,
-        services_info: Arc<RwLock<Vec<SignedServiceRecord>>>,
         cancel_token: CancellationToken,
     ) -> Result<Self, StryiNetworkError> {
         // Use provided key or generate one.
@@ -151,6 +152,8 @@ impl StryiNetworkManager {
         // And for events
         let (event_tx, _) = broadcast::channel::<NetworkEvent>(32);
 
+        let own_services_registry = Arc::new(RwLock::new(Vec::new()));
+
         Ok(Self {
             config: config.to_owned(),
             swarm: Arc::new(Mutex::new(swarm)),
@@ -158,7 +161,7 @@ impl StryiNetworkManager {
             command_tx,
             command_rx,
             event_tx,
-            services_info,
+            own_services_registry,
             connected_peers: Arc::new(Default::default()),
             peer_id: local_peer_id,
             cancel_token,
@@ -212,13 +215,27 @@ impl StryiNetworkManager {
         self.config.keypair.clone()
     }
 
-    /// Helper function to build a transport (TCP + Noise + Yamux).
+    /// Returns this peer's keypair as an ed25519 keypair instead of a generic keypair.
+    pub fn get_keypair_ed25519(&self) -> libp2p::identity::ed25519::Keypair {
+        self.config
+            .keypair
+            .clone()
+            .try_into_ed25519()
+            .expect("local node must use an ed25519 key")
+    }
+
+    /// Helper function to build a transport (TCP + DNS + Noise + Yamux).
     pub(crate) fn build_transport(
         key: &Keypair,
     ) -> Result<Boxed<(PeerId, libp2p::core::muxing::StreamMuxerBox)>, StryiNetworkError> {
         let noise_config = noise::Config::new(key).map_err(StryiNetworkError::NoiseConfigError)?;
+
         let tcp_transport = tcp::tokio::Transport::new(tcp::Config::default());
-        let transport = tcp_transport
+
+        let dns_tcp_transport = dns::tokio::Transport::system(tcp_transport)
+            .map_err(StryiNetworkError::DnsConfigError)?;
+
+        let transport = dns_tcp_transport
             .upgrade(upgrade::Version::V1Lazy)
             .authenticate(noise_config)
             .multiplex(yamux::Config::default())
@@ -279,7 +296,7 @@ impl StryiNetworkManager {
                                     // Convert generic `PublicKey` -> concrete ed25519 key expected by the helper.
                                     let Ok(pk_ed) = pk_generic.clone().try_into_ed25519() else { continue };
 
-                                    // Verify signatures → decode `ServiceRecord`s.
+                                    // Verify signatures, decode `ServiceRecord`s.
                                     let verified = filter_verified_records(info.services.clone(), &pk_ed);
 
                                     // Retain only the requested kind.
@@ -292,14 +309,9 @@ impl StryiNetworkManager {
 
 
                             // Add services of this very peer
-                            let own_signed = self.services_info.read().await.clone();
-                            let own_pk_ed  = self
-                                .get_keypair()
-                                .public()
-                                .try_into_ed25519()
-                                .expect("local node must use an ed25519 key");
-
-                            let own_verified = filter_verified_records(own_signed, &own_pk_ed);
+                            let own_signed = self.own_services_registry.read().await.clone();
+                            let own_public_key  = self.get_keypair_ed25519().public();
+                            let own_verified = filter_verified_records(own_signed, &own_public_key);
 
                             for svc in own_verified.into_iter().filter(|s| s.kind() == service) {
                                 discovered_services.push((self.peer_id, svc));
@@ -318,6 +330,28 @@ impl StryiNetworkManager {
 
                             // reply (ignore if receiver is gone)
                             let _ = respond_to.send(discovered_services);
+                        }
+
+                        // -- AddService command --
+                        Some(NetworkCommand::AddService { service, respond_to }) => {
+                            let own_pk_ed = self.get_keypair_ed25519();
+
+                            debug!("NetworkManager: Got AddService command, adding service to advertising list: {}", service.kind());
+
+                            match SignedServiceRecord::sign(own_pk_ed, service) {
+                                Ok(signed_service) => {
+                                    self.own_services_registry
+                                        .write()
+                                        .await
+                                        .push(signed_service);
+
+                                    let _ = respond_to.send(Ok(()));
+                                }
+                                Err(e) => {
+                                    warn!("Failed to sign service record: {}", e);
+                                    let _ = respond_to.send(Err(e));
+                                }
+                            }
                         }
 
 

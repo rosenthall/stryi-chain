@@ -58,7 +58,7 @@ impl StryiNetworkManager {
                 self.connected_peers.write().await.remove(&peer_id);
             }
 
-            // -- Stryichain's custom behaviour events --
+            // -- Stryichain's custom behavior events --
             SwarmEvent::Behaviour(behaviour_event) => {
                 match behaviour_event {
                     // --- Mempool ---
@@ -356,7 +356,7 @@ impl StryiNetworkManager {
             ServicesInfoRequest::ListServices => {
                 // Build response from this node’s service registry.
                 // self.services_info: Arc<RwLock<Vec<SignedServiceRecord>>>
-                let services = self.services_info.read().await.clone();
+                let services = self.own_services_registry.read().await.clone();
 
                 let response = ServicesResponse { services };
 
