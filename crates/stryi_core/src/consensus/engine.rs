@@ -142,8 +142,7 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage> StryiConsensus
     }
 
     /// Walks from the stored tip back to genesis and fills `ChainIndex`.
-    /// May return an error if chain refers to unknown block.
-    /// TODO: ChainIndex does not validates existing of BlockUndo in db for each block
+    /// May return an error if chain refers to unknown block, or if refers to block that has no BlockUndo saved
     async fn build_chain_index(db: Arc<RwLock<DB>>) -> Result<ChainIndex, StryiCoreError> {
         // hold lock on db
         let db = db.read().await;
@@ -161,19 +160,42 @@ impl<DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage> StryiConsensus
 
         // iterate from the tip to the genesis
         loop {
-            let block = db
-                .get_block_by_hash(cursor_hash)
-                .await
-                .unwrap()
-                .ok_or_else(|| {
-                    StryiCoreError::storage(
-                        StorageLayer::Block,
-                        format!("Cannot find block {cursor_hash} in persistent storage"),
-                    )
-                })?;
+            let block = match db.get_block_by_hash(cursor_hash).await {
+                // Error
+                Err(e) => Err(StryiCoreError::storage(
+                    StorageLayer::Block,
+                    format!(
+                        "Unexpected error while trying to get block {cursor_hash} in storage: {e}"
+                    ),
+                )),
+                // No error but no such block found
+                Ok(None) => Err(StryiCoreError::storage(
+                    StorageLayer::Block,
+                    format!("Cannot find block {cursor_hash} in persistent storage"),
+                )),
+                // OK
+                Ok(Some(block)) => Ok(block),
+            }?;
 
             blocks.push(block.clone());
 
+            // Check if this block has undo
+            // NOTE: Maybe I should cache these at this point? For future reorgs or something
+            let _undo = match db.get_block_undo(block.block_hash()).await {
+                Err(e) => Err(StryiCoreError::storage(
+                    StorageLayer::Block,
+                    format!(
+                        "Unexpected error while trying to get block's {cursor_hash} UndoData in storage: {e}"
+                    ),
+                )),
+                Ok(None) => Err(StryiCoreError::storage(
+                    StorageLayer::Block,
+                    format!("Cannot find block's {cursor_hash} UndoData in persistent storage"),
+                )),
+                Ok(Some(undo)) => Ok(undo),
+            }?;
+
+            // Stop when genesis
             if block.header.height == 0 {
                 break;
             }
