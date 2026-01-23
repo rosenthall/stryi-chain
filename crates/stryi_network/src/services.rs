@@ -253,7 +253,7 @@ mod tests {
     // Helper: build a ServiceRecord bound to a specific owner PeerId
     fn sample_record_for_owner(owner: PeerId) -> ServiceRecord {
         ServiceRecord::new(
-            "127.0.0.1:6001".parse().unwrap(),
+            "/ip4/0.0.0.0/tcp/6001".parse().unwrap(),
             owner,
             "grpc-sync".to_string(),
             1,
