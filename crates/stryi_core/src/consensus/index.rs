@@ -107,18 +107,6 @@ impl ChainIndex {
         self.tip.as_ref().map(|t| (t.height, t.hash, t.work))
     }
 
-    /// Ancestor of given height (inclusive).  Walks parents until the
-    /// requested height is reached.
-    pub fn ancestor_of_height(&self, mut hash: BlockHash, target: u64) -> Option<BlockHash> {
-        while let Some(entry) = self.entries.get(&hash) {
-            if entry.height == target {
-                return Some(hash);
-            }
-            hash = entry.parent;
-        }
-        None
-    }
-
     /// Lowest common ancestor of two blocks *within* the active chain.
     pub fn lca(&self, mut a: BlockHash, mut b: BlockHash) -> Option<BlockHash> {
         let mut ha = self.height(&a)?;
@@ -185,35 +173,6 @@ mod tests {
         };
         block.update_merkle_root();
         block
-    }
-
-    #[test]
-    fn chain_index_tip_and_has_and_ancestor() {
-        let mut idx = ChainIndex::new();
-        // genesis
-        let g = make_block(BlockHash::empty(), 0, 4);
-        let w_g = 1u128 << 4;
-        idx.insert(&g, w_g);
-        assert_eq!(idx.tip().unwrap(), (0, g.block_hash(), w_g));
-        assert!(idx.has(&g.block_hash()));
-
-        // A extends genesis
-        let a = make_block(g.block_hash(), 1, 6);
-        let w_a = w_g + (1u128 << 6);
-        idx.insert(&a, w_a);
-        assert_eq!(idx.tip().unwrap(), (1, a.block_hash(), w_a));
-
-        // B fork with lower work – tip stays A
-        let b = make_block(g.block_hash(), 1, 5);
-        let w_b = w_g + (1u128 << 5);
-        idx.insert(&b, w_b);
-        assert_eq!(idx.tip().unwrap(), (1, a.block_hash(), w_a));
-
-        // ancestor lookup A → genesis
-        assert_eq!(
-            idx.ancestor_of_height(a.block_hash(), 0).unwrap(),
-            g.block_hash()
-        );
     }
 
     #[test]

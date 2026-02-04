@@ -1,7 +1,7 @@
 //! Header-level consensus checks.
 
 use crate::difficulty::DifficultyCalc;
-use crate::storage::{StorageStats};
+use crate::storage::StorageStats;
 use crate::{
     block::{Block, meets_difficulty},
     error::StryiCoreError,

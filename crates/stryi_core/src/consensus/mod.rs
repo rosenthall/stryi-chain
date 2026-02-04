@@ -36,20 +36,17 @@ pub use rules::ConsensusConsts;
 pub use validator::BlockValidator;
 
 /// Reply message type for ConsensusEngine.
-/// See [`ConsensusEngine::on_block`] method for more details.
+/// See [`ConsensusEngine::on_block`] method for more implementation details.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConsensusVerdict {
-    /// Block belongs to some fork of the chain, but this fork's cumulative complexity is lower than local one.
-    BufferedIntoForkTree {
-        /// Common's ancestor block's hash and height
-        common_ancestor_height: (BlockHash, u64),
-    },
-
-    /// Block was successfully applied to a local chain
+    /// Block was successfully applied to a canonical chain
     Applied {
         /// New complexity of the chain including this new block.
         new_chain_complexity: u64,
     },
+
+    /// Block was successfully accepted but did not become part of the canonical chain
+    Buffered,
 
     /// Block is already in the local chain.
     AlreadyIncludedInChain,
@@ -63,7 +60,7 @@ pub enum ConsensusVerdict {
     /// Block caused reorganization in a local chain.
     /// It either was included by itself or with some fork it belongs to.
     CausedReorganization {
-        /// HashMap with a deleted block's hashes keyed by its pre-reorganization height.
+        /// map deleted block's hashes keyed to its pre-reorganization height.
         deleted_blocks: HashMap<u64, BlockHash>,
     },
 }
@@ -77,4 +74,27 @@ pub trait ConsensusEngine {
 
     /// Method called for each new block
     fn on_block(&mut self, block: Block) -> BoxFuture<'_, Result<ConsensusVerdict, Self::Error>>;
+}
+
+/// Common storage trait bundle used across consensus / forks / overlays.
+pub trait FullNodeStorage:
+    UtxoStorage<StorageError = StryiCoreError>
+    + BlockStorage<StorageError = StryiCoreError>
+    + StorageStats<StorageError = StryiCoreError>
+    + UndoStorage<StorageError = StryiCoreError>
+    + Send
+    + Sync
+    + 'static
+{
+}
+
+impl<T> FullNodeStorage for T where
+    T: UtxoStorage<StorageError = StryiCoreError>
+        + BlockStorage<StorageError = StryiCoreError>
+        + StorageStats<StorageError = StryiCoreError>
+        + UndoStorage<StorageError = StryiCoreError>
+        + Send
+        + Sync
+        + 'static
+{
 }
