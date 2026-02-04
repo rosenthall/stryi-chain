@@ -14,6 +14,9 @@ mod rules;
 /// Fork utilities.
 mod forks;
 
+/// Helper for the block disposition detection logic
+mod classify;
+
 /// Block validator implementation.
 /// Performs block-level validation according to consensus rules,
 /// current chain state (or overlay in case if validating fork's block), and UTXO set.
