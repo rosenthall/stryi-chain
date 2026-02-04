@@ -8,27 +8,20 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Asynchronous difficulty calculator injected as a function.
+/// **Currently, a thin wrapper over `difficulty_bits_for_height`, but extensible to state-dependent policies.**
 ///
-/// - `&S` is the chain state, may include any required data to calculate difficulty; `usize` is the block height.
-/// - HRTB (`for<'a>`) ties the future’s lifetime to the borrow of `&S`.
-/// - Returns a `u8` difficulty or `StryiCoreError`.
-/// - `Send + Sync + 'static` enables sharing across threads.
-/// - `BoxFuture` erases the concrete future type.
+// - `&S` is the chain state, may include any required data to calculate difficulty; `usize` is the block height.
+// - HRTB (`for<'a>`) ties the future’s lifetime to the borrow of `&S`.
+// - Returns a `u8` difficulty or `StryiCoreError`.
+// - `Send + Sync + 'static` enables sharing across threads.
+// - `BoxFuture` erases the concrete future type.
 pub type DifficultyCalc<S> = Arc<
-    dyn for<'a> Fn(&'a S, usize) -> BoxFuture<'a, Result<u8, StryiCoreError>>
-        + Send
-        + Sync
-        + 'static,
+    dyn for<'a> Fn(&'a S, u64) -> BoxFuture<'a, Result<u8, StryiCoreError>> + Send + Sync + 'static,
 >;
 
-/// Reads consensus consts/rules from genesis and builds a calculator.
-/// DB is used only here and is not captured by the returned closure.
-/// Will return error if no genesis in DB or if `genesis_state` field is `None`.
-/// NOTE: This function uses DifficultyCalc<S> where S is the DB type, but the
-/// actual state passed to the closure is ignored in our builder (it captures only consts).
-/// This is made for future extensibility, e.g. if we want to build a more complex
-/// calculator that does depend on some state in DB, e.g. previous blocks' timestamps.
-pub async fn load_rules_and_build<DB>(
+/// Builds a difficulty calculator from consensus rules stored in the genesis block.
+/// Currently, height-only, but extensible to state-dependent policies.
+pub async fn load_rules_and_build_calc<DB>(
     db: Arc<RwLock<DB>>,
 ) -> Result<DifficultyCalc<DB>, StryiCoreError>
 where
@@ -89,28 +82,15 @@ where
     }
 }
 
-/// Builds a difficulty calculator from immutable consensus constants (read from genesis).
-///
-/// Policy is linear and height-only:
-///   - For `height == 0` (genesis), difficulty is `0`.
-///   - For `height >= 1`, difficulty starts at `1` and increases by `+1` every
-///     `difficulty_adjustment_interval_blocks` (with `0` treated as “no retarget” → always `1`).
-///     The closure captures only `ConsensusConsts`; it does **not** hold or query the DB.
-///
-/// "Linear and height-only" means that it does not change itself based on timestamps
-/// (e.g. as Bitcoin's which calibrates own difficulty to be approximately constant over time), or any other not static data.
-///
+/// Builds a difficulty calculator from immutable consensus constants.
+/// This particular calculator implementation only captures `ConsensusConsts` and does not rely on db state.
 #[inline]
 pub fn build_difficulty_calculator_from_consts<S>(consts: ConsensusConsts) -> DifficultyCalc<S>
 where
     S: Send + Sync + 'static,
 {
-    Arc::new(move |_state: &S, height: usize| {
-        // Convert `usize` height to `u64` deterministically on all targets.
-        let h = u64::try_from(height).unwrap_or(u64::MAX);
-        // Delegate to the consts-provided linear policy.
-        let bits = consts.difficulty_bits_for_height(h);
-        // Return as a ready future to satisfy the async function type.
+    Arc::new(move |_state: &S, height| {
+        let bits = consts.difficulty_bits_for_height(height);
         Box::pin(ready::<Result<u8, StryiCoreError>>(Ok(bits)))
     })
 }
@@ -146,7 +126,7 @@ mod difficulty_calc_tests {
         Block {
             header: BlockHeader {
                 version: 1,
-                merkle_root_hash: Block::compute_merkle_root(&[genesis_tx.clone()]),
+                merkle_root_hash: Block::compute_merkle_root(std::slice::from_ref(&genesis_tx)),
                 previous_block_hash: BlockHash::empty(),
                 height: 0,
                 // For genesis, difficulty_bits is conventionally 0; the validator should permit it.
@@ -170,7 +150,9 @@ mod difficulty_calc_tests {
         let db = Arc::new(RwLock::new(db));
 
         // Act: build difficulty calculator from genesis rules/consts.
-        let calc = load_rules_and_build(db.clone()).await.expect("calculator");
+        let calc = load_rules_and_build_calc(db.clone())
+            .await
+            .expect("calculator");
 
         // We know the genesis carried ConsensusConsts::default(); verify that the
         // calculator follows `difficulty_bits_for_height` for several check points.
@@ -182,13 +164,11 @@ mod difficulty_calc_tests {
             DB: BlockStorage + StorageStats + Send + Sync + 'static,
         {
             let guard = db.read().await; // &DB for the calc (it ignores state in our builder)
-            (calc)(&*guard, usize::try_from(h).unwrap_or(usize::MAX))
-                .await
-                .expect("calc result")
+            (calc)(&*guard, h).await.expect("calc result")
         }
 
         // Assert: a few representative heights around the default interval boundary.
-        // Default interval is 100 (see ConsensusConsts::default).
+        // The default interval is 100 (see ConsensusConsts::default).
         let h0 = 0;
         let h1 = 1;
         let h100 = 100;

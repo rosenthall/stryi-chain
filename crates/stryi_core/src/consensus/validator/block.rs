@@ -91,7 +91,7 @@ pub async fn validate_transactions<US: UtxoStorage + Send>(
     Ok(())
 }
 
-/// Builds dependency graph and fetches external UTXOs in one go.
+/// Builds a dependency graph and fetches external UTXOs in one go.
 async fn build_dependency_context<US: UtxoStorage>(
     data: &BlockData,
     utxo_storage: &US,

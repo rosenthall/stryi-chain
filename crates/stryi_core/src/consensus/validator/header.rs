@@ -1,24 +1,39 @@
-//! Header-level consensus checks.  
-//! These routines require **no** UTXO / transaction context.
+//! Header-level consensus checks.
 
+use crate::difficulty::DifficultyCalc;
+use crate::storage::{StorageStats};
 use crate::{
     block::{Block, meets_difficulty},
-    consensus::ConsensusConsts,
     error::StryiCoreError,
 };
 use tracing::trace;
 
-/// Runs every static header rule.
+/// Runs all header-level consensus rules.
 ///
-/// 1. difficulty bits match the current target;  
-/// 2. hash satisfies Proof-of-Work;  
-/// 3. Merkle root matches the transaction list.
-pub fn validate_header(block: &Block, rules: &ConsensusConsts) -> Result<(), StryiCoreError> {
+/// Validation steps:
+/// 1. expected difficulty bits (via `DifficultyCalc`);
+/// 2. proof-of-work check against declared difficulty;
+/// 3. Merkle root verification.
+///
+/// NOTE:
+/// - This function is async because difficulty calculation may depend
+///   on chain state and require async access.
+pub async fn validate_header<DB>(
+    block: &Block,
+    calc: &DifficultyCalc<DB>,
+    state: &DB,
+) -> Result<(), StryiCoreError>
+where
+    DB: StorageStats + Send + Sync + 'static,
+{
     let hash = block.block_hash().to_string();
     trace!("Validating header for block hash {}", hash);
 
-    verify_difficulty(block, rules)?;
-    trace!("Block {} passed difficulty verification", hash);
+    verify_difficulty_bits(block, calc, state).await?;
+    trace!(
+        "Block {} passed difficulty verification (the difficulty number is reasonable for current state)",
+        hash
+    );
 
     verify_proof_of_work(block)?;
     trace!("Block {} passed proof of work check", hash);
@@ -29,14 +44,21 @@ pub fn validate_header(block: &Block, rules: &ConsensusConsts) -> Result<(), Str
 }
 
 /// Verifies `header.difficulty_bits` equals to the expected value for the block height.
-fn verify_difficulty(block: &Block, rules: &ConsensusConsts) -> Result<(), StryiCoreError> {
-    let current_difficulty_bits = rules.difficulty_bits_for_height(block.header.height);
+async fn verify_difficulty_bits<STATE>(
+    block: &Block,
+    difficulty_calc: &DifficultyCalc<STATE>,
+    state: &STATE,
+) -> Result<(), StryiCoreError>
+where
+    STATE: Send + Sync,
+{
+    let expected_bits = (difficulty_calc)(state, block.header.height).await?;
 
-    if block.header.difficulty_bits != current_difficulty_bits {
+    if block.header.difficulty_bits != expected_bits {
         return Err(StryiCoreError::ConsensusValidationFailed {
             details: format!(
-                "Block difficulty ({}) does not match current difficulty ({})",
-                block.header.difficulty_bits, current_difficulty_bits,
+                "Invalid difficulty bits: expected {}, got {}",
+                expected_bits, block.header.difficulty_bits,
             ),
         });
     }

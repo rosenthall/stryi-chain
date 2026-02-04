@@ -63,7 +63,7 @@ impl ConsensusConsts {
 
     /// Height-only difficulty: genesis=0; from height>=1 start at 1 bit and
     /// increase by +1 every `difficulty_adjustment_interval_blocks`.
-    /// If the interval is 0, difficulty stays at 1 for all non-genesis heights.
+    /// If the interval is 0, `difficulty` stays at 1 for all non-genesis heights.
     #[inline]
     pub fn difficulty_bits_for_height(&self, height: u64) -> u8 {
         if height == 0 {
