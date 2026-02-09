@@ -199,7 +199,7 @@ where
                 let from_base = base
                     .batch_get_utxos(miss.clone())
                     .await
-                    .expect("TODO: Proper error handling ");
+                    .map_err(|e| StryiCoreError::storage(StorageLayer::Utxo, e.to_string()))?;
 
                 // If the base doesn't have all requested outpoints, it's an error.
                 if from_base.len() != miss.len() {
@@ -241,7 +241,7 @@ where
             let base_map = base
                 .get_utxos_for_address(address)
                 .await
-                .expect("TODO: Better error handling");
+                .map_err(|e| StryiCoreError::storage(StorageLayer::Utxo, e.to_string()))?;
 
             for (op, utxo) in base_map {
                 // Skip if the fork has already spent this outpoint
@@ -296,7 +296,7 @@ where
                 let from_base = base
                     .batch_get_blocks_by_hashes(miss.clone())
                     .await
-                    .expect("TODO: Better error handling");
+                    .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?;
                 if from_base.len() != miss.len() {
                     return Err(StryiCoreError::ConsensusValidationFailed {
                         details: "some hashes are missing in base storage".into(),
@@ -341,7 +341,7 @@ where
                 let from_base = base
                     .batch_get_blocks_by_heights(miss.clone())
                     .await
-                    .expect("TODO: Better error handling");
+                    .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?;
                 if from_base.len() != miss.len() {
                     return Err(StryiCoreError::ConsensusValidationFailed {
                         details: "some heights are missing in base storage".into(),
@@ -387,7 +387,7 @@ where
                 let from_base = base
                     .batch_get_blocks_by_heights(gaps.clone())
                     .await
-                    .expect("TODO: Better error handling");
+                    .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?;
                 if from_base.len() != gaps.len() {
                     return Err(StryiCoreError::ConsensusValidationFailed {
                         details: "range contains missing blocks".into(),
@@ -407,10 +407,9 @@ where
 
         let base = &self.base;
         Box::pin(async move {
-            Ok(base
-                .block_exists(hash)
+            base.block_exists(hash)
                 .await
-                .expect("TODO: Better error handling"))
+                .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))
         })
     }
 }
@@ -461,7 +460,7 @@ where
             let base_cnt = base
                 .block_count()
                 .await
-                .expect("TODO: Better error handling");
+                .map_err(|e| StryiCoreError::storage(StorageLayer::Stats, e.to_string()))?;
 
             // minus those overridden in overlay
             let mut overridden = 0u64;
@@ -469,7 +468,7 @@ where
                 if base
                     .block_exists(*kv.key())
                     .await
-                    .expect("TODO: Better error handling")
+                    .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?
                 {
                     overridden += 1;
                 }
@@ -494,7 +493,7 @@ where
                 if base
                     .block_exists(*kv.key())
                     .await
-                    .expect("TODO: Better error handling")
+                    .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?
                 {
                     sum = sum.wrapping_sub(pow);
                 }

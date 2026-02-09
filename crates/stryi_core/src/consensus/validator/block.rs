@@ -15,7 +15,7 @@ use dashmap::{DashMap, DashSet};
 use std::{collections::HashSet, sync::Arc};
 use tokio::task::JoinSet;
 
-/// Performs all cheap checks that do **not** touch the UTXO set.
+/// Performs all the cheap checks that do **not** touch the UTXO set.
 pub fn validate_block_structure(block: &Block) -> Result<(), StryiCoreError> {
     ensure_unique_txs(block)?;
     ensure_coinbase_first(block)?;
