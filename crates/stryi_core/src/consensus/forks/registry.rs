@@ -20,8 +20,8 @@ pub struct ForkEntry {
     /// Time when fork was observed
     pub timestamp: Instant,
 
-    /// Full block data
-    pub block: Block,
+    /// All blocks in this fork branch, ordered by height
+    pub blocks: Vec<Block>,
 }
 
 pub trait ForksRead {
@@ -35,7 +35,10 @@ pub trait ForksRead {
     fn best_fork(&self) -> Option<ForkEntry>;
 
     /// mutable guarded access
-    fn get_mut(&self, hash: &BlockHash) -> Option<RefMut<BlockHash, ForkEntry>>;
+    fn get_mut(&self, hash: &BlockHash) -> Option<RefMut<'_, BlockHash, ForkEntry>>;
+
+    /// Check if a block hash exists anywhere in any fork (not just as a tip/key)
+    fn has_block(&self, hash: &BlockHash) -> bool;
 
     /// Iterate over all forks (read-only snapshot)
     fn all(&self) -> Vec<ForkEntry>;
@@ -92,8 +95,14 @@ impl ForksRead for ForkRegistry {
             .map(|e| e.value().clone())
     }
 
-    fn get_mut(&self, hash: &BlockHash) -> Option<RefMut<BlockHash, ForkEntry>> {
+    fn get_mut(&self, hash: &BlockHash) -> Option<RefMut<'_, BlockHash, ForkEntry>> {
         self.inner.get_mut(hash)
+    }
+
+    fn has_block(&self, hash: &BlockHash) -> bool {
+        self.inner
+            .iter()
+            .any(|entry| entry.value().blocks.iter().any(|b| b.block_hash() == *hash))
     }
 
     fn all(&self) -> Vec<ForkEntry> {

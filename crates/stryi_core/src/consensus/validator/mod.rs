@@ -60,4 +60,37 @@ where
 
         Ok(())
     }
+
+    /// Validates a block for a fork: header is checked against canonical DB
+    /// (difficulty is height-based), while transactions are validated against
+    /// the fork-local UTXO state provided by `utxo_db`.
+    pub async fn validate_for_fork<US>(
+        &self,
+        block: &Block,
+        canonical_db: &DB,
+        utxo_db: &US,
+    ) -> Result<(), StryiCoreError>
+    where
+        US: UtxoStorage + Send + Sync,
+    {
+        debug!(
+            "Validating fork block {} that consists of {} transactions",
+            block.block_hash(),
+            block.data.transactions.len()
+        );
+
+        let hash = block.block_hash();
+        let short_hash = &hash.to_string()[..8];
+
+        header::validate_header(block, &self.difficulty_calc, canonical_db).await?;
+        debug!("Fork block {short_hash} passed header validation");
+
+        block::validate_block_structure(block)?;
+        debug!("Fork block {short_hash} passed structure validation");
+
+        block::validate_transactions(block, &self.consensus_consts, utxo_db).await?;
+        debug!("Fork block {short_hash} passed transaction validation");
+
+        Ok(())
+    }
 }

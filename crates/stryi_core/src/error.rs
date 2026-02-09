@@ -104,4 +104,11 @@ impl StryiCoreError {
     pub fn storage(layer: StorageLayer, err: String) -> Self {
         StryiCoreError::StorageError { layer, err }
     }
+
+    /// Constructs a `ConsensusChainSelectionFailed` error.
+    pub fn consensus_chain_selection(details: impl ToString) -> Self {
+        StryiCoreError::ConsensusChainSelectionFailed {
+            details: details.to_string(),
+        }
+    }
 }

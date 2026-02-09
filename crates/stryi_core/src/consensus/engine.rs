@@ -1,6 +1,7 @@
 use crate::block::BlockHash;
 use crate::consensus::classify::{BlockDisposition, KnownLocation};
-use crate::consensus::forks::registry::{ForkRegistry, ForksRead};
+use crate::consensus::forks::overlay::ForkDbOverlay;
+use crate::consensus::forks::registry::{ForkEntry, ForkRegistry, ForksRead, ForksWrite};
 use crate::consensus::index::ChainIndex;
 use crate::consensus::validator::BlockValidator;
 use crate::consensus::{ConsensusVerdict, FullNodeStorage};
@@ -13,9 +14,11 @@ use crate::{
 };
 use comfy_table::{Table, presets::ASCII_FULL};
 use futures::future::BoxFuture;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 // StryiConsensusEngine is responsible for validating and processing blocks according to the consensus rules.
 pub struct StryiConsensusEngine<DB>
@@ -253,14 +256,21 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         {
             let mut write_db = self.db.write().await;
 
-            write_db.put_block(&block).await?;
+            write_db
+                .put_block(&block)
+                .await
+                .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?;
 
             let undo = self
                 .utxo_processor
                 .apply_block(&block, &mut *write_db)
-                .await?;
+                .await
+                .map_err(|e| StryiCoreError::storage(StorageLayer::Utxo, e.to_string()))?;
 
-            write_db.put_block_undo(hash, undo).await?;
+            write_db
+                .put_block_undo(hash, undo)
+                .await
+                .map_err(|e| StryiCoreError::storage(StorageLayer::Undo, e.to_string()))?;
         }
 
         // update index
@@ -271,22 +281,275 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         })
     }
 
+    /// Builds a transient `ForkDbOverlay` whose UTXO state reflects the
+    /// canonical chain rewound to `lca`.
+    ///
+    /// It walks from the current canonical tip back to `lca`, calling
+    /// `rewind_block` on the overlay for each block in between.  The
+    /// canonical DB itself is **not** mutated — all rewind deltas live
+    /// in the overlay's in-memory maps.
+    async fn build_fork_overlay<'a>(
+        &self,
+        db: &'a DB,
+        lca: BlockHash,
+        lca_work: u128,
+    ) -> Result<ForkDbOverlay<'a, DB>, StryiCoreError> {
+        let mut overlay = ForkDbOverlay::new(db, lca_work);
+
+        // collect block hashes from tip down to (but not including) the LCA
+        let mut to_rewind = Vec::new();
+        let (_, mut cursor, _) = self.chain_index.tip().expect("Must have a tip");
+        while cursor != lca {
+            to_rewind.push(cursor);
+            cursor = self.chain_index.parent(&cursor).ok_or_else(|| {
+                StryiCoreError::consensus_chain_selection(format!(
+                    "Block {} has no parent in chain index during overlay build",
+                    cursor
+                ))
+            })?;
+        }
+
+        // rewind each block on the overlay (tip-first order is correct for undo)
+        for hash in &to_rewind {
+            let undo = db
+                .get_block_undo(*hash)
+                .await
+                .map_err(|e| StryiCoreError::storage(StorageLayer::Undo, e.to_string()))?
+                .ok_or_else(|| {
+                    StryiCoreError::storage(
+                        StorageLayer::Undo,
+                        format!("Missing BlockUndo for {} during overlay rewind", hash),
+                    )
+                })?;
+            self.utxo_processor.rewind_block(undo, &mut overlay).await?;
+        }
+
+        Ok(overlay)
+    }
+
     /// Handle a block that creates a fork from the canonical chain.
+    /// The block's parent is in the canonical chain but is not the current tip.
     async fn handle_creates_fork_from_canonical(
         &mut self,
-        _block: Block,
-        _lca: BlockHash,
+        block: Block,
+        lca: BlockHash,
     ) -> Result<ConsensusVerdict, StryiCoreError> {
-        todo!("implement handle_creates_fork_from_canonical")
+        let hash = block.block_hash();
+        info!("Block {} creates fork from canonical at LCA {}", hash, lca);
+
+        let lca_work = self.chain_index.work(&lca).ok_or_else(|| {
+            StryiCoreError::consensus_chain_selection("LCA not found in chain index")
+        })?;
+
+        // build overlay rewound to LCA state, then validate against it
+        {
+            let read_db = self.db.read().await;
+            let overlay = self.build_fork_overlay(&*read_db, lca, lca_work).await?;
+
+            if let Err(e) = self
+                .block_validator
+                .validate_for_fork(&block, &*read_db, &overlay)
+                .await
+            {
+                return Ok(ConsensusVerdict::Rejected(e));
+            }
+        }
+
+        let block_work = 1u128 << block.header.difficulty_bits;
+        let fork_work = lca_work + block_work;
+
+        let (_, _, canonical_work) = self.chain_index.tip().expect("Must have a tip");
+
+        if fork_work > canonical_work {
+            debug!("Fork immediately heavier than canonical, triggering reorg");
+            self.perform_reorg(lca, vec![block]).await
+        } else {
+            debug!("Fork weaker than canonical, buffering");
+            self.forks.insert(ForkEntry {
+                tip: hash,
+                cumulative_work: fork_work,
+                common_ancestor: lca,
+                timestamp: Instant::now(),
+                blocks: vec![block],
+            });
+            Ok(ConsensusVerdict::Buffered)
+        }
     }
 
     /// Handle a block that extends an existing fork.
+    /// The block's parent is the tip of an existing fork in the registry.
     async fn handle_extends_fork(
         &mut self,
-        _block: Block,
-        _fork_root: BlockHash,
+        block: Block,
+        fork_root: BlockHash,
     ) -> Result<ConsensusVerdict, StryiCoreError> {
-        todo!("implement handle_extends_fork")
+        let hash = block.block_hash();
+        let parent = block.header.previous_block_hash;
+        info!(
+            "Block {} extends fork (root={}, parent={})",
+            hash, fork_root, parent
+        );
+
+        // look up the existing fork by its current tip (= this block's parent)
+        let entry = self.forks.get(&parent).ok_or_else(|| {
+            StryiCoreError::consensus_chain_selection("Fork entry not found for parent")
+        })?;
+
+        let lca = entry.common_ancestor;
+        let lca_work = self.chain_index.work(&lca).ok_or_else(|| {
+            StryiCoreError::consensus_chain_selection("Fork LCA not found in chain index")
+        })?;
+
+        // build overlay rewound to LCA, replay existing fork blocks, then validate new block
+        {
+            let read_db = self.db.read().await;
+            let mut overlay = self.build_fork_overlay(&*read_db, lca, lca_work).await?;
+
+            for fork_block in &entry.blocks {
+                self.utxo_processor
+                    .apply_block(fork_block, &mut overlay)
+                    .await?;
+            }
+
+            // header validated against canonical DB (difficulty is height-based),
+            // transactions validated against fork-local UTXO state
+            if let Err(e) = self
+                .block_validator
+                .validate_for_fork(&block, &*read_db, &overlay)
+                .await
+            {
+                return Ok(ConsensusVerdict::Rejected(e));
+            }
+        }
+
+        // compute updated fork work
+        let block_work = 1u128 << block.header.difficulty_bits;
+        let fork_work = entry.cumulative_work + block_work;
+
+        // build updated blocks list
+        let mut fork_blocks = entry.blocks.clone();
+        fork_blocks.push(block.clone());
+
+        // remove old entry, check reorg
+        self.forks.remove(&parent);
+
+        let (_, _, canonical_work) = self.chain_index.tip().expect("Must have a tip");
+
+        if fork_work > canonical_work {
+            debug!("Extended fork now heavier than canonical, triggering reorg");
+            self.perform_reorg(lca, fork_blocks).await
+        } else {
+            debug!("Extended fork still weaker than canonical, buffering");
+            self.forks.insert(ForkEntry {
+                tip: hash,
+                cumulative_work: fork_work,
+                common_ancestor: lca,
+                timestamp: Instant::now(),
+                blocks: fork_blocks,
+            });
+            Ok(ConsensusVerdict::Buffered)
+        }
+    }
+
+    /// Performs a chain reorganization: rewinds canonical chain back to `lca`,
+    /// then applies `fork_blocks` forward on top of it.
+    async fn perform_reorg(
+        &mut self,
+        lca: BlockHash,
+        fork_blocks: Vec<Block>,
+    ) -> Result<ConsensusVerdict, StryiCoreError> {
+        info!(
+            "Performing reorg: rewinding to LCA {}, then applying {} fork block(s)",
+            lca,
+            fork_blocks.len()
+        );
+
+        let mut deleted_blocks: HashMap<u64, BlockHash> = HashMap::new();
+
+        let mut write_db = self.db.write().await;
+
+        // Phase 1: Rewind canonical chain from tip back to LCA
+        let (_, mut cursor, _) = self.chain_index.tip().expect("Must have a tip");
+
+        while cursor != lca {
+            let height = self.chain_index.height(&cursor).ok_or_else(|| {
+                StryiCoreError::consensus_chain_selection(format!(
+                    "Block {} not found in chain index during reorg rewind",
+                    cursor
+                ))
+            })?;
+
+            let undo = write_db
+                .get_block_undo(cursor)
+                .await
+                .map_err(|e| StryiCoreError::storage(StorageLayer::Undo, e.to_string()))?
+                .ok_or_else(|| {
+                    StryiCoreError::storage(
+                        StorageLayer::Undo,
+                        format!("Missing BlockUndo for {} during reorg", cursor),
+                    )
+                })?;
+
+            self.utxo_processor
+                .rewind_block(undo, &mut *write_db)
+                .await
+                .map_err(|e| StryiCoreError::storage(StorageLayer::Utxo, e.to_string()))?;
+
+            deleted_blocks.insert(height, cursor);
+
+            let parent = self.chain_index.parent(&cursor).ok_or_else(|| {
+                StryiCoreError::consensus_chain_selection(format!(
+                    "Block {} has no parent in chain index during reorg",
+                    cursor
+                ))
+            })?;
+
+            self.chain_index.remove(&cursor);
+            cursor = parent;
+        }
+
+        info!("Rewound {} canonical block(s)", deleted_blocks.len());
+
+        // Phase 2: Apply fork blocks forward
+        let lca_work = self.chain_index.work(&lca).ok_or_else(|| {
+            StryiCoreError::consensus_chain_selection("LCA work not found after rewind")
+        })?;
+
+        let mut cumulative_work = lca_work;
+
+        for block in &fork_blocks {
+            let hash = block.block_hash();
+            let block_work = 1u128 << block.header.difficulty_bits;
+            cumulative_work += block_work;
+
+            write_db
+                .put_block(block)
+                .await
+                .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?;
+
+            let undo = self
+                .utxo_processor
+                .apply_block(block, &mut *write_db)
+                .await
+                .map_err(|e| StryiCoreError::storage(StorageLayer::Utxo, e.to_string()))?;
+
+            write_db
+                .put_block_undo(hash, undo)
+                .await
+                .map_err(|e| StryiCoreError::storage(StorageLayer::Undo, e.to_string()))?;
+
+            self.chain_index.insert(block, cumulative_work);
+        }
+
+        drop(write_db);
+
+        info!(
+            "Reorg complete: applied {} fork block(s), new tip work={}",
+            fork_blocks.len(),
+            cumulative_work
+        );
+
+        Ok(ConsensusVerdict::CausedReorganization { deleted_blocks })
     }
 }
 
@@ -331,7 +594,14 @@ impl<DB: FullNodeStorage> ConsensusEngine for StryiConsensusEngine<DB> {
                     parent: _parent,
                     fork_root: _fork_root,
                 } => self.handle_extends_fork(block, _fork_root).await,
-                BlockDisposition::Orphan { parent: _parent } => todo!("implement orphan handling"),
+                BlockDisposition::Orphan { parent } => {
+                    warn!(
+                        "Orphan block {} (parent {} unknown), ignoring for now",
+                        block.block_hash(),
+                        parent
+                    );
+                    Ok(ConsensusVerdict::Buffered)
+                }
             }
         })
     }

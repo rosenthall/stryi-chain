@@ -77,24 +77,16 @@ pub trait ConsensusEngine {
 }
 
 /// Common storage trait bundle used across consensus / forks / overlays.
+///
+/// Implementations may use **any** error type that satisfies the individual
+/// storage trait bounds.  The consensus engine converts foreign errors into
+/// `StryiCoreError` at each call site via `.map_err()`.
 pub trait FullNodeStorage:
-    UtxoStorage<StorageError = StryiCoreError>
-    + BlockStorage<StorageError = StryiCoreError>
-    + StorageStats<StorageError = StryiCoreError>
-    + UndoStorage<StorageError = StryiCoreError>
-    + Send
-    + Sync
-    + 'static
+    UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static
 {
 }
 
 impl<T> FullNodeStorage for T where
-    T: UtxoStorage<StorageError = StryiCoreError>
-        + BlockStorage<StorageError = StryiCoreError>
-        + StorageStats<StorageError = StryiCoreError>
-        + UndoStorage<StorageError = StryiCoreError>
-        + Send
-        + Sync
-        + 'static
+    T: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static
 {
 }

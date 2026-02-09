@@ -1,7 +1,7 @@
 //! Header-level consensus checks.
 
 use crate::difficulty::DifficultyCalc;
-use crate::storage::StorageStats;
+use crate::storage::UtxoStorage;
 use crate::{
     block::{Block, meets_difficulty},
     error::StryiCoreError,
@@ -24,7 +24,7 @@ pub async fn validate_header<DB>(
     state: &DB,
 ) -> Result<(), StryiCoreError>
 where
-    DB: StorageStats + Send + Sync + 'static,
+    DB: UtxoStorage + Send + Sync + 'static,
 {
     let hash = block.block_hash().to_string();
     trace!("Validating header for block hash {}", hash);

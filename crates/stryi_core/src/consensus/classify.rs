@@ -66,7 +66,8 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         }
 
         // check if the block is already known in the fork tree
-        if self.forks.has(&hash) {
+        // has() checks registry keys (tip hashes), has_block() checks all blocks within forks
+        if self.forks.has(&hash) || self.forks.has_block(&hash) {
             debug!("classify_block: block already known in fork tree");
             return BlockDisposition::Known {
                 location: KnownLocation::ForkTree,

@@ -221,7 +221,7 @@ pub trait UndoStorage {
         undo: BlockUndo,
     ) -> BoxFuture<'_, Result<(), Self::StorageError>>;
 
-    /// Fetches undo data.  
+    /// Fetches undo data.
     /// Returns `Ok(None)` if the storage has no record for `hash`.
     fn get_block_undo(
         &self,
