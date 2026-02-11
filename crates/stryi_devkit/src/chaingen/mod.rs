@@ -39,7 +39,7 @@ use funding_account::FundAccount;
 use stryi_core::consensus::{
     ConsensusConsts, ConsensusEngine, ConsensusVerdict, StryiConsensusEngine,
 };
-use stryi_core::storage::{BlockStorage, StorageStats};
+use stryi_core::storage::BlockStorage;
 use stryi_storage::StryiStorage;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};

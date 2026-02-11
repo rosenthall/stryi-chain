@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MemPoolSyncData {
     /// List of all transactions in mempool
-    pub(crate) transactions: Vec<Transaction>,
+    pub transactions: Vec<Transaction>,
     /// Timestamp when state was created
-    pub(crate) timestamp: u64,
+    pub timestamp: u64,
 }
 
 /// Configuration for mempool behavior and limits

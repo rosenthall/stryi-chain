@@ -98,7 +98,7 @@ pub trait PeerMapExt {
     /// Store signed service announcements as-is (single source of truth).
     fn set_signed_services(&mut self, peer: PeerId, signed: Vec<SignedServiceRecord>);
 
-    /// Return verified `ServiceRecord` list.  
+    /// Return the verified `ServiceRecord ` list.
     /// The list is re-validated every call; invalid entries are silently dropped.
     fn current_services(&self, peer: &PeerId) -> Option<Vec<ServiceRecord>>;
 

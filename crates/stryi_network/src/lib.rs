@@ -19,6 +19,7 @@ pub use manager::*;
 pub use crate::services::ServiceRecord;
 use libp2p::identity::PublicKey;
 pub use libp2p::identity::{DecodingError, Keypair, SigningError, ed25519};
+use stryi_core::mempool::MemPoolSyncData;
 use stryi_core::transactions::Transaction;
 
 /// Indicates whether we run as a Rendezvous **Server** or a **Client** node.
@@ -104,8 +105,12 @@ pub enum NetworkCommand {
         respond_to: tokio::sync::oneshot::Sender<Result<(), StryiNetworkError>>,
     },
 
-    /// Gets current mempool state from random connected node and synchronizes it with own.
-    SyncMempoolState,
+    /// Requests mempool state from a random peer.
+    /// Network manager returns `MemPoolSyncData` via oneshot.
+    /// note: *The applying this state on local impl is caller's duty*
+    FetchMempoolState {
+        respond_to: tokio::sync::oneshot::Sender<Result<MemPoolSyncData, StryiNetworkError>>,
+    },
 }
 
 /// Events that are emitted by the network service.

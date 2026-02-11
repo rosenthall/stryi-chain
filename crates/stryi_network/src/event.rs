@@ -14,6 +14,7 @@ use libp2p::request_response::{Event as ReqRespEvent, Message};
 use libp2p::request_response::{InboundRequestId, ResponseChannel};
 use libp2p::swarm::SwarmEvent;
 use libp2p::{Multiaddr, Swarm, gossipsub, request_response};
+use std::collections::HashMap;
 use stryi_core::transactions::Transaction;
 use tracing::{debug, error, info, trace, warn};
 
@@ -33,6 +34,12 @@ impl StryiNetworkManager {
         &self,
         swarm: &mut Swarm<StryiBehaviour>,
         event: SwarmEvent<StryiEvent>,
+        pending_mempool_fetches: &mut HashMap<
+            request_response::OutboundRequestId,
+            tokio::sync::oneshot::Sender<
+                Result<stryi_core::mempool::MemPoolSyncData, StryiNetworkError>,
+            >,
+        >,
     ) {
         // Log the event for debugging purposes
         trace!("Processing event: {:?}", event);
@@ -63,23 +70,66 @@ impl StryiNetworkManager {
                 match behaviour_event {
                     // --- Mempool ---
                     StryiEvent::Mempool(ev) => {
-                        if let ReqRespEvent::Message {
-                            message:
-                                request_response::Message::Request {
-                                    request_id,
-                                    request,
-                                    channel,
-                                },
-                            ..
-                        } = ev
-                        {
-                            let behaviour_ref = swarm.behaviour_mut();
-                            if let Err(e) = self
-                                .handle_mempool_request(behaviour_ref, request_id, request, channel)
-                                .await
-                            {
-                                error!("handle_mempool_request failed: {e:?}");
+                        match ev {
+                            // Inbound request from a peer - serve our mempool state
+                            ReqRespEvent::Message {
+                                message:
+                                    Message::Request {
+                                        request_id,
+                                        request,
+                                        channel,
+                                    },
+                                ..
+                            } => {
+                                let behaviour_ref = swarm.behaviour_mut();
+                                if let Err(e) = self
+                                    .handle_mempool_request(
+                                        behaviour_ref,
+                                        request_id,
+                                        request,
+                                        channel,
+                                    )
+                                    .await
+                                {
+                                    error!("handle_mempool_request failed: {e:?}");
+                                }
                             }
+
+                            // Outbound response - we asked a peer for their mempool, they replied
+                            ReqRespEvent::Message {
+                                message:
+                                    Message::Response {
+                                        request_id,
+                                        response,
+                                    },
+                                ..
+                            } => {
+                                if let Some(sender) = pending_mempool_fetches.remove(&request_id) {
+                                    match response {
+                                        MempoolResponse::State(sync_data) => {
+                                            debug!(
+                                                "Received mempool sync data with {} transactions",
+                                                sync_data.transactions.len()
+                                            );
+                                            let _ = sender.send(Ok(sync_data));
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Outbound failure means our mempool fetch request failed
+                            ReqRespEvent::OutboundFailure {
+                                request_id, error, ..
+                            } => {
+                                if let Some(sender) = pending_mempool_fetches.remove(&request_id) {
+                                    warn!("Mempool fetch failed: {error:?}");
+                                    let _ = sender.send(Err(StryiNetworkError::other(format!(
+                                        "Mempool fetch failed: {error:?}"
+                                    ))));
+                                }
+                            }
+
+                            _ => {}
                         }
                     }
 

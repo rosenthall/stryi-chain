@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::consensus::{BlockValidator, ConsensusConsts, StryiConsensusEngine};
-use stryi_core::difficulty::{DifficultyCalc, build_difficulty_calculator_from_consts};
+use stryi_core::difficulty::build_difficulty_calculator_from_consts;
 use stryi_core::mempool::MemPool;
 use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 use stryi_core::transactions::{OutPoint, UTXO, UtxoProcessor};
@@ -26,7 +26,7 @@ use tokio::join;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio::time::{Instant, sleep};
 use tokio_stream::StreamExt;
-use tonic::transport::{Endpoint, Server, ServerTlsConfig};
+use tonic::transport::{Server, ServerTlsConfig};
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
@@ -43,10 +43,10 @@ pub struct StryiChainNode {
     /// The `synchronize()` stage setups consensus engine.
     /// We need this, because before synchronization/connecting to the network we don't know some values we need
     /// to build ConsensusConstants instance.
-    /// They're depended on genesis(which may be external), current chain state (that we don't have until sync is complete), etc.
+    /// They depended on genesis(which may be external), current chain state (that we don't have until sync is complete), etc.
     pub(crate) consensus_engine: Option<Mutex<StryiConsensusEngine<StryiStorage>>>,
 
-    /// Mempool object.
+    /// Mempool instance.
     pub(crate) mempool: Arc<RwLock<MemPool>>,
 
     /// The blockchain's p2p layer, instance of StryiNetworkManager that allows to communicate with other nodes
@@ -436,7 +436,7 @@ impl StryiChainNode {
 
         trace!(local_tip_height = ?local_tip_height, local_tip_hash = ?local_tip_hash);
 
-        // Firstly, ask peer if its chain already includes our TIP
+        // Firstly, ask the peer if its chain already includes our TIP
         info!("Checking if peer has our local tip included in its chain.");
 
         // note : I'm not sure how it will behave when only common block is genesis.
@@ -761,27 +761,4 @@ pub async fn build_consensus_constants(
     } else {
         Err(StryiNodeError::other("genesis block not found in storage"))
     }
-}
-
-/// Build a consensus engine using dynamic fields from the current tip.
-/// Assumes genesis is already committed (height 0 present).
-pub(crate) async fn build_consensus_engine(
-    storage: Arc<RwLock<StryiStorage>>,
-    difficulty_calc: DifficultyCalc<StryiStorage>,
-) -> Result<StryiConsensusEngine<StryiStorage>, StryiNodeError> {
-    let rules = build_consensus_constants(&storage.clone()).await?;
-    let block_validator = BlockValidator::new(rules, difficulty_calc.clone());
-    let utxo_processor = UtxoProcessor::new();
-
-    let engine = StryiConsensusEngine::new(
-        rules,
-        block_validator,
-        utxo_processor,
-        storage.clone(),
-        difficulty_calc,
-    )
-    .await
-    .map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
-
-    Ok(engine)
 }

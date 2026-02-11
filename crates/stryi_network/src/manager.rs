@@ -1,3 +1,4 @@
+use crate::mempool::MempoolRequest;
 use crate::peer::PeerInfo;
 use crate::services::{ServiceRecord, SignedServiceRecord, filter_verified_records};
 use crate::{
@@ -5,9 +6,11 @@ use crate::{
     behaviour::{StryiBehaviour, StryiBehaviourConfig},
     error::StryiNetworkError,
 };
+use bincode::config::standard;
 use futures::StreamExt;
 use libp2p::core::transport::Boxed;
 use libp2p::gossipsub::IdentTopic;
+use libp2p::request_response::OutboundRequestId;
 use libp2p::{
     Multiaddr, PeerId, Transport,
     core::upgrade,
@@ -21,10 +24,10 @@ use rand::prelude::IteratorRandom;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use stryi_core::mempool::MemPool;
+use stryi_core::mempool::{MemPool, MemPoolSyncData};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// StryiNetworkManager sets up the transport, constructs a swarm using our unified StryiBehaviour,
 /// and runs the event loop.
@@ -253,6 +256,13 @@ impl StryiNetworkManager {
         let transactions_topic = IdentTopic::new(TRANSACTIONS_TOPIC_NAME);
         let blocks_topic = IdentTopic::new(BLOCKS_TOPIC_NAME);
 
+        // Pending mempool fetch requests, keyed by outbound request ID.
+        // Local to the run loop so we avoid borrow conflicts with `self`.
+        let mut pending_mempool_fetches: HashMap<
+            OutboundRequestId,
+            tokio::sync::oneshot::Sender<Result<MemPoolSyncData, StryiNetworkError>>,
+        > = HashMap::new();
+
         // TODO: Handle somehow gossipsub subscription error
         swarm
             .behaviour_mut()
@@ -277,8 +287,6 @@ impl StryiNetworkManager {
                 // --- Network commands ---
 
                 command = self.command_rx.recv() => {
-                    // TODO: Implement NetworkCommands handler in network-manager loop
-
                     match command {
                         // -- QueryPeersWithService command --
                         Some(NetworkCommand::QueryPeersWithService { service, respond_to }) => {
@@ -369,8 +377,71 @@ impl StryiNetworkManager {
                             let _ = respond_to.send(public_key);
                         }
 
-                        // Anything else (including `None` when the channel closes) is safely ignored
-                        _ => {}
+                        // -- PublishBlock command --
+                        Some(NetworkCommand::PublishBlock(broadcast_block)) => {
+                            debug!("NetworkManager: Got PublishBlock command.");
+                            match bincode::serde::encode_to_vec(&broadcast_block, standard()) {
+                                Ok(encoded) => {
+                                    let topic = IdentTopic::new(BLOCKS_TOPIC_NAME);
+                                    if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
+                                        warn!("Failed to publish block to gossipsub: {e:?}");
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to encode block for gossipsub: {e:?}");
+                                }
+                            }
+                        }
+
+                        // -- PublishTransaction command --
+                        Some(NetworkCommand::PublishTransaction(tx)) => {
+                            debug!("NetworkManager: Got PublishTransaction command.");
+                            match bincode::serde::encode_to_vec(&tx, standard()) {
+                                Ok(encoded) => {
+                                    let topic = IdentTopic::new(TRANSACTIONS_TOPIC_NAME);
+                                    if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
+                                        warn!("Failed to publish transaction to gossipsub: {e:?}");
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to encode transaction for gossipsub: {e:?}");
+                                }
+                            }
+                        }
+
+                        // -- FetchMempoolState command --
+                        Some(NetworkCommand::FetchMempoolState { respond_to }) => {
+                            debug!("NetworkManager: Got FetchMempoolState command.");
+
+                            // Pick a random connected peer
+                            let random_peer = {
+                                let guard = self.connected_peers.read().await;
+                                let mut rng = rand::rng();
+                                guard.keys().choose(&mut rng).copied()
+                            };
+
+                            match random_peer {
+                                Some(peer_id) => {
+                                    let request_id = swarm
+                                        .behaviour_mut()
+                                        .mempool_sync
+                                        .send_request(&peer_id, MempoolRequest::GetState);
+                                    pending_mempool_fetches.insert(request_id, respond_to);
+                                    debug!("Sent MempoolRequest::GetState to peer {peer_id}");
+                                }
+                                None => {
+                                    let _ = respond_to.send(Err(StryiNetworkError::other(
+                                        "No connected peers available for mempool sync".to_string(),
+                                    )));
+                                }
+                            }
+                        }
+
+                        // Channel closed — exit the run loop
+                        None => {
+                            info!("Command channel closed, exiting run loop.");
+                            break;
+                        }
 
                         }
                     }
@@ -378,7 +449,7 @@ impl StryiNetworkManager {
 
                 // --- libp2p events ---
                 event = swarm.select_next_some() => {
-                    self.process_event(&mut swarm, event).await;
+                    self.process_event(&mut swarm, event, &mut pending_mempool_fetches).await;
                 }
 
             }
