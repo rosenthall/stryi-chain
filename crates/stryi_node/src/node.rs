@@ -26,6 +26,7 @@ use tokio::join;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio::time::{Instant, sleep};
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 use tonic::transport::{Server, ServerTlsConfig};
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
@@ -583,6 +584,7 @@ impl StryiChainNode {
         self,
         http_advertise_address: Multiaddr,
         grpc_advertise_address: Multiaddr,
+        cancel_token: CancellationToken,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Some assertions, just in case.
         assert!(
@@ -622,18 +624,21 @@ impl StryiChainNode {
         let storage_for_grpc = Arc::clone(&storage);
 
         // http server future
+        let http_cancel = cancel_token.child_token();
         let http_fut = async {
             crate::http::start_http_server(
                 storage_for_http,
                 http_service_config.clone(),
                 mempool.clone(),
                 http_is_ready,
+                http_cancel,
             )
             .await
         };
 
         // gRPC server future
         // TODO: Make gRPC really use tls based on provider peer's identity keys
+        let grpc_cancel = cancel_token.child_token();
         let grpc_fut = async {
             // Create the sync service instance
             let service_impl = StryiSyncService {
@@ -659,7 +664,8 @@ impl StryiChainNode {
                 &sync_service_config.address
             );
 
-            // Start serving the sync service on the configured port
+            // Start serving the sync service on the configured port,
+            // with graceful shutdown
             Server::builder()
                 // .tls_config(tls_config).unwrap()
                 // Compress responses
@@ -667,7 +673,7 @@ impl StryiChainNode {
                 // High-level logging of requests and responses
                 .layer(TraceLayer::new_for_grpc())
                 .add_service(svc)
-                .serve(sync_service_config.address)
+                .serve_with_shutdown(sync_service_config.address, grpc_cancel.cancelled())
                 .await
         };
 

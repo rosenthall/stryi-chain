@@ -33,7 +33,7 @@ pub fn resolve_ipv4_advertise(
     // Reject unspecified IPs
     if ip.is_unspecified() {
         return Err(format!(
-            "{} advertise not set and listen IP is 0.0.0.0 — \
+            "{} advertise address not set and listen IP is 0.0.0.0 - \
              you MUST set {}_advertise explicitly",
             service_name, service_name
         ));

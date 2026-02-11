@@ -71,7 +71,6 @@ use stryi_network::{
 };
 use stryi_storage::{StorageStatus, StryiStorage};
 use tokio::sync::RwLock;
-use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::layer::SubscriberExt;
@@ -398,12 +397,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ..Default::default()
     };
 
-    let network_manager_cancellation_token = CancellationToken::new();
+    // Master cancellation token, it triggers by SIGINT/SIGTERM signals
+    // All subsystems receive child tokens derived from this one
+    let master_cancel_token = CancellationToken::new();
 
     let network_manager = StryiNetworkManager::new(
         &network_manager_config,
         mempool.clone(),
-        network_manager_cancellation_token,
+        master_cancel_token.child_token(),
     )?;
 
     let network_manager = Some(network_manager);
@@ -417,7 +418,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut node = StryiChainNode {
         storage: storage.clone(),
         mempool,
-        consensus_engine: None, // Note: Consensus engine will be created on synchronizing stage.
+        consensus_engine: None, // Note: Consensus engine will be created on the sync stage.
         network_manager,
         keypair,
         peer_id,
@@ -553,12 +554,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
         NodeStartMode::Auto => unreachable!(),
     }
 
-    // Start the node's services: gRPC sync service, HTTP API service, etc.
-    node.start_services(http_advertise, grpc_advertise).await?;
-
-    // Keep the node running indefinitely.
-    // TODO: Graceful stop for the node
-    loop {
-        sleep(Duration::from_secs(60)).await;
+    // Spawn a signal listener that cancels the master token on SIGINT/SIGTERM.
+    {
+        let cancel = master_cancel_token.clone();
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            info!("Received shutdown signal (SIGINT), initiating graceful shutdown...");
+            cancel.cancel();
+        });
     }
+
+    // Start the node's services: gRPC sync service, HTTP API service, etc.
+    // This blocks until the cancellation token is triggered
+    node.start_services(
+        http_advertise,
+        grpc_advertise,
+        master_cancel_token.child_token(),
+    )
+    .await?;
+
+    // Services have stopped — flush storage to disk.
+    info!("Services stopped. Flushing storage...");
+    if let Err(e) = storage.read().await.persist() {
+        error!("Failed to flush storage on shutdown: {e:?}");
+    } else {
+        info!("Storage flushed successfully.");
+    }
+
+    info!("Node shutdown complete.");
+    Ok(())
 }

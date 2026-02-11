@@ -415,4 +415,12 @@ impl StryiStorage {
         // Store initial state
         self.update_storage_state(initial_state)
     }
+
+    /// Durably persists all committed data to disk.
+    /// Should be called during graceful shutdown to avoid data loss.
+    pub fn persist(&self) -> Result<(), StryiStorageError> {
+        self.keyspace
+            .persist(fjall::PersistMode::SyncAll)
+            .map_err(StryiStorageError::FjallError)
+    }
 }

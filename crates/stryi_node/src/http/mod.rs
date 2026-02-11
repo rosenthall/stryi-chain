@@ -110,6 +110,7 @@ pub async fn start_http_server<DB>(
     cfg: StryiHttpServiceConfig,
     mempool: Arc<RwLock<MemPool>>,
     ready: ReadyFlag,
+    cancel_token: tokio_util::sync::CancellationToken,
 ) -> Result<(), StryiNodeError>
 where
     DB: BlockStorage + UtxoStorage + StorageStats + Send + Sync + 'static,
@@ -151,8 +152,9 @@ where
 
     info!("HTTP API listening on {}", cfg.address);
 
-    // run server; axum::serve returns io::Result<()>
+    // run server
     axum::serve(listener, ServiceBuilder::new().service(app))
+        .with_graceful_shutdown(cancel_token.cancelled_owned())
         .await
         .map_err(|e| StryiNodeError::HttpServer(e.to_string()))
 }

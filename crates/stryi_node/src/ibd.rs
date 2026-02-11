@@ -99,16 +99,6 @@ where
                 );
             }
 
-            ConsensusVerdict::BufferedIntoForkTree {
-                common_ancestor_height: (ancestor_hash, ancestor_h),
-            } => {
-                cnt_buffered += 1;
-                warn!(
-                    "BUFFERED (fork): height={}, hash={}, parent_not_tip; common_ancestor=({}, height={})",
-                    height, hash, ancestor_hash, ancestor_h
-                );
-            }
-
             ConsensusVerdict::AlreadyIncludedInChain => {
                 cnt_already_chain += 1;
                 trace!("ALREADY_IN_CHAIN: height={}, hash={}", height, hash);
@@ -126,10 +116,14 @@ where
                     "REORG: new_tip height={}, hash={}; removed_blocks_count={}",
                     height, hash, removed_count
                 );
-                // Detailed list goes to TRACE to avoid noisy WARNs
+                // A detailed list goes to TRACE to avoid noisy WARNs
                 for (h, del_hash) in deleted_blocks.drain() {
                     trace!("REORG_REMOVED: height={}, old_hash={}", h, del_hash);
                 }
+            }
+
+            ConsensusVerdict::Buffered => {
+                trace!("BUFFERED: height={}, hash={}", height, hash);
             }
 
             ConsensusVerdict::Rejected(e) => {
