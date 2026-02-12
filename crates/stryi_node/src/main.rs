@@ -573,7 +573,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )
     .await?;
 
-    // Services have stopped — flush storage to disk.
+    // Services have stopped - flush storage
     info!("Services stopped. Flushing storage...");
     if let Err(e) = storage.read().await.persist() {
         error!("Failed to flush storage on shutdown: {e:?}");

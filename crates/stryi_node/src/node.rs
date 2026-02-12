@@ -12,7 +12,9 @@ use multiaddr::{Multiaddr, Protocol};
 use std::sync::Arc;
 use std::time::Duration;
 use stryi_core::block::{Block, BlockHash};
-use stryi_core::consensus::{BlockValidator, ConsensusConsts, StryiConsensusEngine};
+use stryi_core::consensus::{
+    BlockValidator, ConsensusConsts, ConsensusEngine, StryiConsensusEngine,
+};
 use stryi_core::difficulty::build_difficulty_calculator_from_consts;
 use stryi_core::mempool::MemPool;
 use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
@@ -606,6 +608,8 @@ impl StryiChainNode {
             mempool,
             storage,
             net_cmd,
+            net_events,
+            consensus_engine,
             peer_id,
             tls_identity,
 
@@ -616,8 +620,12 @@ impl StryiChainNode {
             ..
         } = self;
 
-        // safely unwrap net_cmd, since it must be already initialized
+        // safely unwrap fields that must be initialized before start_services()
         let net_cmd = net_cmd.expect("net_cmd must be initialized before start_services()");
+        let mut net_events =
+            net_events.expect("net_events must be initialized before start_services()");
+        let consensus_engine =
+            consensus_engine.expect("consensus_engine must be initialized before start_services()");
 
         // clone once per task
         let storage_for_http = Arc::clone(&storage);
@@ -734,8 +742,62 @@ impl StryiChainNode {
             register(http_record).await?;
         }
 
+        // Network event consumer loop - routes
+        // 1. incoming blocks to consensus engine
+        // 2. incoming transactions to mempool
+        // And logs other events
+        let event_cancel = cancel_token.child_token();
+        let mempool_for_events = Arc::clone(&mempool);
+        let event_loop_fut = async move {
+            loop {
+                tokio::select! {
+                    result = net_events.recv() => {
+                        match result {
+                            Ok(NetworkEvent::NewBlock(broadcast_block)) => {
+                                info!(
+                                    "Received block #{} ({}) from network",
+                                    broadcast_block.block.header.height,
+                                    broadcast_block.block.block_hash()
+                                );
+                                let mut engine = consensus_engine.lock().await;
+                                match engine.on_block(broadcast_block.block).await {
+                                    Ok(verdict) => info!("Consensus verdict: {:?}", verdict),
+                                    Err(e) => warn!("Block rejected by consensus: {:?}", e),
+                                }
+                            }
+                            Ok(NetworkEvent::NewTransaction(tx)) => {
+                                debug!("Received transaction from network: {:?}", tx.data.hash());
+                                let mut pool = mempool_for_events.write().await;
+                                match pool.add_transaction(tx).await {
+                                    Ok(()) => debug!("Transaction added to mempool"),
+                                    Err(e) => debug!("Transaction rejected by mempool: {:?}", e),
+                                }
+                            }
+                            Ok(NetworkEvent::PeerConnected(addr)) => {
+                                info!("Peer connected: {}", addr);
+                            }
+                            Ok(NetworkEvent::PeerDisconnected(addr)) => {
+                                info!("Peer disconnected: {}", addr);
+                            }
+                            Err(broadcast::error::RecvError::Lagged(n)) => {
+                                warn!("Network event loop lagged, missed {} events", n);
+                            }
+                            Err(broadcast::error::RecvError::Closed) => {
+                                info!("Network event channel closed, stopping event loop");
+                                break;
+                            }
+                        }
+                    }
+                    _ = event_cancel.cancelled() => {
+                        info!("Network event loop cancelled");
+                        break;
+                    }
+                }
+            }
+        };
+
         // run all the services concurrently
-        let (grpc_res, _http_res) = join!(grpc_fut, http_fut);
+        let (grpc_res, _http_res, _event_res) = join!(grpc_fut, http_fut, event_loop_fut);
         grpc_res?; // propagate gRPC error if any
 
         Ok(())
