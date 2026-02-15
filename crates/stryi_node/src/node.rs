@@ -10,7 +10,8 @@ use crate::middleware::ready::{ReadyFlag, ReadyGateLayer};
 use crate::tls::NodeTlsIdentity;
 use multiaddr::{Multiaddr, Protocol};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+use stryi_core::address::AccountAddress;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::consensus::{
     BlockValidator, ConsensusConsts, ConsensusEngine, ConsensusVerdict, StryiConsensusEngine,
@@ -21,7 +22,8 @@ use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 use stryi_core::transactions::{OutPoint, UTXO, UtxoProcessor};
 use stryi_network::ed25519::Keypair;
 use stryi_network::{
-    NetworkCommand, NetworkEvent, PeerId, ServiceRecord, StryiNetworkError, StryiNetworkManager,
+    BroadcastBlock, NetworkCommand, NetworkEvent, PeerId, ServiceRecord, StryiNetworkError,
+    StryiNetworkManager,
 };
 use stryi_storage::{StryiStorage, extract_utxos_from_block};
 use tokio::join;
@@ -34,7 +36,16 @@ use tonic::transport::{Server, ServerTlsConfig};
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
+
+/// All the channels and metadata that connect the miner to the node event loop.
+/// Only present when mining is enabled for this node.
+pub(crate) struct MinerBridge {
+    /// Receiver for blocks mined locally.
+    pub mined_blocks_receiver: mpsc::Receiver<Block>,
+    /// Miner's reward address, needed to wrap mined blocks for gossipsub.
+    pub miner_address: AccountAddress,
+}
 
 /// The main struct representing the Stryi node instance.
 /// This node will later integrate networking, consensus, gRPC sync, mempool and mining services.
@@ -54,9 +65,8 @@ pub struct StryiChainNode {
     /// Miner (and some other services in the future) rely on these updates.
     pub(crate) tip_updates_sender: Sender<BlockHash>,
 
-    /// Channel for receiving blocks from our local miner instance, so we can
-    /// try to apply them locally and propagate them to the network.
-    pub(crate) mined_blocks_receiver: mpsc::Receiver<Block>,
+    /// Miner-to-node bridge: channels and metadata. None when mining is disabled.
+    pub(crate) miner_bridge: Option<MinerBridge>,
 
     /// Mempool instance.
     pub(crate) mempool: Arc<RwLock<MemPool>>,
@@ -616,7 +626,7 @@ impl StryiChainNode {
             mempool,
             storage,
             tip_updates_sender,
-            mut mined_blocks_receiver,
+            miner_bridge,
             net_cmd,
             net_events,
             consensus_engine,
@@ -629,6 +639,12 @@ impl StryiChainNode {
             http_is_ready,
             ..
         } = self;
+
+        // Unpack the optional miner bridge into a separate receiver and address
+        let (mut mined_blocks_receiver, miner_address) = match miner_bridge {
+            Some(mb) => (Some(mb.mined_blocks_receiver), Some(mb.miner_address)),
+            None => (None, None),
+        };
 
         // safely unwrap fields that must be initialized before start_services()
         let net_cmd = net_cmd.expect("net_cmd must be initialized before start_services()");
@@ -758,30 +774,61 @@ impl StryiChainNode {
         // And logs other events
         let event_cancel = cancel_token.child_token();
         let mempool_for_events = Arc::clone(&mempool);
+
+        // Helper: recv from an optional channel, or pend forever if mining is disabled in config.
+        async fn recv_mined_block(rx: &mut Option<mpsc::Receiver<Block>>) -> Option<Block> {
+            match rx {
+                Some(rx) => rx.recv().await,
+                None => std::future::pending().await,
+            }
+        }
+
         let event_loop_fut = async move {
             loop {
                 tokio::select! {
 
-                    // -- local miner's events --
-                    maybe_mined_block = mined_blocks_receiver.recv() => {
-                        match maybe_mined_block {
-                            Some(mined_block) => {
-                                info!("=========================================");
-                                info!("LOCAL MINER HAS MINED A BLOCK: ");
-                                info!("Hash: {}", mined_block.block_hash());
-                                info!("Merkle Root: {}", mined_block.header.merkle_root_hash);
-                                info!("Transactions: {}", mined_block.data.transactions.len());
-                                info!("=========================================");
-                                info!("Trying to apply block to local chain.");
+                    // -- local miner produced a block --
+                    Some(mined_block) = recv_mined_block(&mut mined_blocks_receiver) => {
+                        info!("=========================================");
+                        info!("LOCAL MINER HAS MINED A BLOCK: ");
+                        info!("Hash: {}", mined_block.block_hash());
+                        info!("Merkle Root: {}", mined_block.header.merkle_root_hash);
+                        info!("Transactions: {}", mined_block.data.transactions.len());
+                        info!("=========================================");
 
+                        // Validate through consensus engine, same as network blocks
+                        let mut engine = consensus_engine.lock().await;
+                        match engine.on_block(mined_block.clone()).await {
+                            Ok(verdict) => {
+                                info!("Mined block consensus verdict: {:?}", verdict);
 
-                                // TODO: Process locally mined block and propagate it to the network
+                                if matches!(verdict,
+                                    ConsensusVerdict::Applied { .. } | ConsensusVerdict::CausedReorganization { .. }
+                                ) {
+                                    let _ = tip_updates_sender.send(mined_block.block_hash());
+                                    drop(engine);
+
+                                    // Clean confirmed transactions from the mempool
+                                    let mut pool = mempool_for_events.write().await;
+                                    if let Err(e) = pool.update_on_block(mined_block.data.clone()).await {
+                                        warn!("Failed to clean mempool after mined block: {:?}", e);
+                                    }
+                                    drop(pool);
+
+                                    // Broadcast to the network
+                                    if let Some(addr) = miner_address {
+                                        let first_seen = SystemTime::now()
+                                            .duration_since(SystemTime::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_secs();
+                                        let wrapped = BroadcastBlock::new(mined_block, addr, first_seen);
+                                        let _ = net_cmd.send(NetworkCommand::PublishBlock(wrapped)).await;
+                                    }
+                                } else {
+                                    warn!("Mined block not applied (verdict: {:?}), discarding.", verdict);
+                                }
                             }
-
-                            None => {
-                                error!("Mined blocks channel closed unexpectedly!");
-                                return
-                            }
+                            Err(e) => warn!("Mined block rejected by consensus: {:?}", e),
                         }
                     }
 

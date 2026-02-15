@@ -123,6 +123,7 @@ where
             }
 
             ConsensusVerdict::Buffered => {
+                cnt_buffered += 1;
                 trace!("BUFFERED: height={}, hash={}", height, hash);
             }
 

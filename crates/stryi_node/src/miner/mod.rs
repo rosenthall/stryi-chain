@@ -1,5 +1,6 @@
 mod backend;
 pub use backend::MinerBackend;
+pub use backend::NodeMinerBackend;
 
 use bincode::config::standard;
 use bincode::serde::encode_to_vec;
@@ -9,7 +10,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use stryi_core::address::AccountAddress;
 use stryi_core::block::{Block, BlockHash, BlockHeader, meets_difficulty};
-use stryi_core::consensus::ConsensusVerdict;
 use stryi_core::mempool::MemPool;
 use stryi_core::merkletree::{MerkleHash, calc_merkle_root};
 use stryi_core::transactions::{Transaction, TransactionData, TransactionKind, TransactionOut};
@@ -19,7 +19,7 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 
 /// Mining parameters.
 #[derive(Clone)]
@@ -255,45 +255,22 @@ impl StryiMiner {
         let task_cancel = cancel.clone();
         let mut block_for_task = block_base.clone();
 
-        let backend = self.backend.clone();
         let local_blocks_tx = self.local_blocks_tx.clone();
 
         let handle: JoinHandle<()> = tokio::task::spawn_blocking(move || {
             if mine_block(&mut block_for_task, &task_cancel) {
                 // We are in a blocking thread, so we have to use a tokio runtime handle
-                // to bridge back into the async world for validation + publish.
+                // to bridge back into the async world to send the block to the node.
                 let Some(rt) = tokio::runtime::Handle::try_current().ok() else {
                     return;
                 };
 
                 rt.block_on(async move {
-                    let block = block_for_task;
                     info!(
-                        "Mined block #{} successfully, submitting to consensus engine...",
-                        block.header.height
+                        "Mined block #{}, sending to node for validation...",
+                        block_for_task.header.height
                     );
-
-                    match backend.submit_block(block.clone()).await {
-                        Ok(verdict) => {
-                            if matches!(
-                                verdict,
-                                ConsensusVerdict::Applied { .. }
-                                    | ConsensusVerdict::CausedReorganization { .. }
-                            ) {
-                                info!("Mined block accepted by consensus: {:?}", verdict);
-                                // Hand off to node for broadcasting and mempool cleanup
-                                let _ = local_blocks_tx.send(block).await;
-                            } else {
-                                warn!(
-                                    "Mined block not applied (verdict: {:?}), discarding.",
-                                    verdict
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Mined block rejected by consensus engine: {:?}", e);
-                        }
-                    }
+                    let _ = local_blocks_tx.send(block_for_task).await;
                 });
             }
         });
@@ -303,15 +280,15 @@ impl StryiMiner {
 }
 
 /// Mine a block by finding a valid nonce.
-/// The function runs an infinite outer loop; every iteration launches a
-/// parallel search over a **fixed** batch (1 000 000 candidate nonces).
+/// The function runs an infinite outer loop;
+/// every iteration launches a parallel search over a **fixed** batch
 /// After each batch it checks `cancel.is_cancelled()` and exits if asked.
 /// On success, it writes the winning nonce into `block.header.nonce` and
 /// returns `true`; if cancelled first, returns `false`.
 fn mine_block(block: &mut Block, cancel: &CancellationToken) -> bool {
     use rayon::iter::IntoParallelIterator;
 
-    const BATCH: u64 = 1_000_000; // candidates per Rayon batch
+    const BATCH: u64 = 100_000; // candidates per Rayon batch
     let bits = block.header.difficulty_bits; // current network target
 
     // TODO: Pre-compute block's static parts; memcpy the varying 4-byte nonce into a buffer before hashing instead of serializing the whole header each time.

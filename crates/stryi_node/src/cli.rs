@@ -12,14 +12,14 @@ use std::str::FromStr;
 #[derive(Debug, Deserialize, Default, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")] // "bootstrap" | "join" | "auto"
 pub enum NodeStartMode {
-    /// In this mode, the node starts from the provided genesis block and builds the chain from scratch.
+    /// the node starts from the provided genesis block and builds the chain from scratch.
     Bootstrap,
 
-    /// In this mode, the node connects to peer and takes its genesis block, and then builds the chain from there.
+    /// the node connects to peer and takes its genesis block, and then builds the chain from there.
     Join,
 
     #[default]
-    /// In this mode, the node checks if it already has a genesis block, and if not, it starts in Bootstrap mode, else it starts in Join mode.
+    /// the node checks if it already has a genesis block, and if not, it starts in Bootstrap mode, else it starts in Join mode.
     Auto,
 }
 

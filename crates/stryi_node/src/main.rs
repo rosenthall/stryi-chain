@@ -49,8 +49,8 @@ use crate::grpc::StryiSyncServiceConfig;
 use crate::http::StryiHttpServiceConfig;
 use crate::keys::PeerKey;
 use crate::middleware::ready::ReadyFlag;
-use crate::miner::{MinerBackend, StryiMiner, StryiMinerConfig};
-use crate::node::{StryiChainNode, build_consensus_constants};
+use crate::miner::{MinerBackend, NodeMinerBackend, StryiMiner, StryiMinerConfig};
+use crate::node::{MinerBridge, StryiChainNode, build_consensus_constants};
 use crate::tls::cert_and_key_from_peer;
 use crate::util::{resolve_ipv4_advertise, try_genesis_config_from_path};
 use colored::Colorize;
@@ -61,17 +61,16 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use stryi_core::address::AccountAddress;
-use stryi_core::block::{Block, BlockHash};
-use stryi_core::consensus::{BlockValidator, ConsensusEngine, StryiConsensusEngine};
+use stryi_core::block::Block;
+use stryi_core::consensus::{BlockValidator, StryiConsensusEngine};
 use stryi_core::mempool::{MemPool, MemPoolConfig, RbfPolicy, UtxoLookup};
-use stryi_core::storage::{StorageStats, UtxoStorage};
+use stryi_core::storage::UtxoStorage;
 use stryi_core::transactions::{FeePolicy, OutPoint, UtxoProcessor};
 use stryi_network::{
     PeerId, RendezvousMode, StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig,
 };
 use stryi_storage::{StorageStatus, StryiStorage};
 use tokio::sync::broadcast;
-use tokio::sync::broadcast::Receiver;
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
@@ -423,33 +422,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .try_into_ed25519()
         .expect("Keypair is not Ed25519");
 
-    // Instantiate the StryiChainNode
-    let mut node = StryiChainNode {
-        storage: storage.clone(),
-        mempool,
-        consensus_engine: None, // Note: Consensus engine will be created on the sync stage.
-        network_manager,
-        keypair,
-        peer_id,
-        tls_identity,
-        grpc_tls_root,
-        net_cmd: None,
-        net_events: None,
-        genesis_bootstrap: genesis_bootstrap.clone(),
-
-        // miner interactions
-        tip_updates_sender,
-        mined_blocks_receiver,
-
-        // services configurations
-        sync_service_config,
-        http_service_config,
-
-        // These are temporary always set to true until I'll finish node's db synchronization
-        grpc_is_ready: ReadyFlag::new(RwLock::new(true)),
-        http_is_ready: ReadyFlag::new(RwLock::new(true)),
-    };
-
     // -- Validate miner config early (before connecting) --
 
     let miner_config = if cfg.miner_enabled {
@@ -503,6 +475,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
         None
     };
 
+    // Build optional miner bridge (channels + address for miner-to-node communication)
+    let miner_bridge = miner_config.as_ref().map(|mc| MinerBridge {
+        mined_blocks_receiver,
+        miner_address: mc.reward_address(),
+    });
+
+    // Instantiate the StryiChainNode
+    let mut node = StryiChainNode {
+        storage: storage.clone(),
+        mempool,
+        consensus_engine: None, // Note: Consensus engine will be created on the sync stage.
+        network_manager,
+        keypair,
+        peer_id,
+        tls_identity,
+        grpc_tls_root,
+        net_cmd: None,
+        net_events: None,
+        genesis_bootstrap: genesis_bootstrap.clone(),
+
+        // miner interactions
+        tip_updates_sender,
+        miner_bridge,
+
+        // services configurations
+        sync_service_config,
+        http_service_config,
+
+        // These are temporary always set to true until I'll finish node's db synchronization
+        grpc_is_ready: ReadyFlag::new(RwLock::new(true)),
+        http_is_ready: ReadyFlag::new(RwLock::new(true)),
+    };
+
     // Connect the node to the network.
     // This will start the network manager and connect to the rendezvous server if configured.
     node.connect().await?;
@@ -554,16 +559,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         info!("Spawning miner...");
 
         let consensus_consts = build_consensus_constants(&storage).await?;
-        let engine = node
-            .consensus_engine
-            .as_ref()
-            .expect("consensus_engine must be set before spawning miner")
-            .clone();
 
         let backend: Arc<dyn MinerBackend> = Arc::new(NodeMinerBackend {
             storage: storage.clone(),
             consensus_consts,
-            engine,
             tip_updates: tip_updates_receiver,
         });
 
@@ -607,49 +606,4 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     info!("Node shutdown complete.");
     Ok(())
-}
-
-/// Concrete implementation of [`MinerBackend`] that bridges the miner
-/// to the node's storage, consensus constants, and consensus engine.
-struct NodeMinerBackend {
-    storage: Arc<RwLock<StryiStorage>>,
-    consensus_consts: stryi_core::consensus::ConsensusConsts,
-    engine: Arc<tokio::sync::Mutex<StryiConsensusEngine<StryiStorage>>>,
-    tip_updates: Receiver<BlockHash>,
-}
-
-impl MinerBackend for NodeMinerBackend {
-    fn tip(
-        &self,
-    ) -> futures_util::future::BoxFuture<
-        '_,
-        Result<(u64, BlockHash), stryi_storage::StryiStorageError>,
-    > {
-        Box::pin(async { self.storage.read().await.tip().await })
-    }
-
-    fn difficulty_bits(&self, height: u64) -> u8 {
-        self.consensus_consts.difficulty_bits_for_height(height)
-    }
-
-    fn block_subsidy(&self, height: u64) -> u64 {
-        self.consensus_consts.block_subsidy(height)
-    }
-
-    fn submit_block(
-        &self,
-        block: Block,
-    ) -> futures_util::future::BoxFuture<
-        '_,
-        Result<stryi_core::consensus::ConsensusVerdict, stryi_core::StryiCoreError>,
-    > {
-        Box::pin(async {
-            let mut guard = self.engine.lock().await;
-            guard.on_block(block).await
-        })
-    }
-
-    fn subscribe_tip_changes(&self) -> Receiver<BlockHash> {
-        self.tip_updates.resubscribe()
-    }
 }
