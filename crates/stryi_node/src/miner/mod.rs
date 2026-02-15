@@ -1,34 +1,36 @@
+mod backend;
+pub use backend::MinerBackend;
+
 use bincode::config::standard;
 use bincode::serde::encode_to_vec;
-use futures_util::future::BoxFuture;
 use rand::{Rng, rng};
 use rayon::iter::ParallelIterator;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use stryi_core::address::AccountAddress;
 use stryi_core::block::{Block, BlockHash, BlockHeader, meets_difficulty};
+use stryi_core::consensus::ConsensusVerdict;
 use stryi_core::mempool::MemPool;
 use stryi_core::merkletree::{MerkleHash, calc_merkle_root};
-use stryi_core::transactions::Transaction;
-use stryi_network::{NetworkCommand, NetworkEvent};
+use stryi_core::transactions::{Transaction, TransactionData, TransactionKind, TransactionOut};
 use stryi_storage::StryiStorageError;
 use tokio::select;
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 /// Mining parameters.
 #[derive(Clone)]
 pub struct StryiMinerConfig {
-    /// Target number of txs before we try to mine.
+    /// Target number of the txs before we try to mine.
     tx_threshold: usize,
 
     /// Block version to use for mined blocks.
     block_version: u16,
 
-    /// Max seconds to wait even if threshold not reached.
+    /// Max seconds to wait even if a threshold not reached.
     max_delay_secs: usize,
 
     /// Block reward receiver.
@@ -36,7 +38,6 @@ pub struct StryiMinerConfig {
 }
 
 impl StryiMinerConfig {
-    /// Creates a new miner configuration with the given parameters.
     pub fn new(
         tx_threshold: usize,
         block_version: u16,
@@ -50,21 +51,14 @@ impl StryiMinerConfig {
             reward_address,
         }
     }
+
+    pub(crate) fn reward_address(&self) -> AccountAddress {
+        self.reward_address
+    }
 }
 
-/// Type alias for a function that retrieves the current tip of the blockchain.
-/// The idea is to not provide the whole storage instance to the miner,
-/// but rather a function that returns the current tip.
-pub type GetCurrentTip =
-    Arc<dyn Fn() -> BoxFuture<'static, Result<(u64, BlockHash), StryiStorageError>> + Send + Sync>;
-
-/// Miner is responsible for creating new blocks by collecting transactions from the mempool
-/// and mining them.
-/// If block is successfully mined, it is sent to the network.
-/// What this struct does not do is:
-/// - It does not validate transactions/blocks
-/// - Doesn't add self-mined blocks to the storage
-///   It is expected that the network layer will handle these tasks.
+/// Miner is responsible for creating new blocks by collecting transactions from the mempool,
+/// mining them, validating the result locally via the consensus engine, and broadcasting valid blocks.
 pub struct StryiMiner {
     /// The miner's configuration.
     cfg: StryiMinerConfig,
@@ -72,14 +66,14 @@ pub struct StryiMiner {
     /// The node's mempool, used to collect transactions for mining.
     mempool: Arc<RwLock<MemPool>>,
 
-    /// Sender for network commands, used to send mined blocks to the network.
-    net_cmd: mpsc::Sender<NetworkCommand>,
+    /// Closure-based dependencies for storage, consensus, and difficulty.
+    backend: Arc<dyn MinerBackend>,
 
-    /// Receiver for network events, used to react to new blocks or transactions.
-    events_rx: broadcast::Receiver<NetworkEvent>,
+    /// Channel to send accepted mined blocks to the node for broadcasting & cleanup.
+    local_blocks_tx: mpsc::Sender<Block>,
 
-    /// Function to get the current tip of the blockchain.
-    get_tip: GetCurrentTip,
+    /// Channel for receiving notifications about canonical block updates.
+    tip_updates: broadcast::Receiver<BlockHash>,
 
     /// Current mining task, if any.
     /// Contains a cancellation token and the join handle for the mining task.
@@ -88,92 +82,57 @@ pub struct StryiMiner {
 }
 
 impl StryiMiner {
-    /// Creates a new miner instance with the given stuff
     pub fn new(
         cfg: StryiMinerConfig,
         mempool: Arc<RwLock<MemPool>>,
-        get_tip: GetCurrentTip,
-        events_rx: broadcast::Receiver<NetworkEvent>,
-        net_cmd: mpsc::Sender<NetworkCommand>,
+        backend: Arc<dyn MinerBackend>,
+        local_blocks_tx: mpsc::Sender<Block>,
     ) -> Self {
+        let tip_updates = backend.subscribe_tip_changes();
+
         Self {
             cfg,
             mempool,
-            net_cmd,
-            get_tip,
-            events_rx,
+            backend,
+            local_blocks_tx,
+            tip_updates,
             current: None,
         }
     }
 
-    /// Spawn the miner as a detached Tokio task.
     pub fn spawn(mut self) {
         tokio::spawn(async move {
             self.event_loop().await;
         });
     }
 
-    /// Main event loop – reacts to timer, NewBlock, NewTransaction.
+    /// the main event loop, reacts to timer ticks an tip changes.
     async fn event_loop(&mut self) {
-        // Create a periodic timer that will trigger every `max_delay_secs` seconds.
         let secs = self.cfg.max_delay_secs as u64;
         let new_timer = || interval(Duration::from_secs(secs));
         let mut tick = new_timer();
 
-        // flag: start mining even below threshold once the timer has fired
-        let mut mine_on_timeout = false;
-
-        // -- main loop --
-
         loop {
             select! {
-                // periodic timer tick
+                // periodic timer ticked: try to mine with whatever is in the mempool
                 _ = tick.tick() => {
-                    // reached max_delay_secs so we can try to mine even if tx threshold is not reached
-                    mine_on_timeout = true;
-
-                    // try to start a new mining round
-                    self.maybe_start_new_round(mine_on_timeout).await;
+                    self.maybe_start_new_round(true).await;
                 }
 
-                // handle network events
-                Ok(event) = self.events_rx.recv() => match event {
-
-                    // NewBlock event – we received a new block from the network, abort current mining attempt
-                    NetworkEvent::NewBlock(_) => {
-                        info!("Miner received a new block event, aborting current mining attempt.");
+                // canonical tip changed (block was validated and applied by consensus)
+                Ok(_new_tip) = self.tip_updates.recv() => {
+                    if self.current.is_some() {
+                        info!("Canonical tip updated. Aborting current mining round.");
                         self.abort_current_attempt().await;
-                        mine_on_timeout = false;
-
-                        // reset the timer
-                        tick = new_timer();
-
-
-                        // wait for next tick or tx-influx before restarting
                     }
-
-                    // NewTransaction event – we received a new transaction, check if we can do any better block
-                    // The validation of the transaction is done by the mempool, so we just check if we can start a new mining round
-                    NetworkEvent::NewTransaction(_) => {
-                        info!("Miner received a new transaction event, checking if we can include it in the current mining attempt.");
-                        if self.mempool.read().await.transaction_count() >= self.cfg.tx_threshold {
-
-                            // kill current mining attempt if it is running
-                            self.abort_current_attempt().await;
-
-                            // if we have enough transactions, try to start a new mining round
-                            self.maybe_start_new_round(false).await;
-                        }
-                    }
-
-                    // ignore other events
-                    _ => {}
-                },
+                    // Reset timer: start a fresh countdown from the new tip
+                    tick = new_timer();
+                }
             }
         }
     }
 
-    /// Abort current PoW task, if running.
+    /// abort the current PoW task, if running.
     async fn abort_current_attempt(&mut self) {
         if let Some((token, handle)) = self.current.take() {
             token.cancel();
@@ -181,14 +140,13 @@ impl StryiMiner {
         }
     }
 
-    /// Build a candidate block from the best transactions in the mempool.
+    /// build a candidate block from the best transactions in the mempool.
     async fn build_candidate_block(
         &self,
         best_txs: Vec<Transaction>,
     ) -> Result<Block, StryiStorageError> {
         // Get the latest block hash from storage
-        let get_tip = self.get_tip.clone();
-        let (latest_block_height, latest_block_hash) = get_tip().await?;
+        let (latest_block_height, latest_block_hash) = self.backend.tip().await?;
 
         // Get current timestamp
         let system_time = SystemTime::now();
@@ -197,27 +155,49 @@ impl StryiMiner {
             .expect("SystemTime before UNIX_EPOCH, this should never normally happen")
             .as_secs();
 
+        // Calculate difficulty for the next block height
+        let next_height = latest_block_height + 1;
+        let difficulty_bits = self.backend.difficulty_bits(next_height);
+
         let mut header = BlockHeader {
             // -- dynamic values --
             previous_block_hash: latest_block_hash,
-            height: latest_block_height + 1, // increment height by 1
-            difficulty_bits: 0, // TODO: set proper difficulty bits based on network conditions / consensus rules
+            height: next_height,
+            difficulty_bits,
             timestamp,
 
             // -- static values --
-            merkle_root_hash: MerkleHash::empty(), // placeholder, will be computed later
+            merkle_root_hash: MerkleHash::empty(), // tmp
             version: self.cfg.block_version,
             nonce: 0,
             genesis_state: None,
         };
 
-        let merkle_root = calc_merkle_root(&best_txs);
+        // Create coinbase transaction (must be first tx in block)
+        let subsidy = self.backend.block_subsidy(next_height);
+        let coinbase_tx = Transaction::new_unsigned(TransactionData {
+            version: self.cfg.block_version,
+            kind: TransactionKind::Coinbase,
+            inputs: vec![],
+            outputs: vec![TransactionOut {
+                value: subsidy,
+                recipient: self.cfg.reward_address,
+            }],
+        });
+
+        // Prepend coinbase to mempool transactions
+        let mut all_txs = Vec::with_capacity(1 + best_txs.len());
+        all_txs.push(coinbase_tx);
+        all_txs.extend(best_txs);
+
+        // Compute merkle root over all transactions (including coinbase)
+        let merkle_root = calc_merkle_root(&all_txs);
         header.merkle_root_hash = merkle_root;
 
         trace!("Current candidate block header is set to: {:?}", header);
 
         let data = stryi_core::block::BlockData {
-            transactions: best_txs,
+            transactions: all_txs,
         };
 
         Ok(Block { header, data })
@@ -274,28 +254,47 @@ impl StryiMiner {
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
         let mut block_for_task = block_base.clone();
-        let net_cmd = self.net_cmd.clone();
-        let miner_addr = self.cfg.reward_address;
+
+        let backend = self.backend.clone();
+        let local_blocks_tx = self.local_blocks_tx.clone();
 
         let handle: JoinHandle<()> = tokio::task::spawn_blocking(move || {
             if mine_block(&mut block_for_task, &task_cancel) {
-                // Successful mining: wrap & ship the block
-                let wrapped = stryi_network::BroadcastBlock::new(
-                    block_for_task,
-                    miner_addr,
-                    SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                );
+                // We are in a blocking thread, so we have to use a tokio runtime handle
+                // to bridge back into the async world for validation + publish.
+                let Some(rt) = tokio::runtime::Handle::try_current().ok() else {
+                    return;
+                };
 
-                // We are in a blocking thread – use a tokio runtime handle
-                // to send the command back into the async world.
-                if let Ok(rt) = tokio::runtime::Handle::try_current() {
-                    rt.block_on(async move {
-                        let _ = net_cmd.send(NetworkCommand::PublishBlock(wrapped)).await;
-                    });
-                }
+                rt.block_on(async move {
+                    let block = block_for_task;
+                    info!(
+                        "Mined block #{} successfully, submitting to consensus engine...",
+                        block.header.height
+                    );
+
+                    match backend.submit_block(block.clone()).await {
+                        Ok(verdict) => {
+                            if matches!(
+                                verdict,
+                                ConsensusVerdict::Applied { .. }
+                                    | ConsensusVerdict::CausedReorganization { .. }
+                            ) {
+                                info!("Mined block accepted by consensus: {:?}", verdict);
+                                // Hand off to node for broadcasting and mempool cleanup
+                                let _ = local_blocks_tx.send(block).await;
+                            } else {
+                                warn!(
+                                    "Mined block not applied (verdict: {:?}), discarding.",
+                                    verdict
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Mined block rejected by consensus engine: {:?}", e);
+                        }
+                    }
+                });
             }
         });
 
@@ -317,7 +316,7 @@ fn mine_block(block: &mut Block, cancel: &CancellationToken) -> bool {
 
     // TODO: Pre-compute block's static parts; memcpy the varying 4-byte nonce into a buffer before hashing instead of serializing the whole header each time.
 
-    // outer loop – repeat batches until solved or cancelled
+    // outer loop – repeat batches until solved or canceled
     while !cancel.is_cancelled() {
         // Rayon tries the whole batch in parallel; stops the moment `find_any`
         // receives `Some(nonce)`
@@ -361,7 +360,7 @@ mod tests {
     use stryi_core::block::BlockData;
     use tokio_util::sync::CancellationToken;
 
-    /// Require 6 leading zero *bits* – trivial for CPU tests.
+    /// Require 6 leading zero *bits*
     const EASY_BITS: u8 = 6;
 
     #[test]

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::consensus::{
-    BlockValidator, ConsensusConsts, ConsensusEngine, StryiConsensusEngine,
+    BlockValidator, ConsensusConsts, ConsensusEngine, ConsensusVerdict, StryiConsensusEngine,
 };
 use stryi_core::difficulty::build_difficulty_calculator_from_consts;
 use stryi_core::mempool::MemPool;
@@ -25,6 +25,7 @@ use stryi_network::{
 };
 use stryi_storage::{StryiStorage, extract_utxos_from_block};
 use tokio::join;
+use tokio::sync::broadcast::Sender;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio::time::{Instant, sleep};
 use tokio_stream::StreamExt;
@@ -33,13 +34,13 @@ use tonic::transport::{Server, ServerTlsConfig};
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// The main struct representing the Stryi node instance.
 /// This node will later integrate networking, consensus, gRPC sync, mempool and mining services.
 pub struct StryiChainNode {
     // TODO: Integrate consensus engine, mining loop manager, ...
-    /// The blockchain storage (UTXO set, block storage, undo data etc.)
+    /// The blockchain storage (UTXO set, block storage, undo data, tc.)
     pub(crate) storage: Arc<RwLock<StryiStorage>>,
 
     /// Consensus Engine instance.
@@ -47,7 +48,15 @@ pub struct StryiChainNode {
     /// We need this, because before synchronization/connecting to the network we don't know some values we need
     /// to build ConsensusConstants instance.
     /// They depended on genesis(which may be external), current chain state (that we don't have until sync is complete), etc.
-    pub(crate) consensus_engine: Option<Mutex<StryiConsensusEngine<StryiStorage>>>,
+    pub(crate) consensus_engine: Option<Arc<Mutex<StryiConsensusEngine<StryiStorage>>>>,
+
+    /// Channel for sending block tip updates immediately after a new block is added to the chain.
+    /// Miner (and some other services in the future) rely on these updates.
+    pub(crate) tip_updates_sender: Sender<BlockHash>,
+
+    /// Channel for receiving blocks from our local miner instance, so we can
+    /// try to apply them locally and propagate them to the network.
+    pub(crate) mined_blocks_receiver: mpsc::Receiver<Block>,
 
     /// Mempool instance.
     pub(crate) mempool: Arc<RwLock<MemPool>>,
@@ -125,8 +134,7 @@ fn grpc_uri_from_multiaddr(addr: &Multiaddr) -> Result<tonic::transport::Uri, St
 impl StryiChainNode {
     /// Setter method for ConsensusEngine
     pub(crate) fn set_consensus_engine(&mut self, engine: StryiConsensusEngine<StryiStorage>) {
-        let tmp = Mutex::new(engine);
-        self.consensus_engine = Some(tmp);
+        self.consensus_engine = Some(Arc::new(Mutex::new(engine)));
     }
 
     /// connect() is the first step in the node's lifecycle.
@@ -164,7 +172,7 @@ impl StryiChainNode {
     /// synchronize() is the second step in the node's lifecycle.
     /// It is responsible for synchronizing the node with the network, fetching blocks, transactions,
     /// and other data needed to bring the node up to date.
-    /// Also it builds self.consensus_engine and sets the field.
+    /// Also, it builds self.consensus_engine and sets the field.
     pub(crate) async fn synchronize(&mut self) -> Result<(), StryiNodeError> {
         info!("Start synchronizing with the network...");
 
@@ -346,7 +354,7 @@ impl StryiChainNode {
         let need_genesis = maybe_local_genesis.is_none();
 
         if need_genesis {
-            // Save meta (single place to "save" the network binding).
+            // Save meta
             self.genesis_bootstrap
                 .confirm_and_save(
                     &external_genesis_block,
@@ -607,6 +615,8 @@ impl StryiChainNode {
         let StryiChainNode {
             mempool,
             storage,
+            tip_updates_sender,
+            mut mined_blocks_receiver,
             net_cmd,
             net_events,
             consensus_engine,
@@ -751,6 +761,31 @@ impl StryiChainNode {
         let event_loop_fut = async move {
             loop {
                 tokio::select! {
+
+                    // -- local miner's events --
+                    maybe_mined_block = mined_blocks_receiver.recv() => {
+                        match maybe_mined_block {
+                            Some(mined_block) => {
+                                info!("=========================================");
+                                info!("LOCAL MINER HAS MINED A BLOCK: ");
+                                info!("Hash: {}", mined_block.block_hash());
+                                info!("Merkle Root: {}", mined_block.header.merkle_root_hash);
+                                info!("Transactions: {}", mined_block.data.transactions.len());
+                                info!("=========================================");
+                                info!("Trying to apply block to local chain.");
+
+
+                                // TODO: Process locally mined block and propagate it to the network
+                            }
+
+                            None => {
+                                error!("Mined blocks channel closed unexpectedly!");
+                                return
+                            }
+                        }
+                    }
+
+                    // events from the network
                     result = net_events.recv() => {
                         match result {
                             Ok(NetworkEvent::NewBlock(broadcast_block)) => {
@@ -759,9 +794,29 @@ impl StryiChainNode {
                                     broadcast_block.block.header.height,
                                     broadcast_block.block.block_hash()
                                 );
+                                let block = broadcast_block.block;
                                 let mut engine = consensus_engine.lock().await;
-                                match engine.on_block(broadcast_block.block).await {
-                                    Ok(verdict) => info!("Consensus verdict: {:?}", verdict),
+                                match engine.on_block(block.clone()).await {
+                                    Ok(verdict) => {
+                                        info!("Consensus verdict: {:?}", verdict);
+
+                                        // check if the block was applied
+                                        if matches!(verdict,
+                                            ConsensusVerdict::Applied { .. } | ConsensusVerdict::CausedReorganization { .. }
+                                        ) {
+
+                                            debug!("Block applied, updating tip and clearing mempool.");
+                                            let _ = tip_updates_sender.send(block.block_hash());
+
+                                            // Clean confirmed transactions from the mempool's internal state
+                                            // Drop engine lock before acquiring mempool lock
+                                            drop(engine);
+                                            let mut pool = mempool_for_events.write().await;
+                                            if let Err(e) = pool.update_on_block(block.data).await {
+                                                warn!("Failed to clean mempool after block: {:?}", e);
+                                            }
+                                        }
+                                    }
                                     Err(e) => warn!("Block rejected by consensus: {:?}", e),
                                 }
                             }

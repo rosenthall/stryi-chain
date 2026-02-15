@@ -49,7 +49,7 @@ use crate::grpc::StryiSyncServiceConfig;
 use crate::http::StryiHttpServiceConfig;
 use crate::keys::PeerKey;
 use crate::middleware::ready::ReadyFlag;
-use crate::miner::StryiMinerConfig;
+use crate::miner::{MinerBackend, StryiMiner, StryiMinerConfig};
 use crate::node::{StryiChainNode, build_consensus_constants};
 use crate::tls::cert_and_key_from_peer;
 use crate::util::{resolve_ipv4_advertise, try_genesis_config_from_path};
@@ -61,8 +61,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use stryi_core::address::AccountAddress;
-use stryi_core::block::Block;
-use stryi_core::consensus::{BlockValidator, StryiConsensusEngine};
+use stryi_core::block::{Block, BlockHash};
+use stryi_core::consensus::{BlockValidator, ConsensusEngine, StryiConsensusEngine};
 use stryi_core::mempool::{MemPool, MemPoolConfig, RbfPolicy, UtxoLookup};
 use stryi_core::storage::{StorageStats, UtxoStorage};
 use stryi_core::transactions::{FeePolicy, OutPoint, UtxoProcessor};
@@ -70,7 +70,9 @@ use stryi_network::{
     PeerId, RendezvousMode, StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig,
 };
 use stryi_storage::{StorageStatus, StryiStorage};
-use tokio::sync::RwLock;
+use tokio::sync::broadcast;
+use tokio::sync::broadcast::Receiver;
+use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::layer::SubscriberExt;
@@ -285,7 +287,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         60 * 60,               // 1-hour expiry time
     );
 
-    // Create utxo_lookup for mempool that reads UTXO by outpoint from storage
+    // Create utxo_lookup for mempool that reads UTXO by the outpoint from storage
     let utxo_lookup: UtxoLookup = {
         let storage = storage.clone();
 
@@ -397,6 +399,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ..Default::default()
     };
 
+    // build channel for tip updates.
+    let (tip_updates_sender, tip_updates_receiver) = broadcast::channel(1);
+
+    // Create a channel, in which Miner will be sending blocks once found nonce,
+    // so nonce can process it (apply, or propagate to other nodes)
+    let (mined_blocks_sender, mined_blocks_receiver) = mpsc::channel(4);
+
     // Master cancellation token, it triggers by SIGINT/SIGTERM signals
     // All subsystems receive child tokens derived from this one
     let master_cancel_token = CancellationToken::new();
@@ -427,6 +436,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         net_cmd: None,
         net_events: None,
         genesis_bootstrap: genesis_bootstrap.clone(),
+
+        // miner interactions
+        tip_updates_sender,
+        mined_blocks_receiver,
+
+        // services configurations
         sync_service_config,
         http_service_config,
 
@@ -435,22 +450,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         http_is_ready: ReadyFlag::new(RwLock::new(true)),
     };
 
-    // -- Initialize the miner manager --
+    // -- Validate miner config early (before connecting) --
 
-    if cfg.miner_enabled {
-        info!("Mining is enabled, initializing the miner...");
-
-        // Construct boxed closure that will get tip for the miner.
-        let _get_tip = {
-            let storage = node.storage.clone();
-            // Closure captures Arc-ed storage
-            Box::new(move || {
-                // Clone storage for the async block
-                let storage = storage.clone();
-                // Return boxed async future that reads tip
-                Box::pin(async move { storage.read().await.tip().await })
-            })
-        };
+    let miner_config = if cfg.miner_enabled {
+        info!("Mining is enabled, validating miner configuration...");
 
         // Try to get a reward address
         let reward_address =
@@ -489,25 +492,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .bold()
         );
 
-        // Create a channel for network commands
-        // let (net_cmd_tx, net_cmd_rx) = tokio::sync::mpsc::channel(100);
-
-        // Create a channel for network events
-        // let (net_events_tx, net_events_rx) = tokio::sync::broadcast::channel(100);
-
-        // Initialize the miner with the provided configuration
-        let _miner = StryiMinerConfig::new(
+        Some(StryiMinerConfig::new(
             cfg.miner_tx_threshold,
             cfg.block_header_version,
             cfg.miner_max_delay_secs,
             reward_address,
-        );
-
-        // Create the miner instance and run its loop
-        // .....
+        ))
     } else {
         info!("Mining is disabled, skipping miner initialization.");
-    }
+        None
+    };
 
     // Connect the node to the network.
     // This will start the network manager and connect to the rendezvous server if configured.
@@ -554,6 +548,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
         NodeStartMode::Auto => unreachable!(),
     }
 
+    // -- Spawn the miner if enabled --
+    // This must happen after connect() (channels exist) and after consensus engine init (difficulty calc available).
+    if let Some(miner_cfg) = miner_config {
+        info!("Spawning miner...");
+
+        let consensus_consts = build_consensus_constants(&storage).await?;
+        let engine = node
+            .consensus_engine
+            .as_ref()
+            .expect("consensus_engine must be set before spawning miner")
+            .clone();
+
+        let backend: Arc<dyn MinerBackend> = Arc::new(NodeMinerBackend {
+            storage: storage.clone(),
+            consensus_consts,
+            engine,
+            tip_updates: tip_updates_receiver,
+        });
+
+        let miner = StryiMiner::new(
+            miner_cfg,
+            node.mempool.clone(),
+            backend,
+            mined_blocks_sender,
+        );
+
+        miner.spawn();
+        info!("Miner spawned successfully!");
+    }
+
     // Spawn a signal listener that cancels the master token on SIGINT/SIGTERM.
     {
         let cancel = master_cancel_token.clone();
@@ -583,4 +607,49 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     info!("Node shutdown complete.");
     Ok(())
+}
+
+/// Concrete implementation of [`MinerBackend`] that bridges the miner
+/// to the node's storage, consensus constants, and consensus engine.
+struct NodeMinerBackend {
+    storage: Arc<RwLock<StryiStorage>>,
+    consensus_consts: stryi_core::consensus::ConsensusConsts,
+    engine: Arc<tokio::sync::Mutex<StryiConsensusEngine<StryiStorage>>>,
+    tip_updates: Receiver<BlockHash>,
+}
+
+impl MinerBackend for NodeMinerBackend {
+    fn tip(
+        &self,
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        Result<(u64, BlockHash), stryi_storage::StryiStorageError>,
+    > {
+        Box::pin(async { self.storage.read().await.tip().await })
+    }
+
+    fn difficulty_bits(&self, height: u64) -> u8 {
+        self.consensus_consts.difficulty_bits_for_height(height)
+    }
+
+    fn block_subsidy(&self, height: u64) -> u64 {
+        self.consensus_consts.block_subsidy(height)
+    }
+
+    fn submit_block(
+        &self,
+        block: Block,
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        Result<stryi_core::consensus::ConsensusVerdict, stryi_core::StryiCoreError>,
+    > {
+        Box::pin(async {
+            let mut guard = self.engine.lock().await;
+            guard.on_block(block).await
+        })
+    }
+
+    fn subscribe_tip_changes(&self) -> Receiver<BlockHash> {
+        self.tip_updates.resubscribe()
+    }
 }
