@@ -504,13 +504,69 @@ impl StryiChainNode {
 
         // If our tip is not included in other peer's chain - it is way harder to find LCA.
         // We use some binary-search-ish algorithm for that purpose to reduce RPC calls amount and
-        // find LCA in just O(log n) requests, which is about 20 steps for searching in 1_000_00 blocks.
+        // find LCA in just O(log n) requests, which is about 20 steps for searching in 1_000_000 blocks.
 
-        // TODO: Integrate LCA implementation in sync()
-
-        todo!(
-            "Cannot perform IBD/sync process if another node has no our tip already included in its chain yet "
+        info!(
+            "Peer {} does not have our local tip {}. Finding LCA via binary search.",
+            peer, local_tip_hash
         );
+
+        let external_height = external_chain_info.height;
+
+        let (lca_height, lca_hash) = self
+            .find_last_common_ancestor(&mut grpc_client, external_height, local_tip_height)
+            .await?;
+
+        info!(
+            "LCA found: height={}, hash={}. Chains start differ since height {}.",
+            lca_height,
+            lca_hash,
+            lca_height + 1
+        );
+
+        if external_height == lca_height {
+            info!(
+                "Remote tip is at LCA height {}. Local chain (height {}) is ahead. Nothing to sync.",
+                lca_height, local_tip_height
+            );
+            self.set_consensus_engine(engine);
+            // TODO: Make other nodes try to synchronize with local one when local has better height immediately
+
+            return Ok(());
+        }
+
+        let start_height = lca_height + 1;
+        let end_height = external_height;
+        let blocks_to_download = (end_height - start_height + 1) as usize;
+
+        let batch_size = std::cmp::min(
+            self.sync_service_config.max_blocks_range_per_request,
+            blocks_to_download,
+        );
+
+        let downloaded_blocks =
+            fetch_blocks_batch(&mut grpc_client, batch_size, start_height, end_height).await?;
+
+        info!(
+            "Downloaded {} blocks [{}, {}]. Feeding to consensus engine for fork resolution.",
+            downloaded_blocks.len(),
+            start_height,
+            end_height
+        );
+
+        ingest_ibd_batch(&mut engine, downloaded_blocks)
+            .await
+            .map_err(|e| {
+                StryiNodeError::other(format!("Critical error during fork resolution: {e}"))
+            })?;
+
+        self.set_consensus_engine(engine);
+
+        
+        info!("Finished synchronization with the network!");
+        
+
+        Ok(())
     }
 
     // simple helper to validate local values against ones from peer
