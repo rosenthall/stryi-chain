@@ -503,9 +503,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         sync_service_config,
         http_service_config,
 
-        // These are temporary always set to true until I'll finish node's db synchronization
-        grpc_is_ready: ReadyFlag::new(RwLock::new(true)),
-        http_is_ready: ReadyFlag::new(RwLock::new(true)),
+        // Start as not-ready; flipped to true after sync/bootstrap completes.
+        grpc_is_ready: ReadyFlag::new(RwLock::new(false)),
+        http_is_ready: ReadyFlag::new(RwLock::new(false)),
     };
 
     // Connect the node to the network.
@@ -552,6 +552,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         NodeStartMode::Auto => unreachable!(),
     }
+
+    // Node is synchronized — mark services as ready.
+    *node.grpc_is_ready.write().await = true;
+    *node.http_is_ready.write().await = true;
+    info!("Node synchronized. HTTP and gRPC services are now ready.");
 
     // -- Spawn the miner if enabled --
     // This must happen after connect() (channels exist) and after consensus engine init (difficulty calc available).

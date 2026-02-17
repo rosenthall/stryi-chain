@@ -4,6 +4,7 @@
 //! - Querying a block by height or hash;
 //! - Calculating someone's available balance by address;
 
+mod address;
 mod blocks;
 mod error;
 mod misc;
@@ -11,13 +12,16 @@ mod model;
 mod tx;
 
 use crate::error::StryiNodeError;
+use crate::http::address::__path_get_balance;
 use crate::http::blocks::__path_get_block;
 use crate::http::error::StryiNodeHttpApiError;
 use crate::http::misc::__path_get_nodestate;
 use crate::http::misc::get_nodestate;
+use crate::http::model::AddressBalanceResponse;
 use crate::http::model::BlockResponse;
 use crate::http::model::NodeStateBody;
 use crate::http::model::SendTransactionRequest;
+use crate::http::model::UtxoEntry;
 use crate::http::tx::__path_send_tx;
 use crate::http::tx::send_tx;
 use crate::middleware::ready::{NotReadyResponder, ReadyFlag, ReadyGateLayer};
@@ -116,11 +120,13 @@ where
 /// Aggregate the spec for http server.
 #[derive(OpenApi)]
 #[openapi(
-    paths(get_nodestate, send_tx, get_block),
+    paths(get_nodestate, send_tx, get_block, get_balance),
     components(schemas(
         NodeStateBody,
         SendTransactionRequest,
         BlockResponse,
+        AddressBalanceResponse,
+        UtxoEntry,
         StryiNodeHttpApiError
     ))
 )]
@@ -167,6 +173,7 @@ where
         // TODO: Make BlockData.inputs skip serialization of no inputs
         .route("/api/block/{param}", get(blocks::get_block))
         .route("/api/tx", post(send_tx))
+        .route("/api/address/{addr}/balance", get(address::get_balance))
         .with_state(state);
 
     let listener = TcpListener::bind(cfg.address)
