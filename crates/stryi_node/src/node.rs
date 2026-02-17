@@ -562,9 +562,7 @@ impl StryiChainNode {
 
         self.set_consensus_engine(engine);
 
-        
         info!("Finished synchronization with the network!");
-        
 
         Ok(())
     }
@@ -714,12 +712,14 @@ impl StryiChainNode {
         let storage_for_grpc = Arc::clone(&storage);
 
         // http server future
+        let tx_broadcaster = crate::http::TxBroadcaster::new(net_cmd.clone());
         let http_cancel = cancel_token.child_token();
         let http_fut = async {
             crate::http::start_http_server(
                 storage_for_http,
                 http_service_config.clone(),
                 mempool.clone(),
+                tx_broadcaster,
                 http_is_ready,
                 http_cancel,
             )

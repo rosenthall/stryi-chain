@@ -30,19 +30,42 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use stryi_core::mempool::MemPool;
 use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
-use stryi_network::PeerId;
+use stryi_core::transactions::Transaction;
+use stryi_network::{NetworkCommand, PeerId};
 use tokio::net::TcpListener;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
-use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing::info;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 /// Fixed value for the http service name to register in the network.
 pub const HTTP_SERVICE_TAG: &str = "http-user";
+
+/// Thin wrapper around the network command channel.
+/// Only exposes transaction publishing, keeping HTTP decoupled from irrelevant stryi network's stuff
+#[derive(Clone)]
+pub struct TxBroadcaster {
+    net_cmd: mpsc::Sender<NetworkCommand>,
+}
+
+impl TxBroadcaster {
+    pub fn new(net_cmd: mpsc::Sender<NetworkCommand>) -> Self {
+        Self { net_cmd }
+    }
+
+    pub async fn publish_tx(&self, tx: Transaction) {
+        if let Err(e) = self
+            .net_cmd
+            .send(NetworkCommand::PublishTransaction(tx))
+            .await
+        {
+            tracing::warn!("Failed to broadcast transaction to network: {e}");
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct StryiHttpService<DB>
@@ -52,11 +75,11 @@ where
     /// Configuration for this HTTP service
     pub(crate) config: StryiHttpServiceConfig,
 
-    /// Mempool instance
     pub(crate) mempool: Arc<RwLock<MemPool>>,
-
-    /// Arc'd storage reference
     pub(crate) storage: Arc<RwLock<DB>>,
+
+    /// Broadcaster for gossiping accepted transactions to peers.
+    pub(crate) tx_broadcaster: TxBroadcaster,
 }
 
 #[derive(Clone, Debug)]
@@ -103,12 +126,13 @@ where
 )]
 struct ApiDoc;
 
-/// Spawn the HTTP API. All routes stay behind `ReadyGateLayer` until the
-/// sync code flips `*ready.write() = true`.
+/// Spawn the HTTP API
+/// All routes stay behind `ReadyGateLayer` until somebody flips `*ready.write() = true`.
 pub async fn start_http_server<DB>(
     storage: Arc<RwLock<DB>>,
     cfg: StryiHttpServiceConfig,
     mempool: Arc<RwLock<MemPool>>,
+    tx_broadcaster: TxBroadcaster,
     ready: ReadyFlag,
     cancel_token: tokio_util::sync::CancellationToken,
 ) -> Result<(), StryiNodeError>
@@ -120,6 +144,7 @@ where
         config: cfg.clone(),
         storage,
         mempool,
+        tx_broadcaster,
     };
 
     let state = Arc::new(svc);
@@ -135,8 +160,6 @@ where
         .layer(TraceLayer::new_for_http())
         // Readiness gate
         .layer(ReadyGateLayer::new(ready))
-        // Only accept application/json
-        .layer(ValidateRequestHeaderLayer::accept("application/json"))
         // -- Functional endpoints --
         // docs
         .merge(SwaggerUi::new("/api/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))

@@ -108,11 +108,16 @@ where
         .await
         .map_err(map_mempool)?; // Map MemPoolError to StryiNodeHttpApiError if it occurs
 
+    drop(mem);
+
     info!(
         "Received and added to mempool transaction from {}: {}",
         author_address,
         transaction.data.hash()
     );
+
+    // Broadcast to network peers
+    state.tx_broadcaster.publish_tx(transaction).await;
 
     // Return a success response
     Ok(Response::builder()
