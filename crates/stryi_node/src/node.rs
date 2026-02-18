@@ -941,7 +941,12 @@ impl StryiChainNode {
                                     broadcast_block.block.header.height,
                                     broadcast_block.block.block_hash()
                                 );
+
+                                // Capture fields before moving block out
+                                let orig_miner_address = broadcast_block.miner_address;
+                                let orig_first_seen = broadcast_block.first_seen;
                                 let block = broadcast_block.block;
+
                                 let mut engine = consensus_engine.lock().await;
                                 match engine.on_block(block.clone()).await {
                                     Ok(verdict) => {
@@ -959,9 +964,18 @@ impl StryiChainNode {
                                             // Drop engine lock before acquiring mempool lock
                                             drop(engine);
                                             let mut pool = mempool_for_events.write().await;
-                                            if let Err(e) = pool.update_on_block(block.data).await {
+                                            if let Err(e) = pool.update_on_block(block.data.clone()).await {
                                                 warn!("Failed to clean mempool after block: {:?}", e);
                                             }
+                                            drop(pool);
+
+                                            // Re-broadcast to gossipsub so blocks propagate beyond the first hop
+                                            let wrapped = BroadcastBlock::new(
+                                                block,
+                                                orig_miner_address,
+                                                orig_first_seen,
+                                            );
+                                            let _ = net_cmd.send(NetworkCommand::PublishBlock(wrapped)).await;
                                         }
                                     }
                                     Err(e) => warn!("Block rejected by consensus: {:?}", e),
