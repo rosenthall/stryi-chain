@@ -952,24 +952,32 @@ impl StryiChainNode {
                                     Ok(verdict) => {
                                         info!("Consensus verdict: {:?}", verdict);
 
-                                        // check if the block was applied
+                                        // Tip update + mempool cleanup — only when canonical chain changed
                                         if matches!(verdict,
                                             ConsensusVerdict::Applied { .. } | ConsensusVerdict::CausedReorganization { .. }
                                         ) {
-
                                             debug!("Block applied, updating tip and clearing mempool.");
                                             let _ = tip_updates_sender.send(block.block_hash());
 
-                                            // Clean confirmed transactions from the mempool's internal state
-                                            // Drop engine lock before acquiring mempool lock
                                             drop(engine);
                                             let mut pool = mempool_for_events.write().await;
                                             if let Err(e) = pool.update_on_block(block.data.clone()).await {
                                                 warn!("Failed to clean mempool after block: {:?}", e);
                                             }
                                             drop(pool);
+                                        } else {
+                                            drop(engine);
+                                        }
 
-                                            // Re-broadcast to gossipsub so blocks propagate beyond the first hop
+                                        // Re-broadcast all NEW valid blocks to gossipsub.
+                                        // Skip AlreadyKnown (peers may already have it) and Rejected (invalid).
+                                        // Gossipsub message dedup prevents infinite relay loops.
+                                        let should_relay = matches!(verdict,
+                                            ConsensusVerdict::Applied { .. }
+                                            | ConsensusVerdict::Buffered
+                                            | ConsensusVerdict::CausedReorganization { .. }
+                                        );
+                                        if should_relay {
                                             let wrapped = BroadcastBlock::new(
                                                 block,
                                                 orig_miner_address,
