@@ -71,7 +71,6 @@ impl GenesisBootstrap {
         origin: Option<&str>,
         accept_genesis: bool,
     ) -> Result<SaveOutcome, StryiNodeError> {
-
         if accept_genesis {
             println!(
                 "{} Genesis auto-accepted via --accept-genesis",
@@ -150,7 +149,6 @@ impl GenesisBootstrap {
         Ok(SaveOutcome::SavedNow)
     }
 
-
     fn print_consensus_consts(cs: &ConsensusConsts) {
         use comfy_table::Table;
 
@@ -226,7 +224,7 @@ impl GenesisBootstrap {
             }
         } else {
             // Fallback: no txs (should not happen if validate_candidate was called).
-            table.add_row(vec!["<no outputs>".to_string(), "0".to_string()]);
+            table.add_row(vec!["<no outputs>".to_string(), "0".into(), "0".into()]);
         }
 
         println!("{table}");

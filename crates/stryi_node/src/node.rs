@@ -223,6 +223,43 @@ impl StryiChainNode {
         }
 
         if candidates.is_empty() {
+            // If we already have a local chain, proceed without peers
+            let local_height = {
+                let s = self.storage.read().await;
+                s.tip()
+                    .await
+                    .map_err(|e| StryiNodeError::other(format!("tip(): {e}")))?
+                    .0
+            };
+
+            if local_height > 0 {
+                warn!(
+                    "No peers found, but local chain exists at height {}. Proceeding without sync.",
+                    local_height
+                );
+
+                // Build the consensus engine from already known values from the local save
+                let consensus_constants = build_consensus_constants(&self.storage.clone()).await?;
+                let difficulty_calculator =
+                    build_difficulty_calculator_from_consts::<StryiStorage>(consensus_constants);
+                let block_validator =
+                    BlockValidator::new(consensus_constants, difficulty_calculator.clone());
+                let utxo_processor = UtxoProcessor::new();
+
+                let engine = StryiConsensusEngine::new(
+                    consensus_constants,
+                    block_validator,
+                    utxo_processor,
+                    self.storage.clone(),
+                    difficulty_calculator,
+                )
+                .await
+                .map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
+
+                self.set_consensus_engine(engine);
+                return Ok(());
+            }
+
             return Err(StryiNodeError::other(
                 "No compatible gRPC sync service found",
             ));
@@ -471,10 +508,17 @@ impl StryiChainNode {
 
             let external_height = external_chain_info.height;
 
-            let heights_differ = external_height
-                .checked_sub(local_tip_height)
-                .expect("Local height cannot be higher than external one at this point.")
-                as usize;
+            // If local chain is already at or ahead of peer, nothing to download
+            if local_tip_height >= external_height {
+                info!(
+                    "Local chain (height {}) is at or ahead of peer (height {}). Nothing to sync.",
+                    local_tip_height, external_height
+                );
+                self.set_consensus_engine(engine);
+                return Ok(());
+            }
+
+            let heights_differ = (external_height - local_tip_height) as usize;
 
             // calculate the maximal batch size for requesting blocks we need.
             // If we only need less blocks than `max_blocks_range_per_request` from config - set and download it all like that.
