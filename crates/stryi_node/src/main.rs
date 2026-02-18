@@ -576,6 +576,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             node.mempool.clone(),
             backend,
             mined_blocks_sender,
+            master_cancel_token.child_token(),
         );
 
         miner.spawn();

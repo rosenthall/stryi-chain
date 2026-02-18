@@ -79,6 +79,9 @@ pub struct StryiMiner {
     /// Contains a cancellation token and the join handle for the mining task.
     /// This allows us to cancel the mining task if needed.
     current: Option<(CancellationToken, JoinHandle<()>)>,
+
+    /// Cancellation token for graceful shutdown of the miner event loop.
+    cancel: CancellationToken,
 }
 
 impl StryiMiner {
@@ -87,6 +90,7 @@ impl StryiMiner {
         mempool: Arc<RwLock<MemPool>>,
         backend: Arc<dyn MinerBackend>,
         local_blocks_tx: mpsc::Sender<Block>,
+        cancel: CancellationToken,
     ) -> Self {
         let tip_updates = backend.subscribe_tip_changes();
 
@@ -97,6 +101,7 @@ impl StryiMiner {
             local_blocks_tx,
             tip_updates,
             current: None,
+            cancel,
         }
     }
 
@@ -114,19 +119,38 @@ impl StryiMiner {
 
         loop {
             select! {
-                // periodic timer ticked: try to mine with whatever is in the mempool
+                // periodic timer ticked
                 _ = tick.tick() => {
                     self.maybe_start_new_round(true).await;
                 }
 
-                // canonical tip changed (block was validated and applied by consensus)
-                Ok(_new_tip) = self.tip_updates.recv() => {
-                    if self.current.is_some() {
-                        info!("Canonical tip updated. Aborting current mining round.");
-                        self.abort_current_attempt().await;
+                // canonical tip changed
+                result = self.tip_updates.recv() => {
+                    match result {
+                        Ok(_new_tip) => {
+                            if self.current.is_some() {
+                                info!("Canonical tip updated. Aborting current mining round.");
+                                self.abort_current_attempt().await;
+                            }
+                            // start a fresh countdown from the new tip
+                            tick = new_timer();
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            info!("Miner tip updates lagged by {n} messages.");
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            info!("Tip updates channel closed, stopping miner.");
+                            self.abort_current_attempt().await;
+                            break;
+                        }
                     }
-                    // Reset timer: start a fresh countdown from the new tip
-                    tick = new_timer();
+                }
+
+                // graceful shutdown
+                _ = self.cancel.cancelled() => {
+                    info!("Miner received cancellation signal, stopping.");
+                    self.abort_current_attempt().await;
+                    break;
                 }
             }
         }
@@ -220,7 +244,7 @@ impl StryiMiner {
         }
 
         // Check if there is at least one transaction in the mempool in case if `ignore_threshold` is true
-        if !ignore_threshold && txs_count == 0 {
+        if ignore_threshold && txs_count == 0 {
             info!("No transactions in the mempool, not starting a new mining round.");
             return;
         }
@@ -249,7 +273,7 @@ impl StryiMiner {
             .await
             .expect("Failed to build candidate block"); // todo: Handle candidate block build errors gracefully
 
-        // spawn cancellable PoW task
+        // spawn a cancellable PoW task
 
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
