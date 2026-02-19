@@ -1,0 +1,199 @@
+name: E2E Tests
+
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run E2E
+        working-directory: e2e/docker
+        run: |
+          docker compose -f docker-compose.e2e.yml up --build \
+            --abort-on-container-exit \
+            --exit-code-from wait-for-client-node-1
+
+      - name: Collect metrics
+        if: always()
+        working-directory: e2e/docker
+        run: |
+          DC="docker compose -f docker-compose.e2e.yml"
+
+          logs_for() { $DC logs "$1" 2>/dev/null; }
+
+          extract_ts() {
+            logs_for "$1" | grep -m1 "$2" \
+              | grep -oP '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z' | head -1
+          }
+
+          diff_seconds() {
+            local t1="$1" t2="$2"
+            if [ -z "$t1" ] || [ -z "$t2" ]; then echo "n/a"; return; fi
+            local s1 s2
+            s1=$(date -d "$t1" +%s.%N 2>/dev/null) || { echo "n/a"; return; }
+            s2=$(date -d "$t2" +%s.%N 2>/dev/null) || { echo "n/a"; return; }
+            printf "%.1fs" "$(echo "$s2 - $s1" | bc)"
+          }
+
+          diff_raw() {
+            local t1="$1" t2="$2"
+            if [ -z "$t1" ] || [ -z "$t2" ]; then echo "0"; return; fi
+            local s1 s2
+            s1=$(date -d "$t1" +%s.%N 2>/dev/null) || { echo "0"; return; }
+            s2=$(date -d "$t2" +%s.%N 2>/dev/null) || { echo "0"; return; }
+            echo "$s2 - $s1" | bc
+          }
+
+          status() { if [ "$1" = "n/a" ]; then echo "❌"; else echo "✅"; fi; }
+
+          # ── Chaingen ──────────────────────────────────────────
+          CG_START=$(extract_ts chaingen "Starting chain generation and persistence")
+          CG_END=$(extract_ts chaingen "Done. Persisted")
+          CG_DUR=$(diff_seconds "$CG_START" "$CG_END")
+          CG_BLOCKS=$(logs_for chaingen | grep "Done. Persisted" | grep -oP 'Persisted \K\d+' || echo "?")
+          CG_TXS=$(logs_for chaingen | grep "Done. Persisted" | grep -oP 'transactions created: \K\d+' || echo "?")
+
+          # ── Server node ───────────────────────────────────────
+          SN_START=$(extract_ts server-node "Start mode")
+          SN_READY=$(extract_ts server-node "HTTP API listening")
+          SN_DUR=$(diff_seconds "$SN_START" "$SN_READY")
+
+          # ── Client node ───────────────────────────────────────
+          CN_BOOT=$(extract_ts client-node-1 "Start mode")
+          CN_SYNC_START=$(extract_ts client-node-1 "Start synchronizing with the network")
+          CN_PEER_FOUND=$(extract_ts client-node-1 "peer meta OK")
+          CN_GENESIS=$(extract_ts client-node-1 "Genesis block successfully stored")
+          CN_IBD=$(extract_ts client-node-1 "IBD complete")
+          CN_READY=$(extract_ts client-node-1 "HTTP API listening")
+
+          CN_PEER_DISCOVERY=$(diff_seconds "$CN_SYNC_START" "$CN_PEER_FOUND")
+          CN_GENESIS_DUR=$(diff_seconds "$CN_PEER_FOUND" "$CN_GENESIS")
+          CN_IBD_DUR=$(diff_seconds "$CN_GENESIS" "$CN_IBD")
+          CN_SYNC_TOTAL=$(diff_seconds "$CN_SYNC_START" "$CN_IBD")
+          CN_STARTUP_TOTAL=$(diff_seconds "$CN_BOOT" "$CN_READY")
+
+          # IBD batch stats
+          IBD_BATCHES=$(logs_for client-node-1 | grep -c "IBD batch done" || echo "0")
+          IBD_TOTAL_MS=$(logs_for client-node-1 | grep "IBD batch done" \
+            | grep -oP 'elapsed_ms=\K\d+' | paste -sd+ | bc 2>/dev/null || echo "0")
+          IBD_APPLIED=$(logs_for client-node-1 | grep "IBD batch done" \
+            | grep -oP 'applied=\K\d+' | paste -sd+ | bc 2>/dev/null || echo "0")
+          IBD_BLOCKS_PER_SEC="n/a"
+          if [ "$IBD_TOTAL_MS" -gt 0 ] 2>/dev/null; then
+            IBD_BLOCKS_PER_SEC=$(echo "scale=0; $IBD_APPLIED * 1000 / $IBD_TOTAL_MS" | bc)
+          fi
+
+          PEER_HEIGHT=$(logs_for client-node-1 | grep -m1 "peer meta OK" \
+            | grep -oP 'remote_height=\K\d+' || echo "?")
+
+          # ── Total wall-clock ──────────────────────────────────
+          TOTAL_DUR=$(diff_seconds "$CG_START" "$CN_READY")
+
+          # ── Write Job Summary ─────────────────────────────────
+          {
+            echo "## ⛓️ E2E Benchmark Results"
+            echo ""
+            echo "### Overview"
+            echo "| Phase | Duration | Status |"
+            echo "|-------|----------|--------|"
+            echo "| Chain generation ($CG_BLOCKS blocks) | $CG_DUR | $(status "$CG_DUR") |"
+            echo "| Server node bootstrap | $SN_DUR | $(status "$SN_DUR") |"
+            echo "| Client node sync | $CN_SYNC_TOTAL | $(status "$CN_SYNC_TOTAL") |"
+            echo "| **Total wall-clock** | **$TOTAL_DUR** | |"
+            echo ""
+            echo "### Chain Generation"
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Blocks | $CG_BLOCKS |"
+            echo "| Transactions | $CG_TXS |"
+            echo "| Duration | $CG_DUR |"
+            echo ""
+            echo "### Server Node (bootstrap)"
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Start → API ready | $SN_DUR |"
+            echo ""
+            echo "### Client Node (join + IBD from $PEER_HEIGHT blocks)"
+            echo "| Phase | Duration |"
+            echo "|-------|----------|"
+            echo "| Peer discovery | $CN_PEER_DISCOVERY |"
+            echo "| Genesis fetch & store | $CN_GENESIS_DUR |"
+            echo "| IBD (download + validation) | $CN_IBD_DUR |"
+            echo "| **Total sync** | **$CN_SYNC_TOTAL** |"
+            echo "| Boot → API ready | $CN_STARTUP_TOTAL |"
+            echo ""
+            echo "### IBD Performance"
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Batches | $IBD_BATCHES |"
+            echo "| Blocks applied | $IBD_APPLIED |"
+            echo "| Consensus processing | ${IBD_TOTAL_MS}ms |"
+            echo "| Throughput | ${IBD_BLOCKS_PER_SEC} blocks/s |"
+            echo ""
+            echo "---"
+            echo "**Run:** [#${{ github.run_number }}]\
+          (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) \
+          | **Branch:** \`${{ github.ref_name }}\` \
+          | **Commit:** \`${GITHUB_SHA:0:7}\`"
+            echo ""
+            echo "*$(date -u +'%Y-%m-%d %H:%M:%S UTC')*"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # ── Save JSON artifact ────────────────────────────────
+          raw_num() { echo "$1" | sed 's/s$//' | grep -qP '^\d' && echo "$1" | sed 's/s$//' || echo "null"; }
+
+          cat > /tmp/benchmark.json << ENDJSON
+          {
+            "run_id": ${{ github.run_id }},
+            "run_number": ${{ github.run_number }},
+            "branch": "${{ github.ref_name }}",
+            "sha": "${GITHUB_SHA}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "chaingen": {
+              "blocks": ${CG_BLOCKS:-0},
+              "transactions": ${CG_TXS:-0},
+              "duration_s": $(raw_num "$CG_DUR")
+            },
+            "server_node": {
+              "startup_s": $(raw_num "$SN_DUR")
+            },
+            "client_node": {
+              "peer_discovery_s": $(raw_num "$CN_PEER_DISCOVERY"),
+              "genesis_fetch_s": $(raw_num "$CN_GENESIS_DUR"),
+              "ibd_s": $(raw_num "$CN_IBD_DUR"),
+              "sync_total_s": $(raw_num "$CN_SYNC_TOTAL"),
+              "startup_total_s": $(raw_num "$CN_STARTUP_TOTAL"),
+              "peer_height": ${PEER_HEIGHT:-0}
+            },
+            "ibd": {
+              "batches": ${IBD_BATCHES:-0},
+              "blocks_applied": ${IBD_APPLIED:-0},
+              "consensus_ms": ${IBD_TOTAL_MS:-0},
+              "blocks_per_sec": $([ "$IBD_BLOCKS_PER_SEC" = "n/a" ] && echo "null" || echo "$IBD_BLOCKS_PER_SEC")
+            },
+            "total_wall_clock_s": $(raw_num "$TOTAL_DUR")
+          }
+          ENDJSON
+
+      - name: Upload benchmark data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-${{ github.run_number }}
+          path: /tmp/benchmark.json
+          retention-days: 90
+
+      - name: Dump logs on failure
+        if: failure()
+        working-directory: e2e/docker
+        run: docker compose -f docker-compose.e2e.yml logs
+
+      - name: Cleanup
+        if: always()
+        working-directory: e2e/docker
+        run: docker compose -f docker-compose.e2e.yml down -v --remove-orphans

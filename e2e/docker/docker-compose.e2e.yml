@@ -4,7 +4,7 @@ services:
     build:
       context: ../..
       dockerfile: e2e/docker/devkit.Dockerfile
-    env_file: .env.e2e
+    env_file: .env
     volumes:
       - stryi-e2e:/data
       - ../config:/config:ro # map repo/e2e/config -> /config in container
@@ -23,7 +23,7 @@ services:
   # test that chaingen did generate *something*
   check-chaingen:
     image: busybox:1.36
-    env_file: .env.e2e
+    env_file: .env
     depends_on:
       chaingen:
         condition: service_completed_successfully
@@ -40,7 +40,7 @@ services:
     build:
       context: ../..
       dockerfile: e2e/docker/node.Dockerfile
-    env_file: .env.e2e
+    env_file: .env
     depends_on:
       check-chaingen:
         condition: service_completed_successfully
@@ -82,7 +82,7 @@ services:
     build:
       context: ../..
       dockerfile: e2e/docker/tools.Dockerfile
-    env_file: .env.e2e
+    env_file: .env
     # Prefer service_healthy so this container starts only after server-node passes healthcheck.
     # NOTE: some compose/platform versions differ in support for condition: service_healthy;
     # if your setup doesn't wait, the assert script will still poll /api/nodestate as a fallback.
@@ -111,7 +111,7 @@ services:
     build:
       context: ../..
       dockerfile: e2e/docker/node.Dockerfile
-    env_file: .env.e2e
+    env_file: .env
     depends_on:
       server-node:
         condition: service_healthy
@@ -151,7 +151,7 @@ services:
     build:
       context: ../..
       dockerfile: e2e/docker/tools.Dockerfile
-    env_file: .env.e2e
+    env_file: .env
     depends_on:
       client-node-1:
         condition: service_healthy

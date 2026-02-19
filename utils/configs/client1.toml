@@ -1,9 +1,14 @@
-network_rendezvous_mode   = "client"
+network_rendezvous_mode = "client"
 network_rendezvous_address = "/ip4/127.0.0.1/tcp/4001"
-network_listen_addr       = "/ip4/127.0.0.1/tcp/4002"
+network_listen_addr = "/ip4/127.0.0.1/tcp/4002"
 start_mode = "join"
+storage_path = "/tmp/stryi/client1"
 
-storage_path              = "/tmp/stryi/client1"
-grpc_sync_address         = "127.0.0.1:6002"
-http_service_address      = "127.0.0.1:7002"
-peer_key_path             = "/tmp/stryi/client1/peer.stryi_keys"
+grpc_sync_listen = "127.0.0.1:6002"
+grpc_sync_advertise = "/dns4/localhost/tcp/6002"
+
+
+http_service_listen = "127.0.0.1:7002"
+http_service_advertise = "/dns4/localhost/tcp/7002"
+
+peer_key_path = "/tmp/stryi/client1/peer.stryi_keys"
