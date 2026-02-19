@@ -57,6 +57,7 @@ services:
         "true"
       ]
     restart: "no"
+    stop_grace_period: 5s
     # for local debugging purpose
     ports:
       - "${SERVER_NODE_GRPC_API_PORT}:${SERVER_NODE_GRPC_API_PORT}"
@@ -143,6 +144,7 @@ services:
       retries: 10
       start_period: 10s
     restart: "no"
+    stop_grace_period: 5s
 
 
   wait-for-client-node-1:

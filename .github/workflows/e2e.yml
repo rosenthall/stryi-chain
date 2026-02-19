@@ -14,9 +14,32 @@ jobs:
       - name: Run E2E
         working-directory: e2e/docker
         run: |
-          docker compose -f docker-compose.e2e.yml up --build \
-            --abort-on-container-exit \
-            --exit-code-from wait-for-client-node-1
+          set -euo pipefail
+          DC="docker compose -f docker-compose.e2e.yml"
+          SVC="wait-for-client-node-1"
+          
+          # Start everything detached
+          $DC up -d --build
+          
+          # Stream logs so the job shows progress
+          $DC logs -f --no-color &
+          LOGS_PID=$!
+          
+          # Wait for the test service to stop; capture its exit code (printed to stdout)
+          EXIT_CODE="$($DC wait --down-project "$SVC" | tail -n1)"
+          
+          # Stop log streaming (project may already be going down)
+          kill "$LOGS_PID" 2>/dev/null || true
+          
+          echo "Service '$SVC' exited with code: $EXIT_CODE"
+          exit "$EXIT_CODE"
+
+      #- name: Run E2E
+      #  working-directory: e2e/docker
+      #  run: |
+      #    docker compose -f docker-compose.e2e.yml up --build \
+      #      --abort-on-container-exit \
+      #      --exit-code-from wait-for-client-node-1
 
       - name: Collect metrics
         if: always()

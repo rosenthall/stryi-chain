@@ -587,8 +587,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     {
         let cancel = master_cancel_token.clone();
         tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            info!("Received shutdown signal (SIGINT), initiating graceful shutdown...");
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    info!("Received SIGINT, initiating graceful shutdown...");
+                }
+                _ = sigterm.recv() => {
+                    info!("Received SIGTERM, initiating graceful shutdown...");
+                }
+            }
             cancel.cancel();
         });
     }
