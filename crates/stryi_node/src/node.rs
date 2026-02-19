@@ -518,25 +518,35 @@ impl StryiChainNode {
                 return Ok(());
             }
 
-            let heights_differ = (external_height - local_tip_height) as usize;
+            let batch_size = self.sync_service_config.max_blocks_range_per_request;
+            let mut current_height = local_tip_height + 1;
 
-            // calculate the maximal batch size for requesting blocks we need.
-            // If we only need less blocks than `max_blocks_range_per_request` from config - set and download it all like that.
-            let batch_size = std::cmp::min(
-                self.sync_service_config.max_blocks_range_per_request,
-                heights_differ,
-            );
+            while current_height <= external_height {
+                let downloaded_blocks = fetch_blocks_batch(
+                    &mut grpc_client,
+                    batch_size,
+                    current_height,
+                    external_height,
+                )
+                .await?;
 
-            let (start_height, end_height) = (local_tip_height + 1, external_height);
+                if downloaded_blocks.is_empty() {
+                    warn!("Peer returned empty batch at height {}. Stopping IBD.", current_height);
+                    break;
+                }
 
-            let downloaded_blocks =
-                fetch_blocks_batch(&mut grpc_client, batch_size, start_height, end_height).await?;
+                let fetched_count = downloaded_blocks.len() as u64;
 
-            ingest_ibd_batch(&mut engine, downloaded_blocks)
-                .await
-                .map_err(|e| {
-                    StryiNodeError::other(format!("Got critical error during IBD process : {e}"))
-                })?;
+                ingest_ibd_batch(&mut engine, downloaded_blocks)
+                    .await
+                    .map_err(|e| {
+                        StryiNodeError::other(format!(
+                            "Got critical error during IBD process : {e}"
+                        ))
+                    })?;
+
+                current_height += fetched_count;
+            }
 
             // put ConsensusEngine in place
             self.set_consensus_engine(engine);
@@ -579,30 +589,41 @@ impl StryiChainNode {
             return Ok(());
         }
 
-        let start_height = lca_height + 1;
+        let batch_size = self.sync_service_config.max_blocks_range_per_request;
         let end_height = external_height;
-        let blocks_to_download = (end_height - start_height + 1) as usize;
+        let mut current_height = lca_height + 1;
 
-        let batch_size = std::cmp::min(
-            self.sync_service_config.max_blocks_range_per_request,
-            blocks_to_download,
-        );
+        while current_height <= end_height {
+            let downloaded_blocks = fetch_blocks_batch(
+                &mut grpc_client,
+                batch_size,
+                current_height,
+                end_height,
+            )
+            .await?;
 
-        let downloaded_blocks =
-            fetch_blocks_batch(&mut grpc_client, batch_size, start_height, end_height).await?;
+            if downloaded_blocks.is_empty() {
+                warn!("Peer returned empty batch at height {}. Stopping sync.", current_height);
+                break;
+            }
 
-        info!(
-            "Downloaded {} blocks [{}, {}]. Feeding to consensus engine for fork resolution.",
-            downloaded_blocks.len(),
-            start_height,
-            end_height
-        );
+            let fetched_count = downloaded_blocks.len() as u64;
 
-        ingest_ibd_batch(&mut engine, downloaded_blocks)
-            .await
-            .map_err(|e| {
-                StryiNodeError::other(format!("Critical error during fork resolution: {e}"))
-            })?;
+            info!(
+                "Downloaded {} blocks [{}, {}]. Feeding to consensus engine for fork resolution.",
+                fetched_count,
+                current_height,
+                current_height + fetched_count - 1
+            );
+
+            ingest_ibd_batch(&mut engine, downloaded_blocks)
+                .await
+                .map_err(|e| {
+                    StryiNodeError::other(format!("Critical error during fork resolution: {e}"))
+                })?;
+
+            current_height += fetched_count;
+        }
 
         self.set_consensus_engine(engine);
 
