@@ -18,33 +18,28 @@ jobs:
           DC="docker compose -f docker-compose.e2e.yml"
           SVC="wait-for-client-node-1"
           
-          LOGS_PID=""
-          cleanup_logs() { [ -n "${LOGS_PID:-}" ] && kill "$LOGS_PID" 2>/dev/null || true; }
-          trap cleanup_logs EXIT
-          
-          # IMPORTANT: anchor on the one-shot test service so dependencies run too
+          # Bring up only the test service (and its deps)
           $DC up -d --build "$SVC"
           
-          # Logs (optional)
+          # Stream logs (optional)
           $DC logs -f --no-color &
           LOGS_PID=$!
+          trap 'kill "$LOGS_PID" 2>/dev/null || true' EXIT
           
-          # Wait until test service stops
+          # Wait for the test service to finish
           $DC wait "$SVC" >/dev/null 2>&1 || true
           
-          # Now it must exist; get its container id and exit code
-          CID="$($DC ps -q "$SVC")"
+          # IMPORTANT: include exited containers
+          CID="$($DC ps -a -q "$SVC")"
           if [ -z "$CID" ]; then
             echo "ERROR: '$SVC' container still not found. Dumping compose state:"
-            $DC ps
-            $DC config
+            $DC ps -a
             exit 1
           fi
           
           EXIT_CODE="$(docker inspect -f '{{.State.ExitCode}}' "$CID")"
           echo "Service '$SVC' exited with code: $EXIT_CODE"
           exit "$EXIT_CODE"
-      
 
       #- name: Run E2E
       #  working-directory: e2e/docker
