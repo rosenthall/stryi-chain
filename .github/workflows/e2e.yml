@@ -18,21 +18,37 @@ jobs:
           DC="docker compose -f docker-compose.e2e.yml"
           SVC="wait-for-client-node-1"
           
+          # Ensure background log tail is always stopped
+          LOGS_PID=""
+          cleanup_logs() {
+            if [ -n "${LOGS_PID:-}" ]; then
+              kill "$LOGS_PID" 2>/dev/null || true
+            fi
+          }
+          trap cleanup_logs EXIT
+          
           # Start everything detached
           $DC up -d --build
           
-          # Stream logs so the job shows progress
+          # Stream logs for visibility
           $DC logs -f --no-color &
           LOGS_PID=$!
           
-          # Wait for the test service to stop; capture its exit code (printed to stdout)
-          EXIT_CODE="$($DC wait --down-project "$SVC" | tail -n1)"
+          # Wait for the one-shot "test" container to stop (ignore exit status here)
+          $DC wait "$SVC" >/dev/null 2>&1 || true
           
-          # Stop log streaming (project may already be going down)
-          kill "$LOGS_PID" 2>/dev/null || true
+          # Read the test container exit code and propagate it
+          CID="$($DC ps -q "$SVC")"
+          if [ -z "$CID" ]; then
+            echo "ERROR: could not find container id for service '$SVC'"
+            $DC ps
+            exit 1
+          fi
           
+          EXIT_CODE="$(docker inspect -f '{{.State.ExitCode}}' "$CID")"
           echo "Service '$SVC' exited with code: $EXIT_CODE"
           exit "$EXIT_CODE"
+      
 
       #- name: Run E2E
       #  working-directory: e2e/docker
