@@ -18,30 +18,26 @@ jobs:
           DC="docker compose -f docker-compose.e2e.yml"
           SVC="wait-for-client-node-1"
           
-          # Ensure background log tail is always stopped
           LOGS_PID=""
-          cleanup_logs() {
-            if [ -n "${LOGS_PID:-}" ]; then
-              kill "$LOGS_PID" 2>/dev/null || true
-            fi
-          }
+          cleanup_logs() { [ -n "${LOGS_PID:-}" ] && kill "$LOGS_PID" 2>/dev/null || true; }
           trap cleanup_logs EXIT
           
-          # Start everything detached
-          $DC up -d --build
+          # IMPORTANT: anchor on the one-shot test service so dependencies run too
+          $DC up -d --build "$SVC"
           
-          # Stream logs for visibility
+          # Logs (optional)
           $DC logs -f --no-color &
           LOGS_PID=$!
           
-          # Wait for the one-shot "test" container to stop (ignore exit status here)
+          # Wait until test service stops
           $DC wait "$SVC" >/dev/null 2>&1 || true
           
-          # Read the test container exit code and propagate it
+          # Now it must exist; get its container id and exit code
           CID="$($DC ps -q "$SVC")"
           if [ -z "$CID" ]; then
-            echo "ERROR: could not find container id for service '$SVC'"
+            echo "ERROR: '$SVC' container still not found. Dumping compose state:"
             $DC ps
+            $DC config
             exit 1
           fi
           
