@@ -1,4 +1,5 @@
 use crate::transactions::Transaction;
+use super::size::estimate_transaction_size;
 
 /// Represents a static fee calculation policy using fixed costs for transaction components.
 ///
@@ -42,6 +43,15 @@ impl FeePolicy {
             output_cost,
             byte_cost,
         }
+    }
+
+    /// Estimate fee from input/output counts without a full Transaction.
+    pub fn estimate_fee(&self, num_inputs: usize, num_outputs: usize) -> u64 {
+        let size = estimate_transaction_size(num_inputs, num_outputs);
+        self.fixed_fee
+            + (num_inputs as u64 * self.input_cost)
+            + (num_outputs as u64 * self.output_cost)
+            + (size as u64 * self.byte_cost)
     }
 }
 

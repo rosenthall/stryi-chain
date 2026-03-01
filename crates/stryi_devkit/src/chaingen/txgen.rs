@@ -7,7 +7,6 @@ use stryi_core::StryiCoreError;
 use stryi_core::address::AccountAddress;
 use stryi_core::transactions::{
     FeePolicy, Transaction, TransactionData, TransactionIn, TransactionKind, TransactionOut,
-    estimate_transaction_size,
 };
 use tracing::{debug, info};
 
@@ -66,7 +65,7 @@ pub fn generate_distributing_transaction(
 
     // Calculate fees
     let fee_policy = FeePolicy::default();
-    let actual_fee = estimate_fee(num_inputs, num_outputs, &fee_policy);
+    let actual_fee = fee_policy.estimate_fee(num_inputs, num_outputs);
 
     debug!(
         num_inputs = num_inputs,
@@ -153,17 +152,6 @@ pub fn generate_distributing_transaction(
     Ok(data.sign(&private_key.clone().into_inner()))
 }
 
-/// Exact fee calculation using accurate size estimation
-#[inline]
-fn estimate_fee(num_inputs: usize, num_outputs: usize, fee_policy: &FeePolicy) -> u64 {
-    let estimated_size = estimate_transaction_size(num_inputs, num_outputs);
-
-    fee_policy.fixed_fee
-        + (num_inputs as u64 * fee_policy.input_cost)
-        + (num_outputs as u64 * fee_policy.output_cost)
-        + (estimated_size as u64 * fee_policy.byte_cost)
-}
-
 /// Calculate minimum economically viable UTXO value.
 /// A UTXO is economically viable if it can cover its own future spending cost
 /// plus create at least one meaningful output (min_output_value).
@@ -174,7 +162,7 @@ fn estimate_fee(num_inputs: usize, num_outputs: usize, fee_policy: &FeePolicy) -
 /// - Ensuring outputs remain spendable through multiple generations
 #[inline]
 fn min_viable_output(params: &TransactionGenerationParams) -> u64 {
-    let future_spend_cost = estimate_fee(1, 1, &params.fee_policy);
+    let future_spend_cost = params.fee_policy.estimate_fee(1, 1);
     let base_minimum = future_spend_cost + params.min_output_value;
 
     // Add 50% safety margin to prevent gradual UTXO value degradation
@@ -248,7 +236,7 @@ pub fn generate_simple_tx(
     };
 
     // Calculate fee for single input and single output
-    let fee = estimate_fee(1, 1, &params.fee_policy);
+    let fee = params.fee_policy.estimate_fee(1, 1);
 
     // Check if UTXO is economically spendable
     if utxo_to_spend.value <= fee {
@@ -315,7 +303,7 @@ pub fn generate_consolidation_tx(
     let total_input: u64 = utxos_to_use.iter().map(|u| u.value).sum();
 
     // Calculate exact fee for N inputs -> 1 output
-    let fee = estimate_fee(num_inputs, 1, &params.fee_policy);
+    let fee = params.fee_policy.estimate_fee(num_inputs, 1);
 
     debug!(
         "Consolidating {} UTXOs (total: {}, fee: {})",
@@ -371,7 +359,7 @@ fn generate_splitting_tx(
     // Calculate maximum possible outputs based on available value
     let mut max_possible_outputs = 2;
     for num_outputs in 2..=max_split_outputs {
-        let fee = estimate_fee(1, num_outputs, &params.fee_policy);
+        let fee = params.fee_policy.estimate_fee(1, num_outputs);
         if utxo_to_spend.value <= fee {
             break;
         }
@@ -400,7 +388,7 @@ fn generate_splitting_tx(
     };
 
     // Calculate fee for 1 input -> N outputs
-    let fee = estimate_fee(1, num_outputs, &params.fee_policy);
+    let fee = params.fee_policy.estimate_fee(1, num_outputs);
 
     // Check if fee can be covered BEFORE subtracting
     if utxo_to_spend.value <= fee {
@@ -507,7 +495,7 @@ fn generate_complex_tx(
     // Calculate maximum possible outputs based on available value
     let mut max_possible_outputs = 2;
     for num_outputs in 2..=max_complex_outputs {
-        let fee = estimate_fee(num_inputs, num_outputs, &params.fee_policy);
+        let fee = params.fee_policy.estimate_fee(num_inputs, num_outputs);
         if total_input <= fee {
             break;
         }
@@ -539,7 +527,7 @@ fn generate_complex_tx(
         .collect();
 
     // Calculate fee for N inputs -> M outputs
-    let fee = estimate_fee(num_inputs, num_outputs, &params.fee_policy);
+    let fee = params.fee_policy.estimate_fee(num_inputs, num_outputs);
 
     debug!(
         "Complex tx: {} inputs (total: {}) -> {} outputs (fee: {})",
