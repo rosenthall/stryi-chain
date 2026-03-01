@@ -268,10 +268,13 @@ impl StryiMiner {
         };
 
         // build a block base
-        let block_base = self
-            .build_candidate_block(best_txs)
-            .await
-            .expect("Failed to build candidate block"); // todo: Handle candidate block build errors gracefully
+        let block_base = match self.build_candidate_block(best_txs).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("Failed to build candidate block: {e}. Skipping this round.");
+                return;
+            }
+        };
 
         // spawn a cancellable PoW task
 

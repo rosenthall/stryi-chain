@@ -78,8 +78,8 @@ pub struct ChainSettings {
     /// How generated blocks are persisted/applied.
     /// Allowed values: "consensus_engine", "direct_insert"
     /// Default: "consensus_engine"
-    /// - "consensus_engine" — Build and feed blocks into StryiConsensusEngine; validates and applies blocks as a real node would. Recommended for most tests and benchmarks.
-    /// - "direct_insert" — Write blocks directly to storage without consensus validation. Faster, useful for low-level tests, but may create chains that real nodes reject. Use only when you know what you are doing.
+    /// - "consensus_engine" - Build and feed blocks into StryiConsensusEngine; validates and applies blocks as a real node would. Recommended for most tests and benchmarks.
+    /// - "direct_insert" - Write blocks directly to storage without consensus validation. Faster, useful for low-level tests, but may create chains that real nodes reject. Use only when you know what you are doing.
     pub persistence_mode: PersistenceMode,
 }
 
@@ -152,6 +152,18 @@ impl ChainGenConfig {
         if self.blocks.min_transactions_per_block * 2 > self.blocks.active_addresses_count * 3 {
             return Err(
                 "active_addresses_count is too low for the requested min_transactions_per_block, try doing at least x1.5 of min_transactions_per_block"
+                    .to_string(),
+            );
+        }
+
+        // undo + direct_insert is not supported - undo records are only produced
+        // by the consensus engine, so require consensus_engine mode when undo is requested.
+        if self.blocks.need_undo
+            && self.chain.persistence_mode == PersistenceMode::DirectInsert
+        {
+            return Err(
+                "need_undo=true requires persistence_mode=\"consensus_engine\". \
+                 Direct-insert mode cannot produce BlockUndo records."
                     .to_string(),
             );
         }

@@ -297,12 +297,13 @@ impl ChainGenerator {
 
             // insert undo if needed
             // note: if config is set to PersistenceMode::ConsensusEngine, this will be done by consensus engine automatically.
-            if self.config.blocks.need_undo
-                && self.config.chain.persistence_mode == PersistenceMode::DirectInsert
-            {
-                // NOTE: Do we really need that?
-                todo!("Fix inserting BlockUndo in chaingen if `need_undo` flag provided.");
-            }
+            // Undo + direct_insert is rejected at config validation time,
+            // so this branch is unreachable. Consensus-engine mode handles undo automatically.
+            debug_assert!(
+                !(self.config.blocks.need_undo
+                    && self.config.chain.persistence_mode == PersistenceMode::DirectInsert),
+                "need_undo + DirectInsert should have been rejected by config validation"
+            );
 
             if blocks_done.is_multiple_of(10) || height == end_height {
                 info!(

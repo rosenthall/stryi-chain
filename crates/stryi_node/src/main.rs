@@ -58,7 +58,6 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 use stryi_core::address::AccountAddress;
 use stryi_core::block::Block;
@@ -108,7 +107,6 @@ fn print_essentials() {
     );
 
     println!("{}", "Starting..".blink().green());
-    thread::sleep(Duration::from_secs(3));
 }
 
 #[tokio::main]
@@ -148,8 +146,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .init();
     }
 
-    // Initialize cfg, we use both .toml file and cli parameters for configuration
-    // CLI parameters have higher priority than stryichain.toml so user may overlap values.
+    // Initialize cfg. We use both .toml file and cli parameters for configuration
+    // CLI parameters have higher priority than the toml config so the user can overlap values.
     let cfg = NodeConfig::load().map_err(|e| {
         error!("Got error while trying to setup configuration : {e}");
         e
@@ -587,7 +585,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     {
         let cancel = master_cancel_token.clone();
         tokio::spawn(async move {
-            use tokio::signal::unix::{signal, SignalKind};
+            use tokio::signal::unix::{SignalKind, signal};
             let mut sigterm =
                 signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
             tokio::select! {
