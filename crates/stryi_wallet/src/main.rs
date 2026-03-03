@@ -1,25 +1,20 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 
-/// Node HTTP API client.
 mod api_client;
-
-/// Wallet key management.
+mod cmd;
 mod keys;
-
-/// Transaction building and serialization.
+mod repl;
 mod tx_builder;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::path::{Path, PathBuf};
+use colored::Colorize;
+use std::path::PathBuf;
 
-use crate::api_client::NodeClient;
-use crate::keys::{
-    WalletFile, find_key_by_address, generate_keypair, import_key, load_wallet, save_wallet,
-};
-use crate::tx_builder::{SpendableUtxo, build_payment, serialize_for_submission};
-use stryi_core::transactions::{FeePolicy, OutPoint};
+use stryi_core::address::AccountAddress;
+use stryi_core::block::Block;
+use stryi_core::transactions::TransactionKind;
 
 #[derive(Parser)]
 #[command(name = "stryi-wallet", version, about = "StryiChain CLI Wallet")]
@@ -27,11 +22,14 @@ struct Cli {
     #[arg(long, global = true, default_value_t = default_wallet_path())]
     wallet_path: String,
 
-    #[arg(long, global = true, default_value = "http://localhost:7001")]
+    #[arg(long, global = true, default_value = "http://localhost:5556")]
     node: String,
 
+    #[arg(short = 'i', long = "interactive")]
+    interactive: bool,
+
     #[command(subcommand)]
-    cmd: Command,
+    cmd: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -55,7 +53,11 @@ enum Command {
     },
 
     /// List all addresses in the wallet.
-    List,
+    List {
+        /// Also display private keys.
+        #[arg(long)]
+        show_keys: bool,
+    },
 
     /// Query the balance for an address from the node.
     Balance {
@@ -73,6 +75,28 @@ enum Command {
 
         #[arg(long)]
         amount: u64,
+    },
+
+    /// Delete a key from the wallet.
+    Delete {
+        #[arg(long)]
+        address: String,
+    },
+
+    /// Rename a key in the wallet.
+    Rename {
+        #[arg(long)]
+        address: String,
+
+        #[arg(long)]
+        label: String,
+    },
+
+    /// Query a block by height or hash.
+    Block {
+        /// Block height (u64) or block hash (Bx...).
+        #[arg(long)]
+        id: String,
     },
 
     /// Query and display the connected node's state.
@@ -93,180 +117,269 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let wallet_path = PathBuf::from(&cli.wallet_path);
 
-    match cli.cmd {
-        Command::Init => cmd_init(&wallet_path)?,
-        Command::Generate { label } => cmd_generate(&wallet_path, &label)?,
-        Command::Import { key, label } => cmd_import(&wallet_path, &key, &label)?,
-        Command::List => cmd_list(&wallet_path)?,
-        Command::Balance { address } => cmd_balance(&cli.node, &address).await?,
+    // run repl if asked
+    if cli.interactive {
+        return repl::run_interactive(&wallet_path, &cli.node).await;
+    }
+
+    let Some(cmd) = cli.cmd else {
+        anyhow::bail!("no command given. Use --help or -i for interactive mode.");
+    };
+
+    match cmd {
+        Command::Init => cmd::cmd_init(&wallet_path)?,
+        Command::Generate { label } => cmd::cmd_generate(&wallet_path, &label)?,
+        Command::Import { key, label } => cmd::cmd_import(&wallet_path, &key, &label)?,
+        Command::List { show_keys } => cmd::cmd_list(&wallet_path, show_keys)?,
+        Command::Balance { address } => {
+            let addr = AccountAddress::from_hash_string(&address).context("invalid address")?;
+            cmd::cmd_balance(&cli.node, &addr).await?
+        }
+        Command::Delete { address } => {
+            let addr = AccountAddress::from_hash_string(&address).context("invalid address")?;
+            cmd::cmd_delete(&wallet_path, &addr)?
+        }
+        Command::Rename { address, label } => {
+            let addr = AccountAddress::from_hash_string(&address).context("invalid address")?;
+            cmd::cmd_rename(&wallet_path, &addr, &label)?
+        }
+        Command::Block { id } => cmd::cmd_block(&cli.node, &id).await?,
         Command::Send { from, to, amount } => {
-            cmd_send(&wallet_path, &cli.node, &from, &to, amount).await?
+            let from_addr =
+                AccountAddress::from_hash_string(&from).context("invalid 'from' address")?;
+            let to_addr = AccountAddress::from_hash_string(&to).context("invalid 'to' address")?;
+            cmd::cmd_send(&wallet_path, &cli.node, &from_addr, &to_addr, amount).await?
         }
-        Command::NodeState => cmd_nodestate(&cli.node).await?,
+        Command::NodeState => cmd::cmd_nodestate(&cli.node).await?,
     }
 
     Ok(())
 }
 
-fn cmd_init(wallet_path: &Path) -> Result<()> {
-    if wallet_path.exists() {
-        anyhow::bail!(
-            "wallet file already exists at {}. Use `generate` to add more keys.",
-            wallet_path.display()
-        );
+enum QueryId<'a> {
+    Height(u64),
+    BlockHash(&'a str),
+    TxHash(&'a str),
+    Unknown(&'a str),
+}
+
+fn classify_identifier(input: &str) -> QueryId<'_> {
+    if let Ok(h) = input.parse::<u64>() {
+        return QueryId::Height(h);
     }
-
-    let entry = generate_keypair("default");
-    let wallet = WalletFile {
-        keys: vec![entry.clone()],
-    };
-    save_wallet(wallet_path, &wallet)?;
-
-    println!("Wallet created at {}", wallet_path.display());
-    println!("  Address: {}", entry.address);
-    println!("  Label:   {}", entry.label);
-    Ok(())
-}
-
-fn cmd_generate(wallet_path: &Path, label: &str) -> Result<()> {
-    let mut wallet = load_wallet(wallet_path)
-        .with_context(|| "no wallet found - run `stryi-wallet init` first")?;
-
-    let entry = generate_keypair(label);
-    println!("Generated new key:");
-    println!("  Address: {}", entry.address);
-    println!("  Label:   {}", entry.label);
-
-    wallet.keys.push(entry);
-    save_wallet(wallet_path, &wallet)?;
-    Ok(())
-}
-
-fn cmd_import(wallet_path: &Path, hex_key: &str, label: &str) -> Result<()> {
-    let mut wallet = if wallet_path.exists() {
-        load_wallet(wallet_path)?
-    } else {
-        WalletFile { keys: vec![] }
-    };
-
-    let entry = import_key(hex_key, label)?;
-    println!("Imported key:");
-    println!("  Address: {}", entry.address);
-    println!("  Label:   {}", entry.label);
-
-    wallet.keys.push(entry);
-    save_wallet(wallet_path, &wallet)?;
-    Ok(())
-}
-
-fn cmd_list(wallet_path: &Path) -> Result<()> {
-    let wallet = load_wallet(wallet_path)
-        .with_context(|| "no wallet found - run `stryi-wallet init` first")?;
-
-    if wallet.keys.is_empty() {
-        println!("Wallet is empty.");
-        return Ok(());
+    if input.starts_with("Bx") {
+        return QueryId::BlockHash(input);
     }
+    if input.starts_with("Tx") {
+        return QueryId::TxHash(input);
+    }
+    QueryId::Unknown(input)
+}
 
-    println!("{:<8} {:<44} Private Key", "Label", "Address");
-    println!("{}", "-".repeat(120));
-    for entry in &wallet.keys {
+fn print_block_detail(hash: &str, block: &Block) {
+    let header = &block.header;
+    let txs = &block.data.transactions;
+    let rule = "-".repeat(68);
+
+    println!();
+    println!("  {}", format!("Block #{}", header.height).bold());
+    println!("  {}", rule.cyan());
+    println!("  {:<20} {}", "Hash:".bold(), hash.cyan());
+    println!(
+        "  {:<20} {}",
+        "Prev hash:".bold(),
+        header.previous_block_hash
+    );
+    println!(
+        "  {:<20} {}",
+        "Merkle root:".bold(),
+        header.merkle_root_hash
+    );
+    println!("  {:<20} {}", "Version:".bold(), header.version);
+    println!(
+        "  {:<20} {}",
+        "Height:".bold(),
+        header.height.to_string().cyan()
+    );
+    println!("  {:<20} {}", "Difficulty:".bold(), header.difficulty_bits);
+    println!("  {:<20} {}", "Nonce:".bold(), header.nonce);
+    println!("  {:<20} {}", "Timestamp:".bold(), header.timestamp);
+
+    if let Some(ref gs) = header.genesis_state {
+        println!("  {:<20} {}", "Genesis:".bold(), "yes".green());
+        let c = &gs.consensus_consts;
+        println!("    {:<18} {}", "Init subsidy:".dimmed(), c.initial_subsidy);
         println!(
-            "{:<8} {:<44} {}",
-            entry.label, entry.address, entry.private_key
+            "    {:<18} {}",
+            "Decay interval:".dimmed(),
+            c.decay_interval
+        );
+        println!("    {:<18} {}", "Decay step:".dimmed(), c.decay_step);
+        println!(
+            "    {:<18} {}",
+            "Diff adj blocks:".dimmed(),
+            c.difficulty_adjustment_interval_blocks
         );
     }
-    Ok(())
-}
 
-async fn cmd_balance(node_url: &str, address: &str) -> Result<()> {
-    let client = NodeClient::new(node_url);
-    let resp = client.get_balance(address).await?;
+    println!("  {}", rule.cyan());
+    println!(
+        "  {} {}",
+        "Transactions:".bold(),
+        txs.len().to_string().cyan()
+    );
+    println!("  {}", rule.cyan());
 
-    println!("Address: {}", resp.address);
-    println!("Balance: {}", resp.balance);
+    for (i, tx) in txs.iter().enumerate() {
+        let tx_hash = tx.data.hash();
+        let kind_label = match tx.data.kind {
+            TransactionKind::Coinbase => "Coinbase".yellow(),
+            TransactionKind::Genesis => "Genesis".green(),
+            TransactionKind::Payment => "Payment".white(),
+        };
 
-    if !resp.utxos.is_empty() {
-        println!("\nUTXOs ({}):", resp.utxos.len());
-        for utxo in &resp.utxos {
-            println!("  {}:{} - value {}", utxo.txid, utxo.vout, utxo.value);
+        println!(
+            "  {} {} {}",
+            format!("[{}]", i).cyan().bold(),
+            kind_label,
+            tx_hash.to_string().dimmed()
+        );
+
+        if tx.data.inputs.is_empty() {
+            println!("    {}", "No inputs (coinbase/genesis)".dimmed());
+        } else {
+            for inp in &tx.data.inputs {
+                println!(
+                    "    {} {}:{}",
+                    "in:".dimmed(),
+                    inp.previous_output.txid.to_string().dimmed(),
+                    inp.previous_output.vout
+                );
+            }
+        }
+
+        for out in &tx.data.outputs {
+            println!(
+                "    {} {} -> {}",
+                "out:".dimmed(),
+                out.value.to_string().green(),
+                out.recipient.to_string().cyan()
+            );
+        }
+
+        if i < txs.len() - 1 {
+            println!();
         }
     }
-    Ok(())
+
+    println!("  {}", rule.cyan());
+    println!();
 }
 
-async fn cmd_send(
-    wallet_path: &Path,
-    node_url: &str,
-    from: &str,
-    to: &str,
-    amount: u64,
-) -> Result<()> {
-    let wallet = load_wallet(wallet_path).with_context(
-        || "no wallet found, run `stryi-wallet init` or `stryi-wallet import` first",
-    )?;
-    let key_entry = find_key_by_address(&wallet, from)?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cmd::{cmd_delete, cmd_generate, cmd_init, cmd_list, cmd_rename};
+    use crate::keys::load_wallet;
+    use tempfile::TempDir;
 
-    let client = NodeClient::new(node_url);
+    #[test]
+    fn delete_key() {
+        let dir = TempDir::new().unwrap();
+        let wp = dir.path().join("wallet.json");
 
-    println!("Fetching UTXOs for {}...", from);
-    let balance_resp = client.get_balance(from).await?;
+        cmd_init(&wp).unwrap();
+        cmd_generate(&wp, "second").unwrap();
+        let wallet = load_wallet(&wp).unwrap();
+        assert_eq!(wallet.keys.len(), 2);
 
-    if balance_resp.utxos.is_empty() {
-        anyhow::bail!("no UTXOs available for address {}", from);
+        let addr = AccountAddress::from_hash_string(&wallet.keys[1].address).unwrap();
+        cmd_delete(&wp, &addr).unwrap();
+
+        let wallet = load_wallet(&wp).unwrap();
+        assert_eq!(wallet.keys.len(), 1);
+        assert_eq!(wallet.keys[0].label, "default");
     }
 
-    println!(
-        "Available balance: {} ({} UTXOs)",
-        balance_resp.balance,
-        balance_resp.utxos.len()
-    );
+    #[test]
+    fn delete_nonexistent_address() {
+        let dir = TempDir::new().unwrap();
+        let wp = dir.path().join("wallet.json");
 
-    let spendable: Vec<SpendableUtxo> = balance_resp
-        .utxos
-        .iter()
-        .map(|u| SpendableUtxo {
-            outpoint: OutPoint {
-                txid: u.txid,
-                vout: u.vout,
-            },
-            value: u.value,
-        })
-        .collect();
+        cmd_init(&wp).unwrap();
+        let addr =
+            AccountAddress::from_hash_string("@0000000000000000000000000000000000000000").unwrap();
+        assert!(cmd_delete(&wp, &addr).is_err());
+    }
 
-    let fee_policy = FeePolicy::default();
+    #[test]
+    fn rename_key() {
+        let dir = TempDir::new().unwrap();
+        let wp = dir.path().join("wallet.json");
 
-    println!(
-        "Building transaction: {} -> {} (amount: {})...",
-        from, to, amount
-    );
-    let tx = build_payment(&key_entry.private_key, &spendable, to, amount, &fee_policy)?;
+        cmd_init(&wp).unwrap();
+        let wallet = load_wallet(&wp).unwrap();
+        let addr = AccountAddress::from_hash_string(&wallet.keys[0].address).unwrap();
 
-    let num_inputs = tx.data.inputs.len();
-    let num_outputs = tx.data.outputs.len();
-    let tx_hash = tx.data.hash();
+        cmd_rename(&wp, &addr, "new_name").unwrap();
 
-    let encoded = serialize_for_submission(&tx)?;
-    println!(
-        "Transaction built: {} ({} inputs, {} outputs)",
-        tx_hash, num_inputs, num_outputs
-    );
+        let wallet = load_wallet(&wp).unwrap();
+        assert_eq!(wallet.keys[0].label, "new_name");
+    }
 
-    println!("Submitting to node...");
-    let resp = client.send_transaction(&encoded).await?;
-    println!("Node response: {}", resp);
-    Ok(())
-}
+    #[test]
+    fn rename_nonexistent_address() {
+        let dir = TempDir::new().unwrap();
+        let wp = dir.path().join("wallet.json");
 
-async fn cmd_nodestate(node_url: &str) -> Result<()> {
-    let client = NodeClient::new(node_url);
-    let state = client.get_nodestate().await?;
+        cmd_init(&wp).unwrap();
+        let addr =
+            AccountAddress::from_hash_string("@0000000000000000000000000000000000000000").unwrap();
+        assert!(cmd_rename(&wp, &addr, "x").is_err());
+    }
 
-    println!("Chain:            {}", state.chain_name);
-    println!("API version:      {}", state.api_version);
-    println!("Height:           {}", state.height);
-    println!("Latest block:     {}", state.latest_block_hash);
-    println!("Total difficulty: {}", state.total_difficulty);
-    println!("Last updated:     {}", state.last_update_time);
-    Ok(())
+    #[test]
+    fn list_hides_keys_by_default() {
+        let dir = TempDir::new().unwrap();
+        let wp = dir.path().join("wallet.json");
+        cmd_init(&wp).unwrap();
+        cmd_list(&wp, false).unwrap();
+        cmd_list(&wp, true).unwrap();
+    }
+
+    #[test]
+    fn classify_height() {
+        assert!(matches!(classify_identifier("0"), QueryId::Height(0)));
+        assert!(matches!(classify_identifier("42"), QueryId::Height(42)));
+        assert!(matches!(
+            classify_identifier("999999"),
+            QueryId::Height(999999)
+        ));
+    }
+
+    #[test]
+    fn classify_block_hash() {
+        assert!(matches!(
+            classify_identifier(
+                "Bx7e09ff05219c8e14e8ffe148a9b23a824748cfb77bf0d424f4aff4d2b5b30d73"
+            ),
+            QueryId::BlockHash(_)
+        ));
+    }
+
+    #[test]
+    fn classify_tx_hash() {
+        assert!(matches!(
+            classify_identifier(
+                "Tx9a3b7c05219c8e14e8ffe148a9b23a824748cfb77bf0d424f4aff4d2b5b30d73"
+            ),
+            QueryId::TxHash(_)
+        ));
+    }
+
+    #[test]
+    fn classify_unknown() {
+        assert!(matches!(classify_identifier("foobar"), QueryId::Unknown(_)));
+        assert!(matches!(classify_identifier("hello"), QueryId::Unknown(_)));
+    }
 }

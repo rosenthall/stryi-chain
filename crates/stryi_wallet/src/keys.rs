@@ -1,3 +1,5 @@
+//! Wallet key management.
+
 use anyhow::{Context, Result};
 use k256::ecdsa::SigningKey;
 use k256::elliptic_curve::rand_core::OsRng;
@@ -46,8 +48,14 @@ pub fn import_key(hex_key: &str, label: &str) -> Result<KeyEntry> {
 pub fn load_wallet(path: &Path) -> Result<WalletFile> {
     let data = fs::read_to_string(path)
         .with_context(|| format!("cannot read wallet file at {}", path.display()))?;
-    let wallet: WalletFile = serde_json::from_str(&data).context("failed to parse wallet JSON")?;
+    let wallet: WalletFile =
+        serde_json::from_str(&data).context("failed to parse wallet JSON")?;
     Ok(wallet)
+}
+
+/// Loads a wallet file, returning a clear error if no wallet exists yet.
+pub fn require_wallet(path: &Path) -> Result<WalletFile> {
+    load_wallet(path).context("no wallet found — run `stryi-wallet init` first")
 }
 
 /// Creates parent dirs if needed.

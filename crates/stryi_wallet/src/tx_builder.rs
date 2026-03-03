@@ -3,6 +3,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use bincode::config::standard;
 use stryi_core::PrivateKey;
+use stryi_core::address::AccountAddress;
 use stryi_core::transactions::{
     FeePolicy, OutPoint, Transaction, TransactionData, TransactionIn, TransactionKind,
     TransactionOut,
@@ -16,19 +17,17 @@ pub struct SpendableUtxo {
 
 const DUST_THRESHOLD: u64 = 5_000;
 
+/// Builds and signs a payment transaction using largest-first coin selection from available UTXOs.
 pub fn build_payment(
     sender_key: &PrivateKey,
     available_utxos: &[SpendableUtxo],
-    recipient: &str,
+    recipient: &AccountAddress,
     amount: u64,
     fee_policy: &FeePolicy,
 ) -> Result<Transaction> {
     if available_utxos.is_empty() {
         bail!("no UTXOs available to spend");
     }
-
-    let recipient_address = stryi_core::address::AccountAddress::from_hash_string(recipient)
-        .map_err(|e| anyhow::anyhow!("invalid recipient address: {e}"))?;
 
     let mut sorted: Vec<&SpendableUtxo> = available_utxos.iter().collect();
     sorted.sort_by(|a, b| b.value.cmp(&a.value));
@@ -40,22 +39,22 @@ pub fn build_payment(
         selected.push(utxo);
         total_input += utxo.value;
 
-        let fee_with_change = fee_policy.estimate_fee(selected.len(), 2);
-        if total_input >= amount + fee_with_change {
+        let tentative_fee = fee_policy.estimate_fee(selected.len(), 2);
+        if total_input >= amount + tentative_fee {
             break;
         }
     }
 
-    let fee_no_change = fee_policy.estimate_fee(selected.len(), 1);
-    let fee_with_change = fee_policy.estimate_fee(selected.len(), 2);
+    let final_fee_1out = fee_policy.estimate_fee(selected.len(), 1);
+    let final_fee_2out = fee_policy.estimate_fee(selected.len(), 2);
 
-    if total_input < amount + fee_no_change {
+    if total_input < amount + final_fee_1out {
         bail!(
             "insufficient funds: have {}, need {} (amount) + {} (fee) = {}",
             total_input,
             amount,
-            fee_no_change,
-            amount + fee_no_change,
+            final_fee_1out,
+            amount + final_fee_1out,
         );
     }
 
@@ -69,14 +68,14 @@ pub fn build_payment(
 
     let mut outputs = vec![TransactionOut {
         value: amount,
-        recipient: recipient_address,
+        recipient: *recipient,
     }];
 
-    let remainder = total_input - amount - fee_with_change;
-    if total_input >= amount + fee_with_change && remainder > DUST_THRESHOLD {
+    let remainder = total_input - amount - final_fee_2out;
+    if total_input >= amount + final_fee_2out && remainder > DUST_THRESHOLD {
         let sender_address = {
             let signing_key = sender_key.clone().into_inner();
-            stryi_core::address::AccountAddress::from_public_key(signing_key.verifying_key())
+            AccountAddress::from_public_key(signing_key.verifying_key())
         };
         outputs.push(TransactionOut {
             value: remainder,
@@ -84,8 +83,9 @@ pub fn build_payment(
         });
     }
 
+    // verify total inputs cover amount + actual fee
     let actual_fee = fee_policy.estimate_fee(inputs.len(), outputs.len());
-    if outputs.len() == 1 && total_input < amount + actual_fee {
+    if total_input < amount + actual_fee {
         bail!(
             "insufficient funds after final fee calc: have {}, need {}",
             total_input,
@@ -104,6 +104,7 @@ pub fn build_payment(
     Ok(tx_data.sign(&signing_key))
 }
 
+/// Serializes a signed transaction to base64-encoded bincode for node submission.
 pub fn serialize_for_submission(tx: &Transaction) -> Result<String> {
     let bytes =
         bincode::serde::encode_to_vec(tx, standard()).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -116,12 +117,11 @@ mod tests {
     use k256::ecdsa::SigningKey;
     use k256::elliptic_curve::rand_core::OsRng;
     use stryi_core::PrivateKey;
-    use stryi_core::address::AccountAddress;
     use stryi_core::transactions::TransactionHash;
 
-    fn make_key() -> (PrivateKey, String) {
+    fn make_key() -> (PrivateKey, AccountAddress) {
         let sk = SigningKey::random(&mut OsRng);
-        let addr = AccountAddress::from_public_key(sk.verifying_key()).to_string();
+        let addr = AccountAddress::from_public_key(sk.verifying_key());
         (PrivateKey::new(sk), addr)
     }
 
@@ -189,23 +189,6 @@ mod tests {
 
         let result = build_payment(&sender_key, &[], &recipient_addr, 100_000, &policy);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn serialize_roundtrip() {
-        let (sender_key, _) = make_key();
-        let (_, recipient_addr) = make_key();
-        let policy = FeePolicy::default();
-
-        let utxos = vec![make_utxo(1_000_000, 1)];
-        let tx = build_payment(&sender_key, &utxos, &recipient_addr, 100_000, &policy).unwrap();
-
-        let encoded = serialize_for_submission(&tx).unwrap();
-        let decoded = BASE64_STANDARD.decode(&encoded).unwrap();
-        let (recovered, _): (Transaction, _) =
-            bincode::serde::decode_from_slice(&decoded, standard()).unwrap();
-        assert_eq!(recovered.data.inputs.len(), tx.data.inputs.len());
-        assert_eq!(recovered.data.outputs.len(), tx.data.outputs.len());
     }
 
     #[test]

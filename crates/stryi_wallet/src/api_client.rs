@@ -1,4 +1,7 @@
+//! Node HTTP API client.
+
 use anyhow::{Context, Result};
+use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use stryi_core::transactions::TransactionHash;
 
@@ -26,6 +29,12 @@ pub struct NodeStateResponse {
     pub last_update_time: u64,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct BlockQueryResponse {
+    pub hash: String,
+    pub block: serde_json::Value,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SendTransactionRequest {
     pub raw_tx: String,
@@ -37,6 +46,7 @@ pub struct NodeClient {
 }
 
 impl NodeClient {
+    /// Creates a new client targeting the given node base URL.
     pub fn new(base_url: &str) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -44,71 +54,79 @@ impl NodeClient {
         }
     }
 
+    async fn ensure_success(response: Response, method: &str, url: &str) -> Result<Response> {
+        let status = response.status();
+
+        if status.is_success() {
+            return Ok(response);
+        }
+
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("{method} {url} returned {status}: {body}");
+    }
+
+    /// Fetches the balance and UTXO set for the given address.
     pub async fn get_balance(&self, address: &str) -> Result<AddressBalanceResponse> {
         let url = format!("{}/api/address/{}/balance", self.base_url, address);
-        let resp = self
+        let response = self
             .client
             .get(&url)
             .send()
             .await
             .context("failed to connect to node")?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("GET {url} returned {status}: {body}");
-        }
+        let response = Self::ensure_success(response, "GET", &url).await?;
 
-        resp.json()
+        response
+            .json()
             .await
             .context("failed to parse balance response")
     }
 
+    /// Fetches the current chain state from the node.
     pub async fn get_nodestate(&self) -> Result<NodeStateResponse> {
         let url = format!("{}/api/nodestate", self.base_url);
-        let resp = self
+        let response = self
             .client
             .get(&url)
             .send()
             .await
             .context("failed to connect to node")?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("GET {url} returned {status}: {body}");
-        }
+        let response = Self::ensure_success(response, "GET", &url).await?;
 
-        resp.json()
+        response
+            .json()
             .await
             .context("failed to parse nodestate response")
     }
 
-    pub async fn get_block(&self, identifier: &str) -> Result<serde_json::Value> {
+    /// Fetches a block by height or hash string.
+    pub async fn get_block(&self, identifier: &str) -> Result<BlockQueryResponse> {
         let url = format!("{}/api/block/{}", self.base_url, identifier);
-        let resp = self
+        let response = self
             .client
             .get(&url)
             .send()
             .await
             .context("failed to connect to node")?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("GET {url} returned {status}: {body}");
-        }
+        let response = Self::ensure_success(response, "GET", &url).await?;
 
-        resp.json().await.context("failed to parse block response")
+        response
+            .json()
+            .await
+            .context("failed to parse block response")
     }
 
+    /// Submits a base64-encoded signed transaction to the node.
     pub async fn send_transaction(&self, raw_tx_base64: &str) -> Result<String> {
         let url = format!("{}/api/tx", self.base_url);
         let body = SendTransactionRequest {
             raw_tx: raw_tx_base64.to_string(),
         };
 
-        let resp = self
+        let response = self
             .client
             .post(&url)
             .json(&body)
@@ -116,13 +134,11 @@ impl NodeClient {
             .await
             .context("failed to connect to node")?;
 
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let response = Self::ensure_success(response, "POST", &url).await?;
 
-        if !status.is_success() {
-            anyhow::bail!("POST {url} returned {status}: {text}");
-        }
-
-        Ok(text)
+        response
+            .text()
+            .await
+            .context("failed to read send_transaction response")
     }
 }
