@@ -71,6 +71,7 @@ pub struct StryiNetworkManager {
 // hard‑coded topic names that every node must agree on
 pub const BLOCKS_TOPIC_NAME: &str = "stryichain-blocks";
 pub const TRANSACTIONS_TOPIC_NAME: &str = "stryichain-txs";
+pub const TIPS_TOPIC_NAME: &str = "stryichain-tips";
 
 impl StryiNetworkManager {
     /// Creates a new StryiNetworkManager based on the provided configuration,
@@ -252,9 +253,10 @@ impl StryiNetworkManager {
     pub async fn run_loop(&mut self) {
         let mut swarm = self.swarm.lock().await;
 
-        // Subscribe on gossipsub topics for blocks and transactions
+        // Subscribe on gossipsub topics for blocks, transactions, and chain tips
         let transactions_topic = IdentTopic::new(TRANSACTIONS_TOPIC_NAME);
         let blocks_topic = IdentTopic::new(BLOCKS_TOPIC_NAME);
+        let tips_topic = IdentTopic::new(TIPS_TOPIC_NAME);
 
         // Pending mempool fetch requests, keyed by outbound request ID.
         // Local to the run loop so we avoid borrow conflicts with `self`.
@@ -273,6 +275,11 @@ impl StryiNetworkManager {
             .behaviour_mut()
             .gossipsub
             .subscribe(&blocks_topic)
+            .unwrap();
+        swarm
+            .behaviour_mut()
+            .gossipsub
+            .subscribe(&tips_topic)
             .unwrap();
 
         loop {
@@ -405,6 +412,22 @@ impl StryiNetworkManager {
                                 }
                                 Err(e) => {
                                     error!("Failed to encode transaction for gossipsub: {e:?}");
+                                }
+                            }
+                        }
+
+                        // -- PublishChainTip command --
+                        Some(NetworkCommand::PublishChainTip(announcement)) => {
+                            debug!("NetworkManager: Got PublishChainTip command.");
+                            match bincode::serde::encode_to_vec(&announcement, standard()) {
+                                Ok(encoded) => {
+                                    let topic = IdentTopic::new(TIPS_TOPIC_NAME);
+                                    if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
+                                        warn!("Failed to publish chain tip to gossipsub: {e:?}");
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to encode chain tip for gossipsub: {e:?}");
                                 }
                             }
                         }

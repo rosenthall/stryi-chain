@@ -10,6 +10,7 @@ use crate::middleware::ready::{ReadyFlag, ReadyGateLayer};
 use crate::tls::NodeTlsIdentity;
 use multiaddr::{Multiaddr, Protocol};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 use stryi_core::address::AccountAddress;
 use stryi_core::block::{Block, BlockHash};
@@ -22,8 +23,8 @@ use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 use stryi_core::transactions::{OutPoint, UTXO, UtxoProcessor};
 use stryi_network::ed25519::Keypair;
 use stryi_network::{
-    BroadcastBlock, NetworkCommand, NetworkEvent, PeerId, ServiceRecord, StryiNetworkError,
-    StryiNetworkManager,
+    BroadcastBlock, ChainTipAnnouncement, NetworkCommand, NetworkEvent, PeerId, ServiceRecord,
+    StryiNetworkError, StryiNetworkManager,
 };
 use stryi_storage::{StryiStorage, extract_utxos_from_block};
 use tokio::join;
@@ -191,146 +192,61 @@ impl StryiChainNode {
             .as_ref()
             .ok_or_else(|| StryiNodeError::other("network not connected"))?;
 
+        // Discover a peer with gRPC sync service, retry for up to DISCOVERY_TIMEOUT
         let started = Instant::now();
-        let mut candidates: Vec<(PeerId, ServiceRecord)> = Vec::new();
+        let (peer, mut grpc_client) = loop {
+            match find_sync_peer(net_cmd, &self.sync_service_config).await {
+                Ok(found) => break found,
+                Err(_) if started.elapsed() < Self::DISCOVERY_TIMEOUT => {
+                    sleep(Self::DISCOVERY_INTERVAL).await;
+                }
+                Err(_) => {
+                    // No peers found, if we already have a local chain proceed without sync
+                    let local_height = {
+                        let s = self.storage.read().await;
+                        s.tip()
+                            .await
+                            .map_err(|e| StryiNodeError::other(format!("tip(): {e}")))?
+                            .0
+                    };
 
-        // First, discover peers that offer the gRPC sync service with the compatible version
-        // not fail instantly if none found - retry for up to DISCOVERY_TIMEOUT
-        loop {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            net_cmd
-                .send(NetworkCommand::QueryPeersWithService {
-                    service: GRPC_SERVICE_TAG.to_owned(),
-                    respond_to: tx,
-                })
-                .await
-                .map_err(|_| StryiNodeError::other("network command channel closed"))?;
+                    if local_height > 0 {
+                        warn!(
+                            "No peers found, but local chain exists at height {}. Proceeding without sync.",
+                            local_height
+                        );
 
-            if let Ok(mut v) = rx.await {
-                v.retain(|(_, s)| {
-                    s.version() as usize == self.sync_service_config.protocol_version
-                });
-                if !v.is_empty() {
-                    candidates = v;
-                    break;
+                        let consensus_constants =
+                            build_consensus_constants(&self.storage.clone()).await?;
+                        let difficulty_calculator = build_difficulty_calculator_from_consts::<
+                            StryiStorage,
+                        >(consensus_constants);
+                        let block_validator =
+                            BlockValidator::new(consensus_constants, difficulty_calculator.clone());
+                        let utxo_processor = UtxoProcessor::new();
+
+                        let engine = StryiConsensusEngine::new(
+                            consensus_constants,
+                            block_validator,
+                            utxo_processor,
+                            self.storage.clone(),
+                            difficulty_calculator,
+                        )
+                        .await
+                        .map_err(|e| {
+                            StryiNodeError::other(format!("consensus engine init failed: {e}"))
+                        })?;
+
+                        self.set_consensus_engine(engine);
+                        return Ok(());
+                    }
+
+                    return Err(StryiNodeError::other(
+                        "No compatible gRPC sync service found",
+                    ));
                 }
             }
-
-            if started.elapsed() >= Self::DISCOVERY_TIMEOUT {
-                break;
-            }
-            sleep(Self::DISCOVERY_INTERVAL).await;
-        }
-
-        if candidates.is_empty() {
-            // If we already have a local chain, proceed without peers
-            let local_height = {
-                let s = self.storage.read().await;
-                s.tip()
-                    .await
-                    .map_err(|e| StryiNodeError::other(format!("tip(): {e}")))?
-                    .0
-            };
-
-            if local_height > 0 {
-                warn!(
-                    "No peers found, but local chain exists at height {}. Proceeding without sync.",
-                    local_height
-                );
-
-                // Build the consensus engine from already known values from the local save
-                let consensus_constants = build_consensus_constants(&self.storage.clone()).await?;
-                let difficulty_calculator =
-                    build_difficulty_calculator_from_consts::<StryiStorage>(consensus_constants);
-                let block_validator =
-                    BlockValidator::new(consensus_constants, difficulty_calculator.clone());
-                let utxo_processor = UtxoProcessor::new();
-
-                let engine = StryiConsensusEngine::new(
-                    consensus_constants,
-                    block_validator,
-                    utxo_processor,
-                    self.storage.clone(),
-                    difficulty_calculator,
-                )
-                .await
-                .map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
-
-                self.set_consensus_engine(engine);
-                return Ok(());
-            }
-
-            return Err(StryiNodeError::other(
-                "No compatible gRPC sync service found",
-            ));
-        }
-
-        debug!("Candidates: {:#?}", candidates);
-
-        let (peer, svc) = candidates[0].clone();
-
-        /*
-        // TODO: Turn back service's validation in synchronization process
-        // obtain peer's libp2p public key
-        let peer_pubkey = {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            net_cmd
-                .send(NetworkCommand::QueryPeerPublicKey { peer, respond_to: tx })
-                .await
-                .map_err(|_| StryiNodeError::other("network command channel closed"))?;
-
-            rx.await
-                .map_err(|_| StryiNodeError::other("network response channel closed"))?
-                .ok_or_else(|| StryiNodeError::other("peer not found"))?
         };
-
-
-        // verify the signature on the service info using the peer's public key
-        // convert to ed25519 public key
-        let peer_pubkey = peer_pubkey.try_into_ed25519().expect("peer public key is not ed25519");
-        if !svc.verify_signature(&peer_pubkey) {
-            return Err(StryiNodeError::other("TLS certificate signature invalid"));
-        }
-        */
-
-        info!(
-            "Using gRPC sync service at {} (version {})",
-            svc.address(),
-            svc.version()
-        );
-
-        let (grpc_peer_id, grpc_peer_service_info) = candidates
-            .into_iter()
-            .find(|(_peer, svc)| {
-                trace!("peer's service info: {:?}", svc);
-                trace!(
-                    "Discovered service version: {}, required: {}",
-                    svc.version(),
-                    self.sync_service_config.protocol_version
-                );
-                svc.version() as usize == self.sync_service_config.protocol_version
-            })
-            .ok_or_else(|| StryiNodeError::other("No compatible gRPC sync service found"))?;
-
-        info!(
-            "Using gRPC sync service from peer {} at address {} with version {}",
-            grpc_peer_id,
-            grpc_peer_service_info.address(),
-            grpc_peer_service_info.version()
-        );
-
-        // Connect to gRPC
-
-        // Parse the address into a tonic::transport::Uri
-        let uri = grpc_uri_from_multiaddr(grpc_peer_service_info.address())
-            .map_err(StryiNodeError::other)?;
-
-        let channel = tonic::transport::Endpoint::from(uri)
-            .connect()
-            .await
-            .map_err(|e| StryiNodeError::other(format!("gRPC dial error: {e}")))?;
-
-        let mut grpc_client = BlockchainSyncClient::new(channel);
 
         // get external peer's chain info
         info!("Requesting Chain Info from external peer so we can compare it with local one.");
@@ -350,10 +266,7 @@ impl StryiChainNode {
         // request the genesis block from the gRPC sync service
         // if we already have genesis in local storage - we will compare it to external one
         // if we have no genesis locally - prompt user and ask if we can accept and save this block
-        info!(
-            "Requesting genesis block from gRPC sync service at {}",
-            svc.address()
-        );
+        info!("Requesting genesis block from peer {}", peer);
 
         let external_genesis_block: Block = {
             let response = grpc_client
@@ -508,7 +421,7 @@ impl StryiChainNode {
 
             let external_height = external_chain_info.height;
 
-            // If local chain is already at or ahead of peer, nothing to download
+            // If the local chain is already at or ahead of that peer, nothing to download
             if local_tip_height >= external_height {
                 info!(
                     "Local chain (height {}) is at or ahead of peer (height {}). Nothing to sync.",
@@ -531,7 +444,10 @@ impl StryiChainNode {
                 .await?;
 
                 if downloaded_blocks.is_empty() {
-                    warn!("Peer returned empty batch at height {}. Stopping IBD.", current_height);
+                    warn!(
+                        "Peer returned empty batch at height {}. Stopping IBD.",
+                        current_height
+                    );
                     break;
                 }
 
@@ -584,7 +500,7 @@ impl StryiChainNode {
                 lca_height, local_tip_height
             );
             self.set_consensus_engine(engine);
-            // TODO: Make other nodes try to synchronize with local one when local has better height immediately
+            // Peers learn about our chain via tip announcements in start_services()
 
             return Ok(());
         }
@@ -594,16 +510,15 @@ impl StryiChainNode {
         let mut current_height = lca_height + 1;
 
         while current_height <= end_height {
-            let downloaded_blocks = fetch_blocks_batch(
-                &mut grpc_client,
-                batch_size,
-                current_height,
-                end_height,
-            )
-            .await?;
+            let downloaded_blocks =
+                fetch_blocks_batch(&mut grpc_client, batch_size, current_height, end_height)
+                    .await?;
 
             if downloaded_blocks.is_empty() {
-                warn!("Peer returned empty batch at height {}. Stopping sync.", current_height);
+                warn!(
+                    "Peer returned empty batch at height {}. Stopping sync.",
+                    current_height
+                );
                 break;
             }
 
@@ -687,7 +602,7 @@ impl StryiChainNode {
 
         if info.height == local_height && local_height > 0 && remote_tip_hash != local_tip_hash {
             return Err(StryiNodeError::chain_info_mismatch(
-                "tip_hash@same_height",
+                "tip_hash at the same height",
                 local_tip_hash.to_string(),
                 remote_tip_hash.to_string(),
             ));
@@ -889,14 +804,29 @@ impl StryiChainNode {
             register(http_record).await?;
         }
 
-        // Network event consumer loop - routes
-        // 1. incoming blocks to consensus engine
-        // 2. incoming transactions to mempool
-        // And logs other events
+        // Publish our tip so peers learn about our chain immediately
+        let mut last_announced_tip: Option<BlockHash> = {
+            let engine = consensus_engine.lock().await;
+            if let Some(ann) = build_tip_announcement(&engine) {
+                info!(
+                    "Publishing initial chain tip: height={}, work={}",
+                    ann.height, ann.cumulative_work
+                );
+                let hash = ann.tip_hash;
+                let _ = net_cmd.send(NetworkCommand::PublishChainTip(ann)).await;
+                Some(hash)
+            } else {
+                None
+            }
+        };
+
+        let sync_in_progress = Arc::new(AtomicBool::new(false));
+
+        // Network event consumer loop
         let event_cancel = cancel_token.child_token();
         let mempool_for_events = Arc::clone(&mempool);
 
-        // Helper: recv from an optional channel, or pend forever if mining is disabled in config.
+        // Helper method: receive from an optional channel or pend forever if mining is disabled in config
         async fn recv_mined_block(rx: &mut Option<mpsc::Receiver<Block>>) -> Option<Block> {
             match rx {
                 Some(rx) => rx.recv().await,
@@ -904,9 +834,27 @@ impl StryiChainNode {
             }
         }
 
+        let storage_for_sync = Arc::clone(&storage);
+        let sync_config_for_events = sync_service_config.clone();
+
         let event_loop_fut = async move {
+            let mut tip_heartbeat = tokio::time::interval(Duration::from_secs(30));
+            tip_heartbeat.tick().await; // skip first (already published above)
+
             loop {
                 tokio::select! {
+
+                    // -- periodic chain tip heartbeat --
+                    _ = tip_heartbeat.tick() => {
+                        let engine = consensus_engine.lock().await;
+                        if let Some(ann) = build_tip_announcement(&engine) {
+                            if last_announced_tip.as_ref() != Some(&ann.tip_hash) {
+                                trace!("Tip heartbeat: height={}, work={}", ann.height, ann.cumulative_work);
+                                last_announced_tip = Some(ann.tip_hash);
+                                let _ = net_cmd.send(NetworkCommand::PublishChainTip(ann)).await;
+                            }
+                        }
+                    }
 
                     // -- local miner produced a block --
                     Some(mined_block) = recv_mined_block(&mut mined_blocks_receiver) => {
@@ -926,6 +874,9 @@ impl StryiChainNode {
                                 if matches!(verdict,
                                     ConsensusVerdict::Applied { .. } | ConsensusVerdict::CausedReorganization { .. }
                                 ) {
+                                    let is_reorg = matches!(verdict, ConsensusVerdict::CausedReorganization { .. });
+                                    let tip_ann = if is_reorg { build_tip_announcement(&engine) } else { None };
+
                                     let _ = tip_updates_sender.send(mined_block.block_hash());
                                     drop(engine);
 
@@ -944,6 +895,12 @@ impl StryiChainNode {
                                             .as_secs();
                                         let wrapped = BroadcastBlock::new(mined_block, addr, first_seen);
                                         let _ = net_cmd.send(NetworkCommand::PublishBlock(wrapped)).await;
+                                    }
+
+                                    if let Some(ann) = tip_ann {
+                                        info!("Reorg: announcing new tip height={}, work={}", ann.height, ann.cumulative_work);
+                                        last_announced_tip = Some(ann.tip_hash);
+                                        let _ = net_cmd.send(NetworkCommand::PublishChainTip(ann)).await;
                                     }
                                 } else {
                                     warn!("Mined block not applied (verdict: {:?}), discarding.", verdict);
@@ -973,19 +930,29 @@ impl StryiChainNode {
                                     Ok(verdict) => {
                                         info!("Consensus verdict: {:?}", verdict);
 
-                                        // Tip update + mempool cleanup — only when canonical chain changed
+                                        // tip update + mempool cleanup - only when canonical chain changed
+                                        let is_reorg = matches!(verdict, ConsensusVerdict::CausedReorganization { .. });
+
                                         if matches!(verdict,
                                             ConsensusVerdict::Applied { .. } | ConsensusVerdict::CausedReorganization { .. }
                                         ) {
                                             debug!("Block applied, updating tip and clearing mempool.");
-                                            let _ = tip_updates_sender.send(block.block_hash());
+                                            let tip_ann = if is_reorg { build_tip_announcement(&engine) } else { None };
 
+                                            let _ = tip_updates_sender.send(block.block_hash());
                                             drop(engine);
+
                                             let mut pool = mempool_for_events.write().await;
                                             if let Err(e) = pool.update_on_block(block.data.clone()).await {
                                                 warn!("Failed to clean mempool after block: {:?}", e);
                                             }
                                             drop(pool);
+
+                                            if let Some(ann) = tip_ann {
+                                                info!("Reorg: announcing new tip height={}, work={}", ann.height, ann.cumulative_work);
+                                                last_announced_tip = Some(ann.tip_hash);
+                                                let _ = net_cmd.send(NetworkCommand::PublishChainTip(ann)).await;
+                                            }
                                         } else {
                                             drop(engine);
                                         }
@@ -1016,6 +983,42 @@ impl StryiChainNode {
                                 match pool.add_transaction(tx).await {
                                     Ok(()) => debug!("Transaction added to mempool"),
                                     Err(e) => debug!("Transaction rejected by mempool: {:?}", e),
+                                }
+                            }
+                            Ok(NetworkEvent::ChainTipAnnounced { announcement: ann, source }) => {
+                                let local_work = {
+                                    let engine = consensus_engine.lock().await;
+                                    engine.tip().map(|(_, _, w)| w).unwrap_or(0)
+                                };
+
+                                if ann.cumulative_work <= local_work {
+                                    trace!(
+                                        "Remote tip (work={}) <= local (work={}), ignoring",
+                                        ann.cumulative_work, local_work
+                                    );
+                                } else if sync_in_progress.load(Ordering::SeqCst) {
+                                    debug!("Background sync already running, skipping");
+                                } else {
+                                    info!(
+                                        "Remote chain heavier (remote={}, local={}) from peer {}, starting background sync",
+                                        ann.cumulative_work, local_work, source
+                                    );
+                                    sync_in_progress.store(true, Ordering::SeqCst);
+
+                                    let flag = Arc::clone(&sync_in_progress);
+                                    let engine_for_sync = Arc::clone(&consensus_engine);
+                                    let storage_for_bg = Arc::clone(&storage_for_sync);
+                                    let net_cmd_for_bg = net_cmd.clone();
+                                    let tip_sender = tip_updates_sender.clone();
+                                    let sync_config = sync_config_for_events.clone();
+
+                                    tokio::spawn(async move {
+                                        match background_sync(engine_for_sync, storage_for_bg, net_cmd_for_bg, tip_sender, sync_config, source).await {
+                                            Ok(()) => info!("Background sync completed"),
+                                            Err(e) => warn!("Background sync failed: {e:?}"),
+                                        }
+                                        flag.store(false, Ordering::SeqCst);
+                                    });
                                 }
                             }
                             Ok(NetworkEvent::PeerConnected(addr)) => {
@@ -1049,6 +1052,150 @@ impl StryiChainNode {
     }
 }
 
+// Downloads missing blocks via gRPC using the same pipeline as IBD.
+async fn background_sync(
+    consensus_engine: Arc<Mutex<StryiConsensusEngine<StryiStorage>>>,
+    storage: Arc<RwLock<StryiStorage>>,
+    net_cmd: mpsc::Sender<NetworkCommand>,
+    tip_updates_sender: Sender<BlockHash>,
+    sync_config: StryiSyncServiceConfig,
+    source_peer: PeerId,
+) -> Result<(), StryiNodeError> {
+    let mut grpc_client = connect_to_peer(&net_cmd, &sync_config, source_peer).await?;
+
+    let remote_height = grpc_client
+        .get_chain_info(tonic::Request::new(()))
+        .await
+        .map_err(|e| StryiNodeError::other(format!("Failed to get chain info: {e}")))?
+        .into_inner()
+        .height;
+
+    let local_tip_height = {
+        let s = storage.read().await;
+        s.tip()
+            .await
+            .map_err(|e| StryiNodeError::other(format!("tip(): {e}")))?
+            .0
+    };
+
+    if local_tip_height >= remote_height {
+        info!(
+            "Local height ({}) >= remote ({}), nothing to sync",
+            local_tip_height, remote_height
+        );
+        return Ok(());
+    }
+
+    info!(
+        "Syncing blocks {} to {}",
+        local_tip_height + 1,
+        remote_height
+    );
+
+    let batch_size = sync_config.max_blocks_range_per_request;
+    let mut current_height = local_tip_height + 1;
+
+    while current_height <= remote_height {
+        let blocks =
+            fetch_blocks_batch(&mut grpc_client, batch_size, current_height, remote_height).await?;
+
+        if blocks.is_empty() {
+            warn!(
+                "Peer returned empty batch at height {}, stopping",
+                current_height
+            );
+            break;
+        }
+
+        let fetched_count = blocks.len() as u64;
+
+        let mut engine = consensus_engine.lock().await;
+        ingest_ibd_batch(&mut *engine, blocks)
+            .await
+            .map_err(|e| StryiNodeError::other(format!("Sync batch failed: {e}")))?;
+
+        if let Some((_, tip_hash, _)) = engine.tip() {
+            let _ = tip_updates_sender.send(tip_hash);
+        }
+        drop(engine);
+
+        current_height += fetched_count;
+    }
+
+    info!(
+        "Background sync complete, synced to height {}",
+        current_height - 1
+    );
+    Ok(())
+}
+
+async fn query_sync_candidates(
+    net_cmd: &mpsc::Sender<NetworkCommand>,
+) -> Result<Vec<(PeerId, ServiceRecord)>, StryiNodeError> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    net_cmd
+        .send(NetworkCommand::QueryPeersWithService {
+            service: GRPC_SERVICE_TAG.to_owned(),
+            respond_to: tx,
+        })
+        .await
+        .map_err(|_| StryiNodeError::other("network command channel closed"))?;
+
+    rx.await
+        .map_err(|_| StryiNodeError::other("service query response channel closed"))
+}
+
+async fn connect_grpc(
+    svc: &ServiceRecord,
+) -> Result<BlockchainSyncClient<tonic::transport::Channel>, StryiNodeError> {
+    let uri = grpc_uri_from_multiaddr(svc.address())
+        .map_err(|e| StryiNodeError::other(format!("gRPC URI error: {e}")))?;
+
+    let channel = tonic::transport::Endpoint::from(uri)
+        .connect()
+        .await
+        .map_err(|e| StryiNodeError::other(format!("gRPC dial error: {e}")))?;
+
+    Ok(BlockchainSyncClient::new(channel))
+}
+
+async fn find_sync_peer(
+    net_cmd: &mpsc::Sender<NetworkCommand>,
+    sync_config: &StryiSyncServiceConfig,
+) -> Result<(PeerId, BlockchainSyncClient<tonic::transport::Channel>), StryiNodeError> {
+    let candidates = query_sync_candidates(net_cmd).await?;
+
+    let (peer_id, svc) = candidates
+        .iter()
+        .find(|(_, s)| s.version() as usize == sync_config.protocol_version)
+        .ok_or_else(|| StryiNodeError::other("No compatible gRPC sync peers found"))?;
+
+    let peer_id = *peer_id;
+    info!("Using gRPC sync peer {} at {}", peer_id, svc.address());
+
+    let client = connect_grpc(svc).await?;
+    Ok((peer_id, client))
+}
+
+async fn connect_to_peer(
+    net_cmd: &mpsc::Sender<NetworkCommand>,
+    sync_config: &StryiSyncServiceConfig,
+    peer: PeerId,
+) -> Result<BlockchainSyncClient<tonic::transport::Channel>, StryiNodeError> {
+    let candidates = query_sync_candidates(net_cmd).await?;
+
+    let (_, svc) = candidates
+        .iter()
+        .find(|(id, s)| *id == peer && s.version() as usize == sync_config.protocol_version)
+        .ok_or_else(|| {
+            StryiNodeError::other(format!("Peer {peer} has no compatible gRPC sync service"))
+        })?;
+
+    info!("Connecting to gRPC sync peer {} at {}", peer, svc.address());
+
+    connect_grpc(svc).await
+}
+
 // Builds ConsensusConstants instance, calculates current difficulty from tip, other stuff from config.
 // TODO: Refactor `build_consensus_rules` method
 pub async fn build_consensus_constants(
@@ -1074,4 +1221,16 @@ pub async fn build_consensus_constants(
     } else {
         Err(StryiNodeError::other("genesis block not found in storage"))
     }
+}
+
+fn build_tip_announcement(
+    engine: &StryiConsensusEngine<StryiStorage>,
+) -> Option<ChainTipAnnouncement> {
+    engine
+        .tip()
+        .map(|(height, hash, work)| ChainTipAnnouncement {
+            height,
+            tip_hash: hash,
+            cumulative_work: work,
+        })
 }

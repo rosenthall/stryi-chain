@@ -133,6 +133,10 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         info!("\n{}", table);
     }
 
+    pub fn tip(&self) -> Option<(u64, BlockHash, u128)> {
+        self.chain_index.tip()
+    }
+
     /// Walks from the stored tip back to genesis and fills `ChainIndex`.
     /// May return an error if chain refers to unknown block, or if refers to block that has no BlockUndo saved
     async fn build_chain_index(db: Arc<RwLock<DB>>) -> Result<ChainIndex, StryiCoreError> {

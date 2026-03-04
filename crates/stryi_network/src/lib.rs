@@ -10,7 +10,7 @@ mod model;
 mod peer;
 mod services;
 
-pub use crate::model::BroadcastBlock;
+pub use crate::model::{BroadcastBlock, ChainTipAnnouncement};
 pub use behaviour::*;
 pub use error::StryiNetworkError;
 pub use libp2p::{Multiaddr, PeerId};
@@ -111,6 +111,9 @@ pub enum NetworkCommand {
     FetchMempoolState {
         respond_to: tokio::sync::oneshot::Sender<Result<MemPoolSyncData, StryiNetworkError>>,
     },
+
+    /// Publish a chain tip announcement to the network via gossipsub.
+    PublishChainTip(ChainTipAnnouncement),
 }
 
 /// Events that are emitted by the network service.
@@ -124,5 +127,9 @@ pub enum NetworkEvent {
     PeerConnected(Multiaddr),
     /// A peer has disconnected.
     PeerDisconnected(Multiaddr),
-    // Something more I need?
+    /// A chain tip announcement was received from a peer.
+    ChainTipAnnounced {
+        announcement: ChainTipAnnouncement,
+        source: PeerId,
+    },
 }

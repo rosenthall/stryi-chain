@@ -551,7 +551,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         NodeStartMode::Auto => unreachable!(),
     }
 
-    // Node is synchronized — mark services as ready.
+    // Node is synchronized - mark services as ready.
     *node.grpc_is_ready.write().await = true;
     *node.http_is_ready.write().await = true;
     info!("Node synchronized. HTTP and gRPC services are now ready.");

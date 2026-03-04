@@ -2,8 +2,8 @@ use crate::mempool::{MempoolRequest, MempoolResponse};
 use crate::peer::PeerMapExt;
 use crate::services::{ServicesInfoRequest, ServicesResponse, filter_verified_records};
 use crate::{
-    BroadcastBlock, NetworkEvent, StryiBehaviour, StryiEvent, StryiNetworkError,
-    StryiNetworkManager, manager,
+    BroadcastBlock, ChainTipAnnouncement, NetworkEvent, StryiBehaviour, StryiEvent,
+    StryiNetworkError, StryiNetworkManager, manager,
 };
 use bincode::config::standard;
 use bincode::serde::decode_from_slice;
@@ -375,7 +375,26 @@ impl StryiNetworkManager {
                             .map_err(StryiNetworkError::CannotSendEvent)?;
                     }
 
-                    // We don't care about all another topics
+                    // chain tip announcements
+                    manager::TIPS_TOPIC_NAME => {
+                        let announcement: ChainTipAnnouncement =
+                            decode_from_slice(&message.data, standard())
+                                .map_err(StryiNetworkError::DecodeGossipsubMessageError)?
+                                .0;
+                        debug!(
+                            "Received chain tip announcement in gossipsub: height={}, work={}",
+                            announcement.height, announcement.cumulative_work
+                        );
+
+                        self.event_tx
+                            .send(NetworkEvent::ChainTipAnnounced {
+                                announcement,
+                                source: propagation_source,
+                            })
+                            .map_err(StryiNetworkError::CannotSendEvent)?;
+                    }
+
+                    // We don't care about all other topics
                     _ => {}
                 };
 
