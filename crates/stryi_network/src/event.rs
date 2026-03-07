@@ -343,7 +343,7 @@ impl StryiNetworkManager {
                     &message_id.to_string()
                 );
 
-                // Check the topics name and define how to proceed message correspondingly
+                // Check the topics name and define how to process a message correspondingly
                 match message.topic.as_str() {
                     // Try to process everything from transactions topic as a transaction
                     manager::TRANSACTIONS_TOPIC_NAME => {

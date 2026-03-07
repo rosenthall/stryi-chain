@@ -30,6 +30,9 @@ pub enum StryiNodeError {
         remote: String,
     },
 
+    #[error(transparent)]
+    TonicTransport(#[from] tonic::transport::Error),
+
     // fallback / misc
     #[error("unexpected error: {0}")]
     Other(String),

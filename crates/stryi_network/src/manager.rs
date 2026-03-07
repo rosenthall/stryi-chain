@@ -31,26 +31,24 @@ use tracing::{debug, error, info, warn};
 
 /// StryiNetworkManager sets up the transport, constructs a swarm using our unified StryiBehaviour,
 /// and runs the event loop.
-/// Provides high-level communication layer with network via channels and messaging such as
-/// - `command_tx` : Channel for communicating with entire network, allows performing operations like publish blocks/transactions, dial with specific node, etc.
+/// Provides high-level communication layer with network via channels and messaging :
+/// - `command_tx` : Channel for communicating with the entire network, allows performing operations like publish blocks/transactions, dial with specific node, etc.
 /// - `event_tx` : Channel for receiving `NetworkEvents` from StryiNetworkManager
 pub struct StryiNetworkManager {
-    /// Configuration for entire StryiNetworkManager instance, defines addresses, keypair, rendezvous mode, etc.
+    /// Configuration for the entire StryiNetworkManager instance, defines addresses, keypair, rendezvous mode, etc.
     pub(crate) config: StryiNetworkManagerConfig,
 
-    /// Swarm with specified behaviour (using StryiBehaviour)
+    pub(crate) peer_id: PeerId,
     pub(crate) swarm: Arc<Mutex<Swarm<StryiBehaviour>>>,
-
-    /// Arc reference to mempool object
     pub(crate) mempool: Arc<RwLock<MemPool>>,
 
     /// Channel to perform operation in network like sending blocks, transactions, dialing a connections, etc.
     pub(crate) command_tx: mpsc::Sender<NetworkCommand>,
 
-    /// Receiver side for `command_tx`, must be used in the run loop.
+    /// Receiver side for `command_tx`, used in the run loop.
     pub(crate) command_rx: mpsc::Receiver<NetworkCommand>,
 
-    // Event channel: network manager broadcasts events (e.g., peer events) to subscribers
+    // Event channel. network manager broadcasts events (e.g., peer events) to subscribers
     pub(crate) event_tx: broadcast::Sender<NetworkEvent>,
 
     /// Thread-safe, mutable registry of this node’s active services.
@@ -58,13 +56,9 @@ pub struct StryiNetworkManager {
     /// (e.g. when a service starts, stops, or changes its listening port).
     pub(crate) own_services_registry: Arc<RwLock<Vec<SignedServiceRecord>>>,
 
-    /// Connected peers tracking TODO : Actually track peers
+    /// Connected peers tracking
     pub(crate) connected_peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
 
-    /// Peer id of this network manager
-    pub(crate) peer_id: PeerId,
-
-    /// Cancellation token for graceful shutdown of the run loop
     cancel_token: CancellationToken,
 }
 
@@ -86,10 +80,9 @@ impl StryiNetworkManager {
         let local_peer_id = PeerId::from(key.public());
         info!("local_peer_id={}", local_peer_id);
 
-        // Build the transport (TCP + Noise + Yamux).
+        // Build the transport (which is basically TCP + Noise + yamux).
         let transport = Self::build_transport(&key)?;
 
-        // Construct StryiBehaviourConfig.
         let behaviour_config = StryiBehaviourConfig {
             enable_rendezvous_server: matches!(config.rendezvous_mode, RendezvousMode::Server),
             enable_rendezvous_client: matches!(config.rendezvous_mode, RendezvousMode::Client),
@@ -121,11 +114,11 @@ impl StryiNetworkManager {
             "Initializing StryiNetworkManager"
         );
 
-        // Client mode: dial rendezvous server if provided
+        // In Client mode we dial rendezvous server if provided
         if matches!(config.rendezvous_mode, RendezvousMode::Client) {
             if let Some(ref srv_addr) = config.rendezvous_server_addr {
                 if !srv_addr.is_empty() {
-                    // avoid trivially dialing our own listen addr string-for-string
+                    // avoid trivially dialing our own listen addr
                     if srv_addr == &config.listen_addr {
                         warn!(
                             "Rendezvous server address equals our listen addr ({}). Skipping dial.",
@@ -156,6 +149,7 @@ impl StryiNetworkManager {
         // And for events
         let (event_tx, _) = broadcast::channel::<NetworkEvent>(32);
 
+        // build registry
         let own_services_registry = Arc::new(RwLock::new(Vec::new()));
 
         Ok(Self {
@@ -188,7 +182,7 @@ impl StryiNetworkManager {
     }
 
     /// Returns a random peer that exposes a service of the requested `kind`.
-    /// The helper verifies each signed record (signature / owner / TTL) on-the-fly.
+    /// The helper verifies each signed record (signature / owner / time-to-live) on-the-fly.
     /// `None` is returned if no peer currently matches.
     pub async fn random_peer_with_service(&self, kind: &str) -> Option<(PeerId, ServiceRecord)> {
         let peers = self.connected_peers.read().await;
@@ -197,7 +191,7 @@ impl StryiNetworkManager {
         peers
             .iter()
             .filter_map(|(peer_id, info)| {
-                let pk = info.public_key.as_ref()?; // Identify not finished -> skip
+                let pk = info.public_key.as_ref()?; // identify not finished -> skip
 
                 // Convert the *signed* list into verified `ServiceRecord`s.
                 let verified = filter_verified_records(
@@ -214,7 +208,7 @@ impl StryiNetworkManager {
             .choose(&mut rng)
     }
 
-    /// Returns the configured keypair for this network manager.
+    /// Returns generic keypair for this network manager.
     pub fn get_keypair(&self) -> Keypair {
         self.config.keypair.clone()
     }
@@ -460,7 +454,7 @@ impl StryiNetworkManager {
                             }
                         }
 
-                        // Channel closed — exit the run loop
+                        // if the channel close we exit the run loop
                         None => {
                             info!("Command channel closed, exiting run loop.");
                             break;
@@ -468,7 +462,6 @@ impl StryiNetworkManager {
 
                         }
                     }
-
 
                 // --- libp2p events ---
                 event = swarm.select_next_some() => {

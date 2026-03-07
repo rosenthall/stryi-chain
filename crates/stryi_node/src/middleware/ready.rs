@@ -10,7 +10,8 @@ use tokio::sync::RwLock;
 use tonic::server::NamedService;
 use tower::{Layer, Service};
 
-/// Shared flag type; flip it to `true` when the node has finished syncing and basically ready to respond.
+/// Shared flag for controlling readiness of the API.
+/// Wrapped services will reject requests until this flag is `true`.
 pub type ReadyFlag = Arc<RwLock<bool>>;
 
 /// Implemented by a service to emit a protocol-correct “not ready” reply.
@@ -50,7 +51,7 @@ pub struct ReadyGate<S> {
     flag: ReadyFlag,
 }
 
-/// Preserve gRPC service name when wrapping a Tonic server.
+/// Preserve the gRPC service name when wrapping a Tonic server.
 impl<S> NamedService for ReadyGate<S>
 where
     S: NamedService,

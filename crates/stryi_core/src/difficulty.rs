@@ -66,7 +66,7 @@ where
             // Extract immutable consensus constants from the genesis state.
             let consts: ConsensusConsts = state.consensus_consts;
             // Build a height-only difficulty calculator that captures only `consts`.
-            Ok(build_difficulty_calculator_from_consts::<DB>(consts))
+            Ok(difficulty_calculator_from_consts::<DB>(consts))
         }
         Block {
             header:
@@ -85,7 +85,7 @@ where
 /// Builds a difficulty calculator from immutable consensus constants.
 /// This particular calculator implementation only captures `ConsensusConsts` and does not rely on db state.
 #[inline]
-pub fn build_difficulty_calculator_from_consts<S>(consts: ConsensusConsts) -> DifficultyCalc<S>
+pub fn difficulty_calculator_from_consts<S>(consts: ConsensusConsts) -> DifficultyCalc<S>
 where
     S: Send + Sync + 'static,
 {

@@ -6,7 +6,7 @@ use crate::address::AccountAddress;
 use crate::block::mining::mine_block_in_parallel;
 use crate::block::{Block, BlockHash, GenesisState};
 use crate::consensus::{BlockValidator, ConsensusConsts, StryiConsensusEngine};
-use crate::difficulty::build_difficulty_calculator_from_consts;
+use crate::difficulty::difficulty_calculator_from_consts;
 use crate::mempool::UtxoLookup;
 use crate::storage::StryiInMemoryStorage;
 use crate::transactions::{
@@ -116,7 +116,7 @@ pub(crate) async fn make_engine(
     db: StryiInMemoryStorage,
     consts: ConsensusConsts,
 ) -> StryiConsensusEngine<StryiInMemoryStorage> {
-    let diff_calc = build_difficulty_calculator_from_consts::<StryiInMemoryStorage>(consts);
+    let diff_calc = difficulty_calculator_from_consts::<StryiInMemoryStorage>(consts);
     let validator = BlockValidator::new(consts, diff_calc.clone());
     let utxo_proc = UtxoProcessor::new();
     let db = Arc::new(RwLock::new(db));

@@ -9,7 +9,7 @@ use crate::chaingen::{ChainGenConfig, ChainGenerator, PersistenceMode};
 use stryi_core::PrivateKey;
 use stryi_core::block::Block;
 use stryi_core::consensus::{BlockValidator, ConsensusConsts, StryiConsensusEngine};
-use stryi_core::difficulty::build_difficulty_calculator_from_consts;
+use stryi_core::difficulty::difficulty_calculator_from_consts;
 use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 use stryi_core::transactions::{OutPoint, TransactionKind, UtxoProcessor};
 use stryi_storage::{GenesisInitConfig, StorageStatus, StryiStorage};
@@ -220,7 +220,7 @@ async fn init_consensus_engine(
         PersistenceMode::ConsensusEngine => {
             info!("PersistenceMode::ConsensusEngine selected.");
 
-            let difficulty_calc = build_difficulty_calculator_from_consts(consts);
+            let difficulty_calc = difficulty_calculator_from_consts(consts);
 
             let validator = BlockValidator::new(consts, difficulty_calc.clone());
 

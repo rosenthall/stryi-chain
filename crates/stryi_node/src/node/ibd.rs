@@ -1,47 +1,8 @@
-use crate::error::StryiNodeError;
-use crate::grpc_services::BlockHeightRange;
-use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
-use futures_util::StreamExt;
 use std::time::Instant;
 use stryi_core::StryiCoreError;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::consensus::{ConsensusEngine, ConsensusVerdict};
-use tonic::transport::Channel;
 use tracing::{debug, error, info, trace, warn};
-
-// Fetch a contiguous batch [start_height ..= end_height] (subject to server-side cap).
-pub(crate) async fn fetch_blocks_batch(
-    grpc: &mut BlockchainSyncClient<Channel>,
-    batch_size: usize,
-    start_height: u64,
-    end_height: u64,
-) -> Result<Vec<Block>, StryiNodeError> {
-    let resp = grpc
-        .get_blocks_by_height(BlockHeightRange {
-            start_height,
-            end_height,
-            max_blocks: batch_size as u32,
-        })
-        .await
-        .map_err(|e| {
-            StryiNodeError::other(format!(
-                "get_blocks_by_height({start_height}..={end_height}) failed: {e}"
-            ))
-        })?;
-
-    let mut stream = resp.into_inner();
-    let mut batch: Vec<Block> = Vec::new();
-
-    while let Some(item) = stream.next().await {
-        let pb = item.map_err(|e| StryiNodeError::other(format!("stream error: {e}")))?;
-        let block: Block = pb
-            .try_into()
-            .map_err(|e| StryiNodeError::other(format!("failed to convert wire Block: {e:?}")))?;
-        batch.push(block);
-    }
-
-    Ok(batch)
-}
 
 /// IBD helper feeds blocks to the consensus engine in-order
 /// and logs everything (batch start/end, per-block details, verdicts, and summary).

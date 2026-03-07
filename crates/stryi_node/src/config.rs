@@ -126,11 +126,11 @@ impl NodeConfig {
         }
 
         let figment = Figment::new()
-            // (3) built-in defaults, lowest priority
+            // built-in defaults have the lowest priority
             .merge(Serialized::defaults(NodeConfig::default()))
-            // (2) values from TOML, if the file exists
+            // values from TOML are more valuable if the file exists
             .merge(Toml::file(&cli.config_path).profile("default"))
-            // (1) explicit CLI flags – highest priority
+            // and finally, explicit CLI flags have the highest priority
             .merge(Serialized::from(cli, "default"));
 
         figment.extract().map_err(StryiNodeError::other)

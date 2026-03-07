@@ -35,12 +35,6 @@ mod hashrate;
 /// Tools for proper bootstrapping of the chain and genesis acquiring
 mod bootstrap;
 
-/// Helpers for performing Initial Block Download and some related functions
-mod ibd;
-
-/// Last Common Ancestor detecting utils.
-mod lca;
-
 use crate::bootstrap::GenesisBootstrap;
 use crate::cli::NodeStartMode;
 use crate::config::NodeConfig;
@@ -50,7 +44,9 @@ use crate::http::StryiHttpServiceConfig;
 use crate::keys::PeerKey;
 use crate::middleware::ready::ReadyFlag;
 use crate::miner::{MinerBackend, NodeMinerBackend, StryiMiner, StryiMinerConfig};
-use crate::node::{MinerBridge, StryiChainNode, build_consensus_constants};
+use crate::node::miner_bridge::MinerBridge;
+use crate::node::sync::build_consensus_constants;
+use crate::node::{EventLoopContext, StryiChainNode};
 use crate::tls::cert_and_key_from_peer;
 use crate::util::{resolve_ipv4_advertise, try_genesis_config_from_path};
 use colored::Colorize;
@@ -61,10 +57,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use stryi_core::address::AccountAddress;
 use stryi_core::block::Block;
-use stryi_core::consensus::{BlockValidator, StryiConsensusEngine};
 use stryi_core::mempool::{MemPool, MemPoolConfig, RbfPolicy, UtxoLookup};
 use stryi_core::storage::UtxoStorage;
-use stryi_core::transactions::{FeePolicy, OutPoint, UtxoProcessor};
+use stryi_core::transactions::{FeePolicy, OutPoint};
 use stryi_network::{
     PeerId, RendezvousMode, StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig,
 };
@@ -72,7 +67,7 @@ use stryi_storage::{StorageStatus, StryiStorage};
 use tokio::sync::broadcast;
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -271,11 +266,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         _ => panic!("unexpected (start_mode, storage_status) state"),
     };
 
-    /*
-    let storage = StryiStorage::initialize_in_path(PathBuf::from(cfg.storage_path.clone()), genesis_config).await?;
-    let storage = Arc::new(RwLock::new(storage));
-    */
-
     // TODO: Improve mempool configurability, make possible configure FeePolicy, RbfPolicy and set RbfPolicy::disabled from config
     let mempool_config = MemPoolConfig::new(
         cfg.mempool_max_transactions,
@@ -351,8 +341,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("Generated certificate for node services! This node certificate :");
     println!("{}", tls_identity.cert_pem.as_str().purple());
 
-    let grpc_tls_root = tonic::transport::Certificate::from_pem(tls_identity.cert_pem.as_bytes());
-
     let rendezvous_mode = match cfg.network_rendezvous_mode.as_str() {
         "server" => RendezvousMode::Server,
         "client" => RendezvousMode::Client,
@@ -396,7 +384,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ..Default::default()
     };
 
-    // build channel for tip updates.
+    // build a channel for tip updates.
     let (tip_updates_sender, tip_updates_receiver) = broadcast::channel(1);
 
     // Create a channel, in which Miner will be sending blocks once found nonce,
@@ -413,14 +401,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         master_cancel_token.child_token(),
     )?;
 
-    let network_manager = Some(network_manager);
-
-    let keypair = keypair
-        .clone()
-        .try_into_ed25519()
-        .expect("Keypair is not Ed25519");
-
-    // -- Validate miner config early (before connecting) --
+    // -- Validate miner config (before connecting) --
 
     let miner_config = if cfg.miner_enabled {
         info!("Mining is enabled, validating miner configuration...");
@@ -473,91 +454,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
         None
     };
 
-    // Build optional miner bridge (channels + address for miner-to-node communication)
+    // Optionally build the miner bridge
     let miner_bridge = miner_config.as_ref().map(|mc| MinerBridge {
         mined_blocks_receiver,
         miner_address: mc.reward_address(),
     });
 
-    // Instantiate the StryiChainNode
-    let mut node = StryiChainNode {
-        storage: storage.clone(),
-        mempool,
-        consensus_engine: None, // Note: Consensus engine will be created on the sync stage.
+    // Build the node
+
+    let node = StryiChainNode::new(
+        storage.clone(),
+        mempool.clone(),
         network_manager,
-        keypair,
-        peer_id,
-        tls_identity,
-        grpc_tls_root,
-        net_cmd: None,
-        net_events: None,
-        genesis_bootstrap: genesis_bootstrap.clone(),
-
-        // miner interactions
-        tip_updates_sender,
-        miner_bridge,
-
-        // services configurations
+        genesis_bootstrap.clone(),
         sync_service_config,
-        http_service_config,
-
-        // Start as not-ready; flipped to true after sync/bootstrap completes.
-        grpc_is_ready: ReadyFlag::new(RwLock::new(false)),
-        http_is_ready: ReadyFlag::new(RwLock::new(false)),
-    };
+    );
 
     // Connect the node to the network.
-    // This will start the network manager and connect to the rendezvous server if configured.
-    node.connect().await?;
+    let node = node.connect().await?;
 
     // Synchronize the node with the network.
     // Depending on the start mode, this may involve fetching the genesis block and chain data from peers.
     // Or if bootstrapping, skip synchronization as this node is the source of genesis.
-    match start_mode {
-        NodeStartMode::Bootstrap => {
-            info!("Bootstrap: skipping synchronize(); this node is the source of genesis.");
-
-            // Construct a ConsensusEngine instance and set the field.
-            debug!("No synchronizing required, building ConsensusEngine immediately.");
-            let consensus_consts = build_consensus_constants(&storage.clone()).await?;
-            let difficulty_calc =
-                stryi_core::difficulty::build_difficulty_calculator_from_consts(consensus_consts);
-            let block_validator = BlockValidator::new(consensus_consts, difficulty_calc.clone());
-            let utxo_processor = UtxoProcessor::new();
-            trace!(consensus_consts = ?consensus_consts);
-
-            let engine = StryiConsensusEngine::new(
-                consensus_consts,
-                block_validator,
-                utxo_processor,
-                storage.clone(),
-                difficulty_calc,
-            )
-            .await
-            .map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
-
-            engine.startup_message();
-
-            // set it.
-            node.set_consensus_engine(engine);
-            info!("Success!");
-        }
-
+    let node = match start_mode {
+        NodeStartMode::Bootstrap => node.bootstrap().await?,
         NodeStartMode::Join => {
             info!("Join: running synchronize() to fetch genesis/chain from peers.");
-            node.synchronize().await?;
+            node.synchronize().await?
         }
-
         NodeStartMode::Auto => unreachable!(),
-    }
-
-    // Node is synchronized - mark services as ready.
-    *node.grpc_is_ready.write().await = true;
-    *node.http_is_ready.write().await = true;
-    info!("Node synchronized. HTTP and gRPC services are now ready.");
+    };
 
     // -- Spawn the miner if enabled --
-    // This must happen after connect() (channels exist) and after consensus engine init (difficulty calc available).
+    // This must happen after connect() (thus channels exist) and after consensus engine init (thus difficulty calc available).
     if let Some(miner_cfg) = miner_config {
         info!("Spawning miner...");
 
@@ -571,7 +500,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         let miner = StryiMiner::new(
             miner_cfg,
-            node.mempool.clone(),
+            mempool.clone(),
             backend,
             mined_blocks_sender,
             master_cancel_token.child_token(),
@@ -600,16 +529,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
         });
     }
 
-    // Start the node's services: gRPC sync service, HTTP API service, etc.
-    // This blocks until the cancellation token is triggered
-    node.start_services(
-        http_advertise,
-        grpc_advertise,
-        master_cancel_token.child_token(),
-    )
-    .await?;
+    // Build the event loop context
+    let ctx = EventLoopContext {
+        tip_updates_sender,
+        miner_bridge,
+        tls_identity,
+        http_service_config,
+        grpc_is_ready: ReadyFlag::new(RwLock::new(false)),
+        http_is_ready: ReadyFlag::new(RwLock::new(false)),
+        http_advertise_address: http_advertise,
+        grpc_advertise_address: grpc_advertise,
+        cancel_token: master_cancel_token.child_token(),
+    };
 
-    // Services have stopped - flush storage
+    // Transition into the event loop and run until canceled
+    let event_loop = node.into_event_loop(ctx);
+    event_loop.run().await?;
+    /* now it blokchainin'*/
+
     info!("Services stopped. Flushing storage...");
     if let Err(e) = storage.read().await.persist() {
         error!("Failed to flush storage on shutdown: {e:?}");
