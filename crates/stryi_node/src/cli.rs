@@ -103,7 +103,7 @@ pub struct CliArgs {
     #[arg(long)]
     pub miner_enabled: Option<bool>,
 
-    /// Enable the hashrate bench at start of run
+    /// Enable the hashrate bench in the node startup.
     #[arg(long)]
     pub miner_hashrate_bench: Option<bool>,
 
@@ -115,7 +115,7 @@ pub struct CliArgs {
     #[arg(long)]
     pub miner_max_delay_secs: Option<usize>,
 
-    /// Block reward receiver address in the stryi format (e.g. `@addres..`).
+    /// Block reward receiver address
     #[arg(long)]
     pub miner_reward_address: Option<String>,
 

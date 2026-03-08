@@ -1,8 +1,13 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)] // This feature was added to avoid a known bug: https://github.com/rust-lang/rust/issues/133199
+
+/// Node & EventLoop implementation
 mod node;
 
+/// error type for his crate
 mod error;
+
+/// grpc server implementation
 mod grpc;
 
 /// Helpers for backing up the keys of the peer.
@@ -169,14 +174,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         &cfg.grpc_sync_listen,
         "grpc_sync",
     )
-    .map_err(StryiNodeError::other)?;
+    .map_err(StryiNodeError::invalid_config_value)?;
 
     let http_advertise = resolve_ipv4_advertise(
         cfg.http_service_advertise.clone(),
         &cfg.http_service_listen,
         "http_service",
     )
-    .map_err(StryiNodeError::other)?;
+    .map_err(StryiNodeError::invalid_config_value)?;
 
     let mut start_mode = cfg.start_mode;
 
@@ -219,7 +224,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // 4. initialize storage with the same config (commits the block)
         (NodeStartMode::Bootstrap, StorageStatus::NoGenesis) => {
             let p = cfg.genesis_config_path.as_deref().ok_or_else(|| {
-                StryiNodeError::other("Bootstrap mode requires `genesis_config_path`")
+                StryiNodeError::invalid_config_value(
+                    "Bootstrap mode requires `genesis_config_path`",
+                )
             })?;
             let genesis_cfg = try_genesis_config_from_path(PathBuf::from(p))?;
 
@@ -345,9 +352,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "server" => RendezvousMode::Server,
         "client" => RendezvousMode::Client,
         other => {
-            return Err(
-                StryiNodeError::other(format!("invalid rendezvous mode: {}", other)).into(),
-            );
+            return Err(StryiNodeError::invalid_config_value(format!(
+                "invalid rendezvous mode: {}",
+                other
+            ))
+            .into());
         }
     };
 
@@ -361,7 +370,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .unwrap_or("")
             .is_empty()
     {
-        return Err(StryiNodeError::other(
+        return Err(StryiNodeError::invalid_config_value(
             "Client mode requires `network_rendezvous_address` to be provided",
         )
         .into());
@@ -415,7 +424,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     "Invalid miner reward address provided: {}",
                     &cfg.miner_reward_address
                 );
-                return Err(StryiNodeError::other("Invalid miner reward address").into());
+                return Err(
+                    StryiNodeError::invalid_config_value("Invalid miner reward address").into(),
+                );
             };
 
         // Pretty print the miner reward address so the user will not miss it

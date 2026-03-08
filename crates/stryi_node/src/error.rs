@@ -30,11 +30,8 @@ pub enum StryiNodeError {
         remote: String,
     },
 
-    /// Error indicates that the local peer has better work than the remote peer.
-    #[error(
-        "local peer has better work than remote peer: local_work={local_work}, remote_work={remote_work}"
-    )]
-    RemotePeerIsWorse { local_work: u128, remote_work: u128 },
+    #[error("Invalid config value: {0}")]
+    InvalidConfigValue(String),
 
     #[error(transparent)]
     TonicTransport(#[from] tonic::transport::Error),
@@ -49,6 +46,12 @@ impl StryiNodeError {
     /// Constructs simple `StryiNodeError::Other` instance with provided message
     pub fn other(msg: impl ToString) -> Self {
         StryiNodeError::Other(msg.to_string())
+    }
+
+    /// Constructs `StryiNodeError::InvalidConfigValue`
+    #[inline]
+    pub fn invalid_config_value(msg: impl ToString) -> Self {
+        StryiNodeError::InvalidConfigValue(msg.to_string())
     }
 
     /// Constructs StryiNodeError::PeerChainInfoMismatch

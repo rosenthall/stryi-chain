@@ -7,6 +7,7 @@ use crate::node::remote_peer::RemotePeer;
 use crate::node::{ConnectedNode, SyncedNode};
 use multiaddr::{Multiaddr, Protocol};
 use std::sync::Arc;
+use std::time::Duration;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::consensus::{
     BlockStorage, BlockValidator, ConsensusConsts, StorageStats, StryiConsensusEngine, UtxoStorage,
@@ -16,7 +17,11 @@ use stryi_core::transactions::{OutPoint, UTXO, UtxoProcessor};
 use stryi_network::{NetworkCommand, PeerId, ServiceRecord};
 use stryi_storage::{StryiStorage, extract_utxos_from_block};
 use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::time::sleep;
 use tracing::{debug, info, trace, warn};
+
+const PEER_DISCOVERY_MAX_RETRIES: u32 = 30;
+const PEER_DISCOVERY_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 impl ConnectedNode {
     /// Bootstrap mode means this node is the source of genesis, no peers to sync from.
@@ -51,9 +56,38 @@ impl ConnectedNode {
 
         trace!(local_tip_height = ?local_tip_height, local_tip_hash = ?local_tip_hash);
 
-        // Discover a peer that has the best chain.
-        let (mut remote_peer, remote_chain_info) = self.find_best_peer().await?;
+        // Discover a peer with the best chain.
+        // Peers may not be immediately available, so retry with a short delay
+        let (mut remote_peer, remote_chain_info) = {
+            let mut attempt = 1;
 
+            loop {
+                match self.find_best_peer().await {
+                    Ok(peer) => break peer,
+                    Err(err) if attempt >= PEER_DISCOVERY_MAX_RETRIES => {
+                        return Err(StryiNodeError::other(format!(
+                            "peer discovery failed after {} attempts: {}",
+                            PEER_DISCOVERY_MAX_RETRIES, err
+                        )));
+                    }
+                    Err(err) => {
+                        warn!(
+                            "Peer discovery attempt {}/{} failed: {}. Retrying in {:?}...",
+                            attempt, PEER_DISCOVERY_MAX_RETRIES, err, PEER_DISCOVERY_RETRY_DELAY
+                        );
+
+                        sleep(PEER_DISCOVERY_RETRY_DELAY).await;
+                        attempt += 1;
+                    }
+                }
+            }
+        };
+
+        debug!(
+            "Found peer {} with chain info: {:?}",
+            remote_peer.peer_id(),
+            remote_chain_info
+        );
         // fetch genesis from peer, compare or save locally
         self.ensure_genesis(&mut remote_peer).await?;
 
@@ -203,10 +237,11 @@ impl ConnectedNode {
             let external_genesis_block = remote_genesis_block.clone();
 
             trace!(local_genesis = ?local_genesis_block, external_genesis = ?external_genesis_block);
-            assert_eq!(
-                local_genesis_block, external_genesis_block,
-                "different genesis blocks detected locally and in remote peer! currently unsupported"
-            );
+            if local_genesis_block != external_genesis_block {
+                return Err(StryiNodeError::other(
+                    "genesis mismatch: local and remote peer have different genesis blocks",
+                ));
+            }
         } else {
             // Save meta first, then commit the block
             self.genesis_bootstrap
@@ -235,8 +270,6 @@ impl ConnectedNode {
                 })?;
 
                 info!("Genesis UTXOs successfully stored.");
-
-                info!("OMG IT WORKED")
             }
 
             info!("Genesis saved in meta and committed to storage (height=0).");
