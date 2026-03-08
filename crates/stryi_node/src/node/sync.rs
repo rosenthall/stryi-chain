@@ -7,7 +7,6 @@ use crate::node::remote_peer::RemotePeer;
 use crate::node::{ConnectedNode, SyncedNode};
 use multiaddr::{Multiaddr, Protocol};
 use std::sync::Arc;
-use std::time::Duration;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::consensus::{
     BlockStorage, BlockValidator, ConsensusConsts, StorageStats, StryiConsensusEngine, UtxoStorage,
@@ -17,14 +16,7 @@ use stryi_core::transactions::{OutPoint, UTXO, UtxoProcessor};
 use stryi_network::{NetworkCommand, PeerId, ServiceRecord};
 use stryi_storage::{StryiStorage, extract_utxos_from_block};
 use tokio::sync::{Mutex, RwLock, mpsc};
-use tokio::time::{Instant, sleep};
 use tracing::{debug, info, trace, warn};
-
-/// How many seconds try to discover peers with the gRPC sync service
-const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(20);
-
-/// How often to poll the network for peers with gRPC sync service
-const DISCOVERY_INTERVAL: Duration = Duration::from_millis(750);
 
 impl ConnectedNode {
     /// Bootstrap mode means this node is the source of genesis, no peers to sync from.
@@ -48,33 +40,19 @@ impl ConnectedNode {
     pub async fn synchronize(self) -> Result<SyncedNode, StryiNodeError> {
         info!("Start synchronizing with the network...");
 
-        // Discover a peer with gRPC sync service, retry for up to DISCOVERY_TIMEOUT
-        let started = Instant::now();
-        let (peer, grpc_client) = loop {
-            match find_sync_peer(&self.net_cmd, &self.sync_service_config).await {
-                Ok(found) => break found,
-
-                // if got timeout, wait some time before trying again
-                Err(_) if started.elapsed() < DISCOVERY_TIMEOUT => {
-                    sleep(DISCOVERY_INTERVAL).await;
-                }
-
-                Err(_) => {
-                    todo!("Somehow process cases when cannot connect to peer")
-                }
-            }
+        let (local_tip_height, local_tip_hash) = {
+            let s = self.storage.read().await;
+            let tip = s
+                .tip()
+                .await
+                .map_err(|e| StryiNodeError::other(format!("tip(): {e}")))?;
+            (tip.0, tip.1)
         };
 
-        let mut remote_peer = RemotePeer::new(peer.clone(), grpc_client.clone());
+        trace!(local_tip_height = ?local_tip_height, local_tip_hash = ?local_tip_hash);
 
-        // get external peer's chain info
-        info!("Requesting Chain Info from external peer so we can compare it with local one.");
-        let remote_chain_info = remote_peer.request_chain_info().await?;
-        debug!(external_chain_info = ?remote_chain_info);
-
-        // validate it
-        self.validate_peer_chain_info(remote_chain_info.clone())
-            .await?;
+        // Discover a peer that has the best chain.
+        let (mut remote_peer, remote_chain_info) = self.find_best_peer().await?;
 
         // fetch genesis from peer, compare or save locally
         self.ensure_genesis(&mut remote_peer).await?;
@@ -91,38 +69,51 @@ impl ConnectedNode {
 
         let mut engine = self.build_consensus_engine().await?;
 
-        // query remaining blocks from peer
-        let (local_tip_height, local_tip_hash) = {
-            let s = self.storage.read().await;
-            let tip = s
-                .tip()
-                .await
-                .map_err(|e| StryiNodeError::other(format!("tip(): {e}")))?;
-            (tip.0, tip.1)
-        };
-
-        trace!(local_tip_height = ?local_tip_height, local_tip_hash = ?local_tip_hash);
-
         // ask the peer if its chain already includes our tip
         // this is an easy case for synchronization, since it just requires download and apply all the remaining blocks
         info!("Checking if peer has our local tip included in its chain.");
 
-        // note: I'm not sure how it gonna behave when the only common block is genesis.
         let peer_includes_local_tip = remote_peer
             .request_block_by_hash(local_tip_hash)
             .await
             .is_ok();
 
-        // early return if not
-        if !peer_includes_local_tip {
-            return Err(StryiNodeError::other(
-                "Node doesn't support syncing when external peer doesn't includes our local tip",
-            ));
-        }
+        debug!("peer_includes_local_tip={}", peer_includes_local_tip);
+
+        // Now we have to find sync_start_height
+        let sync_start_height = if peer_includes_local_tip {
+            info!(
+                "Peer {} knows our local tip {}.",
+                remote_peer.peer_id(),
+                local_tip_hash
+            );
+
+            // start right after our local tip
+            local_tip_height + 1
+        } else {
+            info!("Peer doesn't include our local tip. Finding LCA.");
+
+            let (lca_height, lca_hash) = self
+                .find_last_common_ancestor(
+                    &mut remote_peer,
+                    remote_chain_info.height,
+                    local_tip_height,
+                )
+                .await?;
+
+            info!(
+                "Successfully found Last-Common-Ancestor (LCA) block: height={}, hash={}!",
+                lca_height, lca_hash
+            );
+
+            // Start after LCA
+            lca_height + 1
+        };
 
         info!(
             "Success! peer {} knows block {} (which is our local tip)! Downloading the rest of the blocks..",
-            peer, local_tip_hash
+            remote_peer.peer_id(),
+            local_tip_hash
         );
 
         let external_height = remote_chain_info.height;
@@ -134,29 +125,21 @@ impl ConnectedNode {
             local_work, remote_work, local_tip_height, external_height
         );
 
-        // compare cumulative work.
-        if local_work >= remote_work {
-            info!(
-                "Local chain has more work ({}) than peer ({}). Nothing to sync.",
-                local_work, remote_work
-            );
-        } else {
-            info!(
-                "Local chain has less work ({}) than peer (id={}) ({}).",
-                local_work,
-                peer.to_string(),
-                remote_work
-            );
-            info!("Proceeding synchronization with peer {}", peer);
-            run_ibd(
-                &mut engine,
-                &mut remote_peer,
-                local_tip_height + 1,
-                external_height,
-                self.sync_service_config.max_blocks_range_per_request,
-            )
-            .await?;
-        }
+        info!(
+            "Syncing with peer {} from height={} to height={}",
+            remote_peer.peer_id(),
+            sync_start_height,
+            external_height,
+        );
+
+        run_ibd(
+            &mut engine,
+            &mut remote_peer,
+            sync_start_height,
+            external_height,
+            self.sync_service_config.max_blocks_range_per_request,
+        )
+        .await?;
 
         info!("IBD complete, node is now synchronized! Ready to start own services.");
 
@@ -262,30 +245,116 @@ impl ConnectedNode {
         Ok(())
     }
 
-    pub(crate) async fn validate_peer_chain_info(
-        &self,
-        info: ChainInfo,
-    ) -> Result<(u64, BlockHash), StryiNodeError> {
-        // invariants checks: protocol version and chain name must match
+    /// Finds the best peer to sync from.
+    /// The best peer must pass invariant checks and have more work than us.
+    /// Returns the peer with the highest total_difficulty, or an error if none qualify.
+    async fn find_best_peer(&self) -> Result<(RemotePeer, ChainInfo), StryiNodeError> {
+        let peers_list = query_sync_peers(&self.net_cmd, &self.sync_service_config)
+            .await
+            .map_err(|e| StryiNodeError::other(format!("failed to discover peers: {e}")))?;
 
-        let local_proto: u64 = self.sync_service_config.protocol_version as u64;
-        let remote_proto: u64 = info.protocol_version as u64;
-        require_chain_info_eq("protocol_version", local_proto, remote_proto)?;
+        if peers_list.is_empty() {
+            return Err(StryiNodeError::other(
+                "no peers with compatible gRPC sync service found",
+            ));
+        }
 
-        let local_chain: &str = self.sync_service_config.chain_name.as_str();
-        let remote_chain: &str = info.chain_name.as_str();
-        require_chain_info_eq("chain_name", local_chain, remote_chain)?;
+        info!("Found {} peers with gRPC sync service.", peers_list.len());
 
-        //  Parse remote tip hash
-        let remote_tip_hash =
-            BlockHash::from_hash_string(&info.latest_block_hash).map_err(|e| {
-                StryiNodeError::other(format!(
-                    "invalid remote tip hash '{}': {}",
-                    info.latest_block_hash, e
-                ))
-            })?;
+        let local_work = self
+            .storage
+            .read()
+            .await
+            .chain_difficulty()
+            .await
+            .unwrap_or(0);
 
-        // if heights equal (>0), tip hashes must match.
+        info!("Local work: {}", local_work);
+
+        let mut candidates: Vec<(RemotePeer, ChainInfo)> = Vec::new();
+
+        for (peer_id, svc) in peers_list {
+            info!("Checking peer {}...", peer_id);
+
+            let channel = match connect_grpc(&svc).await {
+                Ok(ch) => ch,
+                Err(e) => {
+                    warn!("Cannot connect to peer {}: {}. Skipping.", peer_id, e);
+                    continue;
+                }
+            };
+
+            let mut remote_peer = RemotePeer::new(peer_id, channel);
+
+            let chain_info = match remote_peer.request_chain_info().await {
+                Ok(ci) => ci,
+                Err(e) => {
+                    warn!(
+                        "Cannot get chain info from peer {}: {}. Skipping.",
+                        peer_id, e
+                    );
+                    continue;
+                }
+            };
+
+            // Check protocol/chain name invariants
+            if let Err(e) = self.validate_peer_chain_invariants(&chain_info).await {
+                warn!("Peer {} failed invariant check: {}. Skipping.", peer_id, e);
+                continue;
+            }
+
+            // the MAIN check: do we even need to sync with this peer?
+            let remote_work = chain_info.total_difficulty as u128;
+            if remote_work <= local_work {
+                info!(
+                    "Peer {} has no more work than us ({} <= {}) Skipping",
+                    peer_id, remote_work, local_work
+                );
+                continue;
+            }
+            info!(
+                "Peer {} is a valid candidate (its work={} which IS more than local_work={}, height={}).",
+                peer_id, remote_work, local_work, chain_info.height
+            );
+
+            candidates.push((remote_peer, chain_info));
+        }
+
+        if candidates.is_empty() {
+            return Err(StryiNodeError::other(
+                "all peers have less or equal work than local chain — nothing to sync",
+            ));
+        }
+
+        // Pick the peer with the highest total_difficulty
+        let best = candidates
+            .into_iter()
+            .max_by_key(|(_, ci)| ci.total_difficulty as u128)
+            .unwrap();
+
+        info!(
+            "Best peer selected: height={}, work={}",
+            best.1.height, best.1.total_difficulty
+        );
+
+        Ok(best)
+    }
+
+    async fn validate_peer_chain_invariants(&self, info: &ChainInfo) -> Result<(), StryiNodeError> {
+        require_chain_info_eq(
+            "protocol_version",
+            self.sync_service_config.protocol_version as u64,
+            info.protocol_version as u64,
+        )?;
+        require_chain_info_eq(
+            "chain_name",
+            self.sync_service_config.chain_name.as_str(),
+            info.chain_name.as_str(),
+        )?;
+
+        let remote_tip_hash = BlockHash::from_hash_string(&info.latest_block_hash)
+            .map_err(|e| StryiNodeError::other(format!("invalid remote tip hash: {e}")))?;
+
         let (local_height, local_tip_hash) = {
             let s = self.storage.read().await;
             s.tip()
@@ -301,34 +370,7 @@ impl ConnectedNode {
             ));
         }
 
-        // warn if a peer has less work
-        let local_work = self
-            .storage
-            .read()
-            .await
-            .chain_difficulty()
-            .await
-            .unwrap_or(0);
-        let remote_work = info.total_difficulty as u128;
-
-        if remote_work < local_work {
-            warn!(
-                "peer has less work: remote_work={}, local_work={}",
-                remote_work, local_work
-            );
-        }
-
-        info!(
-            "peer meta OK: chain='{}', proto={}, remote_height={}, remote_tip={}, total_difficulty={}, last_update={}",
-            info.chain_name,
-            info.protocol_version,
-            info.height,
-            remote_tip_hash,
-            info.total_difficulty,
-            info.last_update_time
-        );
-
-        Ok((info.height, remote_tip_hash))
+        Ok(())
     }
 }
 
@@ -378,22 +420,20 @@ async fn connect_grpc(
     Ok(BlockchainSyncClient::new(channel))
 }
 
-async fn find_sync_peer(
+async fn query_sync_peers(
     net_cmd: &mpsc::Sender<NetworkCommand>,
     sync_config: &StryiSyncServiceConfig,
-) -> Result<(PeerId, BlockchainSyncClient<tonic::transport::Channel>), StryiNodeError> {
+) -> Result<Vec<(PeerId, ServiceRecord)>, StryiNodeError> {
     let candidates = query_sync_candidates(net_cmd).await?;
 
-    let (peer_id, svc) = candidates
+    // filter only those which have a compatible sync api version.
+    let res = candidates
         .iter()
-        .find(|(_, s)| s.version() as usize == sync_config.protocol_version)
-        .ok_or_else(|| StryiNodeError::other("No compatible gRPC sync peers found"))?;
+        .filter(|(_, s)| s.version() as usize == sync_config.protocol_version)
+        .map(|p| p.to_owned())
+        .collect::<Vec<_>>();
 
-    let peer_id = *peer_id;
-    info!("Using gRPC sync peer {} at {}", peer_id, svc.address());
-
-    let client = connect_grpc(svc).await?;
-    Ok((peer_id, client))
+    Ok(res)
 }
 
 pub(super) async fn connect_to_peer(
@@ -483,7 +523,6 @@ async fn run_ibd(
 }
 
 /// Builds ConsensusConstants instance, calculates current difficulty from tip, other stuff from config.
-// TODO: Refactor `build_consensus_rules` method
 pub async fn build_consensus_constants(
     storage: &Arc<RwLock<StryiStorage>>,
 ) -> Result<ConsensusConsts, StryiNodeError> {

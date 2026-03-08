@@ -5,6 +5,7 @@ use crate::node::ConnectedNode;
 use crate::node::remote_peer::RemotePeer;
 use stryi_core::block::BlockHash;
 use stryi_core::storage::BlockStorage;
+use tracing::debug;
 
 impl ConnectedNode {
     /// Binary-search for the highest common block between us and a remote peer.
@@ -22,9 +23,21 @@ impl ConnectedNode {
         let mut best_height: u64 = 0;
         let mut best_hash: BlockHash = BlockHash::empty();
 
+        debug!(
+            remote_tip_height,
+            local_tip_height,
+            search_high = high_height,
+            "Starting LCA binary search"
+        );
+
         while low_height <= high_height {
             // calculate midpoint
             let mid_height = low_height + ((high_height - low_height) / 2);
+
+            debug!(
+                low_height,
+                high_height, mid_height, best_height, "LCA binary search iteration"
+            );
 
             // Local block at mid_height must exist (mid <= local_tip_height)
             let local_block = {
@@ -48,19 +61,44 @@ impl ConnectedNode {
             let local_hash = local_block.block_hash();
             let remote_hash = remote_block.block_hash();
 
+            debug!(
+                mid_height,
+                ?local_hash,
+                ?remote_hash,
+                hashes_match = (local_hash == remote_hash),
+                "Compared local and remote block hashes at mid height"
+            );
+
             if local_hash == remote_hash {
                 // mid is a common ancestor; try to move higher
                 best_height = mid_height;
                 best_hash = local_hash;
                 low_height = mid_height.saturating_add(1);
+
+                debug!(
+                    best_height,
+                    next_low_height = low_height,
+                    high_height,
+                    "Common ancestor found at mid height, searching upper half"
+                );
             } else {
                 // diverged at or below mid; search lower half
                 if mid_height == 0 {
+                    debug!("Hash mismatch at genesis height, stopping LCA search");
                     break;
                 }
+
                 high_height = mid_height - 1;
+
+                debug!(
+                    low_height,
+                    next_high_height = high_height,
+                    "Chains diverged at mid height, searching lower half"
+                );
             }
         }
+
+        debug!(best_height, ?best_hash, "Finished LCA binary search");
 
         Ok((best_height, best_hash))
     }

@@ -30,6 +30,12 @@ pub enum StryiNodeError {
         remote: String,
     },
 
+    /// Error indicates that the local peer has better work than the remote peer.
+    #[error(
+        "local peer has better work than remote peer: local_work={local_work}, remote_work={remote_work}"
+    )]
+    RemotePeerIsWorse { local_work: u128, remote_work: u128 },
+
     #[error(transparent)]
     TonicTransport(#[from] tonic::transport::Error),
 

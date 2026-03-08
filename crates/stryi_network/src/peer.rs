@@ -18,7 +18,7 @@ pub struct PeerInfo {
     /// TODO: Is storing >1 address for a single peer necessary for design?
     pub addresses: Vec<Multiaddr>,
 
-    /// Cached answer of `ServicesInfoRequest` for this peer – **signed blobs**,
+    /// Cached answer of `ServicesInfoRequest` for this peer - **signed blobs**,
     /// ready for retransmission.
     pub services: Vec<SignedServiceRecord>,
 
@@ -98,14 +98,10 @@ pub trait PeerMapExt {
     /// Store signed service announcements as-is (single source of truth).
     fn set_signed_services(&mut self, peer: PeerId, signed: Vec<SignedServiceRecord>);
 
-    /// Return the verified `ServiceRecord ` list.
-    /// The list is re-validated every call; invalid entries are silently dropped.
-    fn current_services(&self, peer: &PeerId) -> Option<Vec<ServiceRecord>>;
-
-    /// Record a successful ping – returns the new consecutive-failure count (always 0).
+    /// Record a successful ping - returns the new consecutive-failure count (always 0).
     fn ping_success(&mut self, peer: PeerId) -> usize;
 
-    /// Record a failed ping – returns the updated consecutive-failure count.
+    /// Record a failed ping - returns the updated consecutive-failure count.
     fn ping_failure(&mut self, peer: PeerId) -> usize;
 }
 
@@ -155,15 +151,6 @@ impl PeerMapExt for PeerMap {
 
         let pi = self.entry(peer).or_insert_with(|| PeerInfo::new_now(None));
         pi.set_signed_services(bounded);
-    }
-
-    fn current_services(&self, peer: &PeerId) -> Option<Vec<ServiceRecord>> {
-        let pi = self.get(peer)?;
-        let pk = pi.public_key.as_ref()?;
-        Some(filter_verified_records(
-            pi.clone().services,
-            &pk.clone().try_into_ed25519().unwrap(),
-        ))
     }
 
     fn ping_success(&mut self, peer: PeerId) -> usize {
