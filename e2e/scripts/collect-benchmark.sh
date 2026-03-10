@@ -4,12 +4,43 @@ set -euo pipefail
 DC="docker compose -f docker-compose.e2e.yml"
 
 logs_for() {
-  $DC logs "$1" 2>/dev/null
+  $DC logs "$1" 2>/dev/null || true
+}
+
+first_match() {
+  local service="$1" pattern="$2"
+  (
+    logs_for "$service" | grep -m1 -E "$pattern" || true
+  ) | head -n1
 }
 
 extract_ts() {
-  logs_for "$1" | grep -m1 "$2" \
-    | grep -oP '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z' | head -1
+  first_match "$1" "$2" \
+    | sed -nE 's/.*([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+Z).*/\1/p' \
+    | head -n1
+}
+
+extract_capture() {
+  local service="$1" pattern="$2" capture="$3"
+  (
+    logs_for "$service" | grep -m1 -E "$pattern" | sed -nE "s/${capture}/\\1/p" || true
+  ) | head -n1
+}
+
+sum_captures() {
+  local service="$1" pattern="$2" capture="$3" default_value="${4:-0}"
+  local values=""
+
+  values="$(
+    logs_for "$service" | grep -E "$pattern" | sed -nE "s/${capture}/\\1/p" || true
+  )"
+
+  if [ -z "$values" ]; then
+    echo "$default_value"
+    return
+  fi
+
+  printf '%s\n' "$values" | paste -sd+ - | bc 2>/dev/null || echo "$default_value"
 }
 
 diff_seconds() {
@@ -40,15 +71,30 @@ status() {
 }
 
 raw_num() {
-  # shellcheck disable=SC2001
-  echo "$1" | sed 's/s$//' | grep -qP '^\d' && echo "$1" | sed 's/s$//' || echo "null"
+  local value
+  value=$(echo "$1" | sed 's/s$//')
+  if echo "$value" | grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+    echo "$value"
+  else
+    echo "null"
+  fi
+}
+
+raw_int() {
+  if echo "$1" | grep -Eq '^[0-9]+$'; then
+    echo "$1"
+  else
+    echo "null"
+  fi
 }
 
 CG_START=$(extract_ts chaingen "Starting chain generation and persistence")
 CG_END=$(extract_ts chaingen "Done. Persisted")
 CG_DUR=$(diff_seconds "$CG_START" "$CG_END")
-CG_BLOCKS=$(logs_for chaingen | grep "Done. Persisted" | grep -oP 'Persisted \K\d+' || echo "?")
-CG_TXS=$(logs_for chaingen | grep "Done. Persisted" | grep -oP 'transactions created: \K\d+' || echo "?")
+CG_BLOCKS=$(extract_capture chaingen "Done. Persisted" '.*Persisted ([0-9]+).*')
+CG_BLOCKS=${CG_BLOCKS:-?}
+CG_TXS=$(extract_capture chaingen "Done. Persisted" '.*transactions created: ([0-9]+).*')
+CG_TXS=${CG_TXS:-?}
 
 SN_START=$(extract_ts server-node "Start mode")
 SN_READY=$(extract_ts server-node "HTTP API listening")
@@ -67,28 +113,25 @@ CN_IBD_DUR=$(diff_seconds "$CN_GENESIS" "$CN_IBD")
 CN_SYNC_TOTAL=$(diff_seconds "$CN_SYNC_START" "$CN_IBD")
 CN_STARTUP_TOTAL=$(diff_seconds "$CN_BOOT" "$CN_READY")
 
-IBD_BATCHES=$(logs_for client-node-1 | grep -c "IBD batch done" || echo "0")
-IBD_TOTAL_MS=$(
-  logs_for client-node-1 | grep "IBD batch done" \
-    | grep -oP 'elapsed_ms=\K\d+' | paste -sd+ | bc 2>/dev/null || echo "0"
-)
-IBD_APPLIED=$(
-  logs_for client-node-1 | grep "IBD batch done" \
-    | grep -oP 'applied=\K\d+' | paste -sd+ | bc 2>/dev/null || echo "0"
-)
+IBD_BATCHES=$(logs_for client-node-1 | grep -c "IBD batch done" || true)
+IBD_BATCHES=${IBD_BATCHES:-0}
+IBD_TOTAL_MS=$(sum_captures client-node-1 "IBD batch done" '.*elapsed_ms=([0-9]+).*' "0")
+IBD_APPLIED=$(sum_captures client-node-1 "IBD batch done" '.*applied=([0-9]+).*' "0")
 IBD_BLOCKS_PER_SEC="n/a"
 if [ "$IBD_TOTAL_MS" -gt 0 ] 2>/dev/null; then
   IBD_BLOCKS_PER_SEC=$(echo "scale=0; $IBD_APPLIED * 1000 / $IBD_TOTAL_MS" | bc)
 fi
 
-PEER_HEIGHT=$(logs_for client-node-1 | grep -m1 "peer meta OK" \
-  | grep -oP 'remote_height=\K\d+' || echo "?")
+PEER_HEIGHT=$(extract_capture client-node-1 "peer meta OK" '.*remote_height=([0-9]+).*')
+PEER_HEIGHT=${PEER_HEIGHT:-?}
 
 CGR_START=$(extract_ts chaingen-reorg "Starting chain generation and persistence")
 CGR_END=$(extract_ts chaingen-reorg "Done. Persisted")
 CGR_DUR=$(diff_seconds "$CGR_START" "$CGR_END")
-CGR_BLOCKS=$(logs_for chaingen-reorg | grep "Done. Persisted" | grep -oP 'Persisted \K\d+' || echo "?")
-CGR_TXS=$(logs_for chaingen-reorg | grep "Done. Persisted" | grep -oP 'transactions created: \K\d+' || echo "?")
+CGR_BLOCKS=$(extract_capture chaingen-reorg "Done. Persisted" '.*Persisted ([0-9]+).*')
+CGR_BLOCKS=${CGR_BLOCKS:-?}
+CGR_TXS=$(extract_capture chaingen-reorg "Done. Persisted" '.*transactions created: ([0-9]+).*')
+CGR_TXS=${CGR_TXS:-?}
 
 CN2_START=$(extract_ts client-node-2 "Start mode")
 CN2_READY=$(extract_ts client-node-2 "HTTP API listening")
@@ -106,10 +149,10 @@ SN_REORG_TOTAL=$(diff_seconds "$SN_REORG_TRIGGER" "$SN_REORG_SYNC")
 SN_LCA_DUR=$(diff_seconds "$SN_REORG_TRIGGER" "$SN_LCA")
 SN_REORG_ENGINE=$(diff_seconds "$SN_REORG_START" "$SN_REORG_DONE")
 
-SN_REWOUND_BLOCKS=$(logs_for server-node | grep -m1 "Rewound" \
-  | grep -oP 'Rewound \K\d+' || echo "?")
-SN_APPLIED_FORKS=$(logs_for server-node | grep -m1 "Reorg complete" \
-  | grep -oP 'applied \K\d+' || echo "?")
+SN_REWOUND_BLOCKS=$(extract_capture server-node "Rewound" '.*Rewound ([0-9]+).*')
+SN_REWOUND_BLOCKS=${SN_REWOUND_BLOCKS:-?}
+SN_APPLIED_FORKS=$(extract_capture server-node "Reorg complete" '.*applied ([0-9]+).*')
+SN_APPLIED_FORKS=${SN_APPLIED_FORKS:-?}
 
 CN_REORG_TRIGGER=$(extract_ts client-node-1 "Remote chain heavier")
 CN_FALLBACK=$(extract_ts client-node-1 "Fallback: connected to peer")
@@ -224,8 +267,8 @@ cat > /tmp/benchmark.json <<ENDJSON
   "sha": "${GITHUB_SHA}",
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "chaingen": {
-    "blocks": ${CG_BLOCKS:-0},
-    "transactions": ${CG_TXS:-0},
+    "blocks": $(raw_int "$CG_BLOCKS"),
+    "transactions": $(raw_int "$CG_TXS"),
     "duration_s": $(raw_num "$CG_DUR")
   },
   "server_node": {
@@ -237,7 +280,7 @@ cat > /tmp/benchmark.json <<ENDJSON
     "ibd_s": $(raw_num "$CN_IBD_DUR"),
     "sync_total_s": $(raw_num "$CN_SYNC_TOTAL"),
     "startup_total_s": $(raw_num "$CN_STARTUP_TOTAL"),
-    "peer_height": ${PEER_HEIGHT:-0}
+    "peer_height": $(raw_int "$PEER_HEIGHT")
   },
   "ibd": {
     "batches": ${IBD_BATCHES:-0},
@@ -246,8 +289,8 @@ cat > /tmp/benchmark.json <<ENDJSON
     "blocks_per_sec": $([ "$IBD_BLOCKS_PER_SEC" = "n/a" ] && echo "null" || echo "$IBD_BLOCKS_PER_SEC")
   },
   "chaingen_reorg": {
-    "blocks": ${CGR_BLOCKS:-0},
-    "transactions": ${CGR_TXS:-0},
+    "blocks": $(raw_int "$CGR_BLOCKS"),
+    "transactions": $(raw_int "$CGR_TXS"),
     "duration_s": $(raw_num "$CGR_DUR")
   },
   "client_node_2": {
@@ -257,8 +300,8 @@ cat > /tmp/benchmark.json <<ENDJSON
     "total_s": $(raw_num "$SN_REORG_TOTAL"),
     "lca_discovery_s": $(raw_num "$SN_LCA_DUR"),
     "engine_s": $(raw_num "$SN_REORG_ENGINE"),
-    "blocks_rewound": ${SN_REWOUND_BLOCKS:-0},
-    "fork_blocks_applied": ${SN_APPLIED_FORKS:-0}
+    "blocks_rewound": $(raw_int "$SN_REWOUND_BLOCKS"),
+    "fork_blocks_applied": $(raw_int "$SN_APPLIED_FORKS")
   },
   "client_node_reorg": {
     "total_s": $(raw_num "$CN_REORG_TOTAL"),
