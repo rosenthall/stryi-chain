@@ -1,4 +1,4 @@
-FROM rust:1.85.0-bullseye AS builder
+FROM rust:1.86.0-bullseye AS builder
 
 WORKDIR /build
 
@@ -9,24 +9,14 @@ RUN apt-get update && apt-get install -y \
     clang \
  && rm -rf /var/lib/apt/lists/*
 
-# Workspace manifests
 COPY Cargo.toml Cargo.lock ./
-
-# Workspace crates
 COPY crates ./crates
 
-# Warm up deps cache
+# Warm the dependency cache before copying the full workspace.
 RUN cargo build --release -p stryi_devkit || true
 
-# Copy the rest of the workspace
 COPY . .
-
-# Build devkit only
 RUN cargo build --release -p stryi_devkit
-
-
-
-# Runner
 FROM debian:bullseye-slim AS runner
 
 RUN apt-get update && apt-get install -y \

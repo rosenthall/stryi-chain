@@ -1,0 +1,13 @@
+network_rendezvous_mode = "client"
+network_rendezvous_address = "/dns4/server-node/tcp/2070"
+network_listen_addr = "/ip4/0.0.0.0/tcp/4070"
+start_mode = "bootstrap"
+genesis_config_path = "/config/e2e_genesis.json"
+
+storage_path = "/data/chain_reorg"
+
+grpc_sync_listen = "0.0.0.0:4080"
+grpc_sync_advertise = "/dns4/client-node-2/tcp/4080"
+http_service_listen = "0.0.0.0:4090"
+http_service_advertise = "/dns4/client-node-2/tcp/4090"
+peer_key_path = "/data/keys/client2/peer.stryi_keys"
