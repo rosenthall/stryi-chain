@@ -48,8 +48,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-${{ github.run_number }}
-          path: /tmp/benchmark.json
+          path: |
+            /tmp/benchmark.json
+            /tmp/benchmark-summary.md
           retention-days: 90
+
+      - name: Announce benchmark report location
+        if: always()
+        run: |
+          echo "::notice title=Benchmark report::Open the e2e job Summary tab for the rendered report, or download the benchmark-${{ github.run_number }} artifact for benchmark-summary.md and benchmark.json."
 
       - name: Dump logs on failure
         if: failure()

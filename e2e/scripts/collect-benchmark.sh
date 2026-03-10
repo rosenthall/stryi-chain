@@ -2,10 +2,13 @@
 set -euo pipefail
 
 DC="docker compose -f docker-compose.e2e.yml"
+SUMMARY_OUT="/tmp/benchmark-summary.md"
 
 logs_for() {
   $DC logs "$1" 2>/dev/null || true
 }
+
+ts_pattern='[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+Z'
 
 first_match() {
   local service="$1" pattern="$2"
@@ -14,9 +17,39 @@ first_match() {
   ) | head -n1
 }
 
+logs_until_ts() {
+  local service="$1" end_ts="$2"
+  if [ -z "$end_ts" ]; then
+    logs_for "$service"
+    return
+  fi
+
+  logs_for "$service" | awk -v end_ts="$end_ts" '
+    match($0, /[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+Z/) {
+      line_ts = substr($0, RSTART, RLENGTH)
+      if (line_ts > end_ts) {
+        exit
+      }
+    }
+    { print }
+  '
+}
+
+service_finished_at() {
+  local service="$1" cid=""
+  cid="$($DC ps -a -q "$service" 2>/dev/null | head -n1)"
+  if [ -z "$cid" ]; then
+    return
+  fi
+
+  docker inspect -f '{{.State.FinishedAt}}' "$cid" 2>/dev/null \
+    | sed '/^0001-01-01T00:00:00Z$/d' \
+    | head -n1
+}
+
 extract_ts() {
   first_match "$1" "$2" \
-    | sed -nE 's/.*([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+Z).*/\1/p' \
+    | sed -nE "s/.*(${ts_pattern}).*/\\1/p" \
     | head -n1
 }
 
@@ -113,18 +146,36 @@ CN_IBD_DUR=$(diff_seconds "$CN_GENESIS" "$CN_IBD")
 CN_SYNC_TOTAL=$(diff_seconds "$CN_SYNC_START" "$CN_IBD")
 CN_STARTUP_TOTAL=$(diff_seconds "$CN_BOOT" "$CN_READY")
 
-IBD_BATCHES=$(logs_for client-node-1 | grep -c "IBD batch done" || true)
+PEER_HEIGHT=$(extract_capture client-node-1 "peer meta OK" '.*remote_height=([0-9]+).*')
+if [ -z "$PEER_HEIGHT" ]; then
+  PEER_HEIGHT=$(extract_capture client-node-1 "Best peer selected: height=" '.*Best peer selected: height=([0-9]+).*')
+fi
+PEER_HEIGHT=${PEER_HEIGHT:-?}
+
+if [ -z "$CN_PEER_FOUND" ]; then
+  CN_PEER_FOUND=$(extract_ts client-node-1 "Best peer selected: height=")
+  CN_PEER_DISCOVERY=$(diff_seconds "$CN_SYNC_START" "$CN_PEER_FOUND")
+  CN_GENESIS_DUR=$(diff_seconds "$CN_PEER_FOUND" "$CN_GENESIS")
+fi
+
+IBD_BATCHES=$(logs_until_ts client-node-1 "$CN_IBD" | grep -c "IBD batch done" || true)
 IBD_BATCHES=${IBD_BATCHES:-0}
-IBD_TOTAL_MS=$(sum_captures client-node-1 "IBD batch done" '.*elapsed_ms=([0-9]+).*' "0")
-IBD_APPLIED=$(sum_captures client-node-1 "IBD batch done" '.*applied=([0-9]+).*' "0")
+IBD_TOTAL_MS="$(
+  logs_until_ts client-node-1 "$CN_IBD" \
+    | grep -E "IBD batch done" \
+    | sed -nE 's/.*elapsed_ms=([0-9]+).*/\1/p' \
+    | paste -sd+ - | bc 2>/dev/null || echo "0"
+)"
+IBD_APPLIED="$(
+  logs_until_ts client-node-1 "$CN_IBD" \
+    | grep -E "IBD batch done" \
+    | sed -nE 's/.*applied=([0-9]+).*/\1/p' \
+    | paste -sd+ - | bc 2>/dev/null || echo "0"
+)"
 IBD_BLOCKS_PER_SEC="n/a"
 if [ "$IBD_TOTAL_MS" -gt 0 ] 2>/dev/null; then
   IBD_BLOCKS_PER_SEC=$(echo "scale=0; $IBD_APPLIED * 1000 / $IBD_TOTAL_MS" | bc)
 fi
-
-PEER_HEIGHT=$(extract_capture client-node-1 "peer meta OK" '.*remote_height=([0-9]+).*')
-PEER_HEIGHT=${PEER_HEIGHT:-?}
-
 CGR_START=$(extract_ts chaingen-reorg "Starting chain generation and persistence")
 CGR_END=$(extract_ts chaingen-reorg "Done. Persisted")
 CGR_DUR=$(diff_seconds "$CGR_START" "$CGR_END")
@@ -165,7 +216,10 @@ CN_REORG_TOTAL=$(diff_seconds "$CN_REORG_TRIGGER" "$CN_REORG_SYNC")
 CN_FALLBACK_DUR=$(diff_seconds "$CN_REORG_TRIGGER" "$CN_FALLBACK")
 CN_REORG_ENGINE=$(diff_seconds "$CN_REORG_START" "$CN_REORG_DONE")
 
-CONVERGE_END=$(extract_ts wait-for-reorg "SUCCESS.*converged")
+CONVERGE_END=$(service_finished_at wait-for-reorg)
+if [ -z "$CONVERGE_END" ]; then
+  CONVERGE_END=$(extract_ts wait-for-reorg "SUCCESS.*converged")
+fi
 CONVERGE_DUR=$(diff_seconds "$CN2_TIP" "$CONVERGE_END")
 
 TOTAL_DUR=$(diff_seconds "$CG_START" "$CONVERGE_END")
@@ -176,6 +230,9 @@ fi
 
 {
   echo "## E2E Benchmark Results"
+  echo ""
+  echo "Open the `e2e` job Summary tab for this rendered report."
+  echo "A copy is also uploaded in the `benchmark-${GITHUB_RUN_NUMBER}` artifact as `benchmark-summary.md`."
   echo ""
   echo "### Overview"
   echo ""
@@ -257,7 +314,11 @@ fi
   echo "**Run:** [#${GITHUB_RUN_NUMBER}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) | **Branch:** \`${GITHUB_REF_NAME}\` | **Commit:** \`${GITHUB_SHA:0:7}\`"
   echo ""
   echo "*$(date -u +'%Y-%m-%d %H:%M:%S UTC')*"
-} >> "$GITHUB_STEP_SUMMARY"
+} > "$SUMMARY_OUT"
+
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  cat "$SUMMARY_OUT" >> "$GITHUB_STEP_SUMMARY"
+fi
 
 cat > /tmp/benchmark.json <<ENDJSON
 {
