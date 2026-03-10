@@ -106,7 +106,7 @@ impl UtxoProcessor {
         Ok(outpoints)
     }
 
-    /// Reverts a previously-applied block, restoring the UTXO set to its prior state.
+    /// Reverts a previously applied block, restoring the UTXO set to its prior state.
     pub async fn rewind_block<S>(
         &self,
         undo: BlockUndo,

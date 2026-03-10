@@ -206,7 +206,6 @@ impl ConnectedNode {
             block_validator,
             utxo_processor,
             self.storage.clone(),
-            difficulty_calculator,
         )
         .await
         .map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
@@ -453,7 +452,7 @@ async fn connect_grpc(
     Ok(BlockchainSyncClient::new(channel))
 }
 
-async fn query_sync_peers(
+pub(super) async fn query_sync_peers(
     net_cmd: &mpsc::Sender<NetworkCommand>,
     sync_config: &StryiSyncServiceConfig,
 ) -> Result<Vec<(PeerId, ServiceRecord)>, StryiNodeError> {

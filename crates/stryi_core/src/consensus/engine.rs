@@ -4,8 +4,7 @@ use crate::consensus::forks::overlay::ForkDbOverlay;
 use crate::consensus::forks::registry::{ForkEntry, ForkRegistry, ForksRead, ForksWrite};
 use crate::consensus::index::ChainIndex;
 use crate::consensus::validator::BlockValidator;
-use crate::consensus::{ConsensusVerdict, FullNodeStorage};
-use crate::difficulty::DifficultyCalc;
+use crate::consensus::{BlockStorage, ConsensusVerdict, FullNodeStorage, UndoStorage};
 use crate::error::{StorageLayer, StryiCoreError};
 use crate::transactions::UtxoProcessor;
 use crate::{
@@ -31,9 +30,6 @@ where
     /// Block validator used to verify block-level properties such as proof-of-work, merkle root correctness,
     /// coinbase placement, transaction dependencies and ordering
     pub(crate) block_validator: BlockValidator<DB>,
-
-    /// Difficulty calculator function.
-    pub(crate) difficulty_calculator: DifficultyCalc<DB>,
 
     /// UTXO processor that applies transactions within a block to update the UTXO set.
     // TODO: consider renaming it later, maybe in TransactionsProcessor? Current name is a little weird
@@ -66,7 +62,6 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         block_validator: BlockValidator<DB>,
         utxo_processor: UtxoProcessor,
         db: Arc<RwLock<DB>>,
-        difficulty_calculator: DifficultyCalc<DB>,
     ) -> Result<Self, StryiCoreError> {
         info!("Initializing consensus engine...");
 
@@ -76,7 +71,6 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         let engine = Self {
             consensus_consts,
             block_validator,
-            difficulty_calculator,
             forks,
             utxo_processor,
             db: db.clone(),
@@ -290,7 +284,7 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
     ///
     /// It walks from the current canonical tip back to `lca`, calling
     /// `rewind_block` on the overlay for each block in between.  The
-    /// canonical DB itself is **not** mutated — all rewind deltas live
+    /// canonical DB itself is **not** mutated - all rewind deltas live
     /// in the overlay's in-memory maps.
     async fn build_fork_overlay<'a>(
         &self,
@@ -455,7 +449,7 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         }
     }
 
-    /// Performs a chain reorganization: rewinds canonical chain back to `lca`,
+    /// Performs a chain reorganization: rewinds the canonical chain back to `lca`,
     /// then applies `fork_blocks` forward on top of it.
     async fn perform_reorg(
         &mut self,
@@ -468,80 +462,91 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
             fork_blocks.len()
         );
 
-        let mut deleted_blocks: HashMap<u64, BlockHash> = HashMap::new();
-
         let mut write_db = self.db.write().await;
-
-        // Phase 1: Rewind canonical chain from tip back to LCA
-        let (_, mut cursor, _) = self.chain_index.tip().expect("Must have a tip");
-
-        while cursor != lca {
-            let height = self.chain_index.height(&cursor).ok_or_else(|| {
-                StryiCoreError::consensus_chain_selection(format!(
-                    "Block {} not found in chain index during reorg rewind",
-                    cursor
-                ))
-            })?;
-
-            let undo = write_db
-                .get_block_undo(cursor)
-                .await
-                .map_err(|e| StryiCoreError::storage(StorageLayer::Undo, e.to_string()))?
-                .ok_or_else(|| {
-                    StryiCoreError::storage(
-                        StorageLayer::Undo,
-                        format!("Missing BlockUndo for {} during reorg", cursor),
-                    )
-                })?;
-
-            self.utxo_processor
-                .rewind_block(undo, &mut *write_db)
-                .await
-                .map_err(|e| StryiCoreError::storage(StorageLayer::Utxo, e.to_string()))?;
-
-            deleted_blocks.insert(height, cursor);
-
-            let parent = self.chain_index.parent(&cursor).ok_or_else(|| {
-                StryiCoreError::consensus_chain_selection(format!(
-                    "Block {} has no parent in chain index during reorg",
-                    cursor
-                ))
-            })?;
-
-            self.chain_index.remove(&cursor);
-            cursor = parent;
-        }
-
-        info!("Rewound {} canonical block(s)", deleted_blocks.len());
-
-        // Phase 2: Apply fork blocks forward
         let lca_work = self.chain_index.work(&lca).ok_or_else(|| {
-            StryiCoreError::consensus_chain_selection("LCA work not found after rewind")
+            StryiCoreError::consensus_chain_selection("LCA work not found in chain index")
         })?;
 
+        let mut deleted_blocks: HashMap<u64, BlockHash> = HashMap::new();
+        let mut to_rewind: Vec<BlockHash> = Vec::new();
+        {
+            let (_, mut cursor, _) = self.chain_index.tip().expect("Must have a tip");
+            while cursor != lca {
+                let height = self.chain_index.height(&cursor).ok_or_else(|| {
+                    StryiCoreError::consensus_chain_selection(format!(
+                        "Block {} not found in chain index during reorg rewind",
+                        cursor
+                    ))
+                })?;
+                deleted_blocks.insert(height, cursor);
+                to_rewind.push(cursor);
+                cursor = self.chain_index.parent(&cursor).ok_or_else(|| {
+                    StryiCoreError::consensus_chain_selection(format!(
+                        "Block {} has no parent in chain index during reorg",
+                        cursor
+                    ))
+                })?;
+            }
+        }
+
+        // Build the reorg against an overlay, then commit the delta in one pass.
+        let delta = {
+            let mut overlay = ForkDbOverlay::new(&*write_db, lca_work);
+
+            for hash in &to_rewind {
+                let undo = write_db
+                    .get_block_undo(*hash)
+                    .await
+                    .map_err(|e| StryiCoreError::storage(StorageLayer::Undo, e.to_string()))?
+                    .ok_or_else(|| {
+                        StryiCoreError::storage(
+                            StorageLayer::Undo,
+                            format!("Missing BlockUndo for {} during reorg", hash),
+                        )
+                    })?;
+
+                self.utxo_processor
+                    .rewind_block(undo, &mut overlay)
+                    .await
+                    .map_err(|e| StryiCoreError::storage(StorageLayer::Utxo, e.to_string()))?;
+            }
+
+            info!(
+                "Rewound {} canonical block(s) (overlay)",
+                deleted_blocks.len()
+            );
+
+            for block in &fork_blocks {
+                let hash = block.block_hash();
+                overlay
+                    .put_block(block)
+                    .await
+                    .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?;
+
+                let undo = self
+                    .utxo_processor
+                    .apply_block(block, &mut overlay)
+                    .await
+                    .map_err(|e| StryiCoreError::storage(StorageLayer::Utxo, e.to_string()))?;
+
+                overlay
+                    .put_block_undo(hash, undo)
+                    .await
+                    .map_err(|e| StryiCoreError::storage(StorageLayer::Undo, e.to_string()))?;
+            }
+
+            overlay.into_delta()
+        };
+
+        delta.commit(&mut *write_db).await?;
+
+        for hash in &to_rewind {
+            self.chain_index.remove(hash);
+        }
+
         let mut cumulative_work = lca_work;
-
         for block in &fork_blocks {
-            let hash = block.block_hash();
-            let block_work = 1u128 << block.header.difficulty_bits;
-            cumulative_work += block_work;
-
-            write_db
-                .put_block(block)
-                .await
-                .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?;
-
-            let undo = self
-                .utxo_processor
-                .apply_block(block, &mut *write_db)
-                .await
-                .map_err(|e| StryiCoreError::storage(StorageLayer::Utxo, e.to_string()))?;
-
-            write_db
-                .put_block_undo(hash, undo)
-                .await
-                .map_err(|e| StryiCoreError::storage(StorageLayer::Undo, e.to_string()))?;
-
+            cumulative_work += 1u128 << block.header.difficulty_bits;
             self.chain_index.insert(block, cumulative_work);
         }
 
@@ -563,7 +568,6 @@ impl<DB: FullNodeStorage> ConsensusEngine for StryiConsensusEngine<DB> {
     fn on_block(&mut self, block: Block) -> BoxFuture<'_, Result<ConsensusVerdict, Self::Error>> {
         let block = block.clone();
 
-        // generate a simple table log for this block's most important fields
         debug!(
             "Received new block {} at height {} with difficulty bits {}",
             block.block_hash(),

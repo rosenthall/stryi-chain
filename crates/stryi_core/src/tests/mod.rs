@@ -121,7 +121,7 @@ pub(crate) async fn make_engine(
     let utxo_proc = UtxoProcessor::new();
     let db = Arc::new(RwLock::new(db));
 
-    StryiConsensusEngine::new(consts, validator, utxo_proc, db, diff_calc)
+    StryiConsensusEngine::new(consts, validator, utxo_proc, db)
         .await
         .expect("Engine initialization must succeed with valid genesis")
 }

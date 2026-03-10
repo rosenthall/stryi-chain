@@ -231,7 +231,6 @@ async fn init_consensus_engine(
                 validator,
                 utxo_processor,
                 storage.clone(),
-                difficulty_calc,
             )
             .await
             .map_err(|e| format!("Failed to initialize consensus engine: {e:?}"))?;
