@@ -4,9 +4,10 @@ use crate::grpc_services::blockchain_sync_server::BlockchainSyncServer;
 use crate::http::{HTTP_SERVICE_TAG, StryiHttpServiceConfig};
 use crate::middleware::ready::{ReadyFlag, ReadyGateLayer};
 use crate::node::ibd::ingest_ibd_batch;
+use crate::node::lca::find_lca;
 use crate::node::miner_bridge::MinerBridge;
 use crate::node::remote_peer::RemotePeer;
-use crate::node::sync::connect_to_peer;
+use crate::node::sync::{connect_to_peer, query_sync_peers};
 use crate::tls::NodeTlsIdentity;
 use multiaddr::Multiaddr;
 use std::sync::Arc;
@@ -459,6 +460,9 @@ fn build_tip_announcement(
         })
 }
 
+const SYNC_PEER_CONNECT_MAX_RETRIES: u32 = 10;
+const SYNC_PEER_CONNECT_RETRY_DELAY: Duration = Duration::from_secs(1);
+
 async fn sync_from_peer(
     consensus_engine: Arc<Mutex<StryiConsensusEngine<StryiStorage>>>,
     storage: Arc<RwLock<StryiStorage>>,
@@ -467,18 +471,73 @@ async fn sync_from_peer(
     sync_config: StryiSyncServiceConfig,
     source_peer: PeerId,
 ) -> Result<(), StryiNodeError> {
-    let grpc_client = connect_to_peer(&net_cmd, &sync_config, source_peer).await?;
-    let mut remote_peer = RemotePeer::new(source_peer, grpc_client);
+    // Retry until the source peer publishes its gRPC service, then fall back to another sync peer.
+    let (grpc_client, actual_peer) = {
+        let mut attempt = 1u32;
+        loop {
+            match connect_to_peer(&net_cmd, &sync_config, source_peer).await {
+                Ok(client) => break (client, source_peer),
+                Err(err) if attempt >= SYNC_PEER_CONNECT_MAX_RETRIES => {
+                    warn!(
+                        "Source peer {} unreachable after {} attempts, trying other peers",
+                        source_peer, SYNC_PEER_CONNECT_MAX_RETRIES
+                    );
+                    let candidates = query_sync_peers(&net_cmd, &sync_config)
+                        .await
+                        .unwrap_or_default();
+
+                    let mut found = None;
+                    for (peer_id, _) in &candidates {
+                        if *peer_id == source_peer {
+                            continue;
+                        }
+                        if let Ok(client) =
+                            connect_to_peer(&net_cmd, &sync_config, *peer_id).await
+                        {
+                            info!("Fallback: connected to peer {} for sync", peer_id);
+                            found = Some((client, *peer_id));
+                            break;
+                        }
+                    }
+                    match found {
+                        Some(pair) => break pair,
+                        None => {
+                            return Err(StryiNodeError::other(format!(
+                                "connect_to_peer failed after {} attempts: {} (no fallback peers)",
+                                SYNC_PEER_CONNECT_MAX_RETRIES, err
+                            )));
+                        }
+                    }
+                }
+                Err(err) => {
+                    warn!(
+                        "connect_to_peer attempt {}/{} for peer {} failed: {}. Retrying in {:?}...",
+                        attempt, SYNC_PEER_CONNECT_MAX_RETRIES, source_peer, err, SYNC_PEER_CONNECT_RETRY_DELAY
+                    );
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let _ = net_cmd
+                        .send(NetworkCommand::RefreshPeerServices {
+                            peer: source_peer,
+                            respond_to: tx,
+                        })
+                        .await;
+                    let _ = rx.await;
+                    tokio::time::sleep(SYNC_PEER_CONNECT_RETRY_DELAY).await;
+                    attempt += 1;
+                }
+            }
+        }
+    };
+    let mut remote_peer = RemotePeer::new(actual_peer, grpc_client);
 
     let remote_chain_info = remote_peer.request_chain_info().await?;
     let remote_height = remote_chain_info.height;
 
-    let local_tip_height = {
+    let (local_tip_height, local_tip_hash) = {
         let s = storage.read().await;
         s.tip()
             .await
             .map_err(|e| StryiNodeError::other(format!("tip(): {e}")))?
-            .0
     };
 
     if local_tip_height >= remote_height {
@@ -489,14 +548,43 @@ async fn sync_from_peer(
         return Ok(());
     }
 
-    info!(
-        "Syncing blocks {} to {}",
-        local_tip_height + 1,
-        remote_height
-    );
+    // Compare the peer's canonical block at our tip height, not just block presence in storage.
+    let peer_includes_local_tip = match remote_peer
+        .request_block_by_height(local_tip_height)
+        .await
+    {
+        Ok(block) => block.block_hash() == local_tip_hash,
+        Err(_) => false,
+    };
+
+    let sync_start_height = if peer_includes_local_tip {
+        info!(
+            "Peer {} includes our tip, simple sync from {} to {}",
+            actual_peer,
+            local_tip_height + 1,
+            remote_height
+        );
+        local_tip_height + 1
+    } else {
+        info!(
+            "Peer {} does NOT include our tip - chains diverged. Finding LCA...",
+            actual_peer
+        );
+        let (lca_height, lca_hash) =
+            find_lca(&storage, &mut remote_peer, remote_height, local_tip_height).await?;
+
+        info!(
+            "LCA found at height={}, hash={}. Syncing from {} to {}",
+            lca_height,
+            lca_hash,
+            lca_height + 1,
+            remote_height
+        );
+        lca_height + 1
+    };
 
     let batch_size = sync_config.max_blocks_range_per_request;
-    let mut current_height = local_tip_height + 1;
+    let mut current_height = sync_start_height;
 
     while current_height <= remote_height {
         let blocks = remote_peer

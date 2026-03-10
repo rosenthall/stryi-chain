@@ -1,6 +1,6 @@
 use crate::mempool::MempoolRequest;
 use crate::peer::PeerInfo;
-use crate::services::{ServiceRecord, SignedServiceRecord, filter_verified_records};
+use crate::services::{ServiceRecord, ServicesInfoRequest, SignedServiceRecord, filter_verified_records};
 use crate::{
     NetworkCommand, NetworkEvent, RendezvousMode, StryiNetworkManagerConfig,
     behaviour::{StryiBehaviour, StryiBehaviourConfig},
@@ -51,7 +51,7 @@ pub struct StryiNetworkManager {
     // Event channel. network manager broadcasts events (e.g., peer events) to subscribers
     pub(crate) event_tx: broadcast::Sender<NetworkEvent>,
 
-    /// Thread-safe, mutable registry of this node’s active services.
+    /// Thread-safe, mutable registry of this node's active services.
     /// Wrapped in an `RwLock` to allow concurrent reads and real-time updates
     /// (e.g. when a service starts, stops, or changes its listening port).
     pub(crate) own_services_registry: Arc<RwLock<Vec<SignedServiceRecord>>>,
@@ -62,7 +62,7 @@ pub struct StryiNetworkManager {
     cancel_token: CancellationToken,
 }
 
-// hard‑coded topic names that every node must agree on
+// hard-coded topic names that every node must agree on
 pub const BLOCKS_TOPIC_NAME: &str = "stryichain-blocks";
 pub const TRANSACTIONS_TOPIC_NAME: &str = "stryichain-txs";
 pub const TIPS_TOPIC_NAME: &str = "stryichain-tips";
@@ -452,6 +452,24 @@ impl StryiNetworkManager {
                                     )));
                                 }
                             }
+                        }
+
+                        Some(NetworkCommand::RefreshPeerServices { peer, respond_to }) => {
+                            debug!("NetworkManager: Refreshing services for peer {}", peer);
+                            let is_connected = self.connected_peers.read().await.contains_key(&peer);
+                            if is_connected {
+                                let _req_id = swarm
+                                    .behaviour_mut()
+                                    .services_info
+                                    .send_request(&peer, ServicesInfoRequest::ListServices);
+                                debug!(
+                                    "Sent ListServices refresh to peer {} (req_id={:?})",
+                                    peer, _req_id
+                                );
+                            } else {
+                                debug!("Peer {} not connected, skipping service refresh", peer);
+                            }
+                            let _ = respond_to.send(());
                         }
 
                         // if the channel close we exit the run loop

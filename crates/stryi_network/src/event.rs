@@ -13,7 +13,7 @@ use libp2p::ping::Event as PingEvent;
 use libp2p::request_response::{Event as ReqRespEvent, Message};
 use libp2p::request_response::{InboundRequestId, ResponseChannel};
 use libp2p::swarm::SwarmEvent;
-use libp2p::{Multiaddr, Swarm, gossipsub, request_response};
+use libp2p::{Multiaddr, PeerId, Swarm, gossipsub, request_response};
 use std::collections::HashMap;
 use stryi_core::transactions::Transaction;
 use tracing::{debug, error, info, trace, warn};
@@ -138,7 +138,7 @@ impl StryiNetworkManager {
                         match ev {
                             // inbound request
                             ReqRespEvent::Message {
-                                peer: _,
+                                peer,
                                 message:
                                     request_response::Message::Request {
                                         request_id,
@@ -155,6 +155,7 @@ impl StryiNetworkManager {
                                         request_id,
                                         request,
                                         channel,
+                                        peer,
                                     )
                                     .await
                                 {
@@ -389,7 +390,7 @@ impl StryiNetworkManager {
                         self.event_tx
                             .send(NetworkEvent::ChainTipAnnounced {
                                 announcement,
-                                source: propagation_source,
+                                source: message.source.unwrap_or(propagation_source),
                             })
                             .map_err(StryiNetworkError::CannotSendEvent)?;
                     }
@@ -416,20 +417,16 @@ impl StryiNetworkManager {
         _request_id: InboundRequestId,
         request: ServicesInfoRequest,
         channel: ResponseChannel<ServicesResponse>,
+        peer: PeerId,
     ) -> Result<(), StryiNetworkError> {
-        trace!("ServicesInfo request: {:?}", request);
+        trace!("ServicesInfo request from {}: {:?}", peer, request);
 
         match request {
-            // If the request is to get the list of services, we respond with the
-            // current registry (signed form, ready for re-distribution).
             ServicesInfoRequest::ListServices => {
-                // Build response from this node’s service registry.
-                // self.services_info: Arc<RwLock<Vec<SignedServiceRecord>>>
                 let services = self.own_services_registry.read().await.clone();
 
                 let response = ServicesResponse { services };
 
-                // Send response back to the requester.
                 behaviour
                     .services_info
                     .send_response(channel, response)
@@ -437,12 +434,44 @@ impl StryiNetworkManager {
                         StryiNetworkError::other("failed to send ServicesInfo response")
                     })?;
             }
+
+            ServicesInfoRequest::PushServices { services } => {
+                {
+                    let mut peers = self.connected_peers.write().await;
+                    peers.set_signed_services(peer, services.clone());
+                }
+
+                let pk_ed = {
+                    let peers = self.connected_peers.read().await;
+                    peers
+                        .get(&peer)
+                        .and_then(|pi| pi.public_key.clone())
+                        .and_then(|pk| pk.try_into_ed25519().ok())
+                };
+
+                if let Some(pk_ed) = pk_ed {
+                    let verified_cnt = filter_verified_records(services, &pk_ed).len();
+                    info!("PushServices: cached {verified_cnt} verified services from peer {peer}");
+                }
+
+                let own_services = self.own_services_registry.read().await.clone();
+                behaviour
+                    .services_info
+                    .send_response(
+                        channel,
+                        ServicesResponse {
+                            services: own_services,
+                        },
+                    )
+                    .map_err(|_| {
+                        StryiNetworkError::other("failed to send PushServices response")
+                    })?;
+            }
         }
 
         Ok(())
     }
 
-    // handles mempool requests
     pub(crate) async fn handle_mempool_request(
         &self,
         behaviour: &mut StryiBehaviour,

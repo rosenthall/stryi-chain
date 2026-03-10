@@ -67,22 +67,20 @@ pub struct SyncedNode {
     pub(crate) sync_service_config: StryiSyncServiceConfig,
 }
 
-/// Everything the event loop needs that the node doesn't use during connect/sync.
-/// This includes
+/// Everything the event loop needs after connect/sync is finished.
+/// This includes:
 /// - [`ReadyFlag`]'s for both http and grpc APIs,
 /// - [`MinerBridge`] for interactions with the local miner,
 /// - Channels from the [`StryiNetworkManager`] so EventLoop can receive and send messages,
-/// - [`CancellationToken`] for the entire event loop
-/// And some of the configurations/consts (like the advert. addresses and TLS identity).
+/// - [`CancellationToken`] for the entire event loop,
+/// - Configuration such as advertised addresses and TLS identity.
 pub(crate) struct EventLoopContext {
-    // -- messages/signals --
     pub tip_updates_sender: Sender<BlockHash>,
     pub miner_bridge: Option<MinerBridge>,
     pub grpc_is_ready: ReadyFlag,
     pub http_is_ready: ReadyFlag,
     pub cancel_token: CancellationToken,
 
-    // -- configs/consts --
     pub tls_identity: NodeTlsIdentity,
     pub http_service_config: StryiHttpServiceConfig,
     pub http_advertise_address: Multiaddr,

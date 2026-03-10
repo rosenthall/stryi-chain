@@ -114,6 +114,14 @@ pub enum NetworkCommand {
 
     /// Publish a chain tip announcement to the network via gossipsub.
     PublishChainTip(ChainTipAnnouncement),
+
+    /// Re-query a specific peer's services via the existing ListServices protocol.
+    /// The response is cached automatically by the existing response handler.
+    /// The caller should wait a short time after this returns for the cache to update.
+    RefreshPeerServices {
+        peer: PeerId,
+        respond_to: tokio::sync::oneshot::Sender<()>,
+    },
 }
 
 /// Events that are emitted by the network service.

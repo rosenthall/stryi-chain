@@ -1,4 +1,4 @@
-use crate::services::{ServiceRecord, SignedServiceRecord, filter_verified_records};
+use crate::services::SignedServiceRecord;
 use libp2p::{Multiaddr, PeerId, identity::PublicKey};
 use std::collections::HashMap;
 use std::time::SystemTime;

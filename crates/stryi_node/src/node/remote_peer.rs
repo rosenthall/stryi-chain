@@ -23,7 +23,7 @@ impl RemotePeer {
     }
 
     pub fn peer_id(&self) -> PeerId {
-        self.peer_id.clone()
+        self.peer_id
     }
 
     pub async fn request_chain_info(&mut self) -> Result<ChainInfo, StryiNodeError> {

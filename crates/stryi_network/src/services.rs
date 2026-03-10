@@ -16,6 +16,7 @@ use std::fmt;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum ServicesInfoRequest {
     ListServices,
+    PushServices { services: Vec<SignedServiceRecord> },
 }
 
 /// Response type: list of services
@@ -76,15 +77,14 @@ impl ServiceRecord {
 const SIGNED_SERVICE_RECORD_DOMAIN: &str = "stryichain.service";
 const SIGNED_SERVICE_PAYLOAD_TYPE: &[u8] = b"\x71stryichain/service";
 
-/// Signed version of ServiceRecord
-/// This API is meant to be used only by network components itself, for better encapsulation
+/// Signed transport payload for exchanging service records between peers.
 #[derive(Clone, Debug)]
-pub(crate) struct SignedServiceRecord {
+pub struct SignedServiceRecord {
     inner: SignedEnvelope,
 }
 
 impl SignedServiceRecord {
-    /// Sign `ServiceRecord` with the node’s ed25519 key.
+    /// Sign `ServiceRecord` with the node's ed25519 key.
     pub fn sign(
         peer_keypair: identity::ed25519::Keypair,
         service_record: ServiceRecord,
@@ -106,15 +106,14 @@ impl SignedServiceRecord {
     }
 
     /// Returns `ServiceRecord` if:
-    ///   – signature is valid,
-    ///   – domain matches,
-    ///   – payload_type matches,
-    ///   – signing key equals the expected peer key.
+    ///   - signature is valid,
+    ///   - domain matches,
+    ///   - payload_type matches,
+    ///   - signing key equals the expected peer key.
     pub fn verify_and_decode(
         &self,
         expected_pk: &PublicKey,
     ) -> Result<ServiceRecord, StryiNetworkError> {
-        // 1. Pull out payload + signing key, checking domain & payload-type.
         let (payload, signing_key) = self
             .inner
             .payload_and_signing_key(
@@ -123,17 +122,15 @@ impl SignedServiceRecord {
             )
             .map_err(|e| StryiNetworkError::other(format!("read payload: {e}")))?;
 
-        // 2. Check if envelope's signing_key is ed25519 and is equal to the expected one
         match signing_key.clone().try_into_ed25519() {
-            Ok(ref pk) if pk == expected_pk => {} // OK
+            Ok(ref pk) if pk == expected_pk => {}
             _ => return Err(StryiNetworkError::other("signing key mismatch")),
         }
-        // 3. Decode the binary payload back into `ServiceRecord`.
+
         let (rec, _len): (ServiceRecord, _) =
             bincode::serde::decode_from_slice(payload, standard())
                 .map_err(|e| StryiNetworkError::other(format!("bincode : {e}")))?;
 
-        // 4. Validate the peer_id
         let expected_peer = PeerId::from_public_key(&expected_pk.clone().into());
         if rec.owner != expected_peer {
             return Err(StryiNetworkError::other("owner PeerId mismatch"));
@@ -229,11 +226,12 @@ impl TryFrom<&[u8]> for SignedServiceRecord {
 }
 
 /// Our ServiceInfo NetworkBehaviour relies on https://docs.rs/libp2p/latest/libp2p/request_response/cbor/type.Behaviour.html to perform serialization in binary format
-pub type ServicesInfoBehaviour = RequestResponseBehaviour<ServicesInfoRequest, ServicesResponse>;
+pub type ServicesInfoBehaviour =
+    RequestResponseBehaviour<ServicesInfoRequest, ServicesResponse>;
 
 /*
 /// Definition of an inbound request or response for service-protocol
-pub type ServicesInfoMessage = Message<ServicesInfoRequest, ServicesResponse>;
+pub(crate) type ServicesInfoMessage = Message<ServicesInfoRequest, ServicesResponse>;
 */
 
 /// Type alias for ServicesInfo protocol events
@@ -279,23 +277,17 @@ mod tests {
 
     #[test]
     fn signed_service_full_cycle_sign_serialize_verify_decode() {
-        // a) node A
         let kp_a = ed25519::Keypair::generate();
         let owner_a = PeerId::from_public_key(&kp_a.public().into());
         let rec_a = sample_record_for_owner(owner_a);
         let signed_a = SignedServiceRecord::sign(kp_a.clone(), rec_a.clone()).expect("sign");
 
-        // serialize to the wire
         let wire: Vec<u8> = signed_a.clone().into();
 
-        // b) node B receives
         let ssr_b = SignedServiceRecord::try_from(wire.as_slice()).expect("proto decode");
 
-        let pubkey_a = kp_a.public(); // expected signing key
-
-        // verify signature + domain + payload-type
+        let pubkey_a = kp_a.public();
         let decoded = ssr_b.verify_and_decode(&pubkey_a).unwrap();
-        // record must match original
         assert_eq!(decoded, rec_a);
     }
 
@@ -304,12 +296,10 @@ mod tests {
         let kp = ed25519::Keypair::generate();
         let pk = kp.public();
 
-        // Good record: owner derived from kp
         let good_owner = PeerId::from_public_key(&pk.clone().into());
         let good_rec = sample_record_for_owner(good_owner);
         let good_signed = SignedServiceRecord::sign(kp.clone(), good_rec.clone()).unwrap();
 
-        // Bad record: signed by a different key (and owner bound to that key)
         let other_kp = ed25519::Keypair::generate();
         let bad_owner = PeerId::from_public_key(&other_kp.public().into());
         let bad_rec = sample_record_for_owner(bad_owner);
