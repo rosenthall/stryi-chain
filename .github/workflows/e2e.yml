@@ -12,7 +12,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Bencher
         uses: bencherdev/bencher@main
@@ -52,7 +52,7 @@ jobs:
 
       - name: Upload benchmark artifacts
         if: always() && steps.collect_metrics.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: e2e-benchmark-${{ github.run_number }}
           path: |
