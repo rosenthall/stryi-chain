@@ -112,16 +112,28 @@ async fn run_chaingen(config_path: PathBuf) -> Result<(), i32> {
 #[tokio::main]
 async fn main() -> Result<(), i32> {
     // Set the default log level to info if RUST_LOG is not set
-    // and initialize tracing subscriber with environment filter and formatting layer
     let env_layer = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"))
         .add_directive("fjall=error".parse().unwrap())
         .add_directive("lsm_tree=error".parse().unwrap());
 
-    tracing_subscriber::registry()
-        .with(env_layer)
-        .with(fmt::layer().with_target(true).with_level(true))
-        .init();
+    if use_json_logs() {
+        tracing_subscriber::registry()
+            .with(env_layer)
+            .with(
+                fmt::layer()
+                    .json()
+                    .with_target(true)
+                    .with_level(true)
+                    .flatten_event(true),
+            )
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(env_layer)
+            .with(fmt::layer().with_target(true).with_level(true))
+            .init();
+    }
 
     let cli = DevKitCli::parse();
 
@@ -146,4 +158,11 @@ fn result_into_code(res: Result<(), i32>) -> i32 {
         Ok(_) => EXIT_OK,
         Err(code) => code,
     }
+}
+
+fn use_json_logs() -> bool {
+    matches!(
+        std::env::var("STRYI_LOG_FORMAT").ok().as_deref(),
+        Some("json") | Some("JSON")
+    )
 }

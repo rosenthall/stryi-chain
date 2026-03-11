@@ -109,13 +109,16 @@ fn print_essentials() {
     println!("{}", "Starting..".blink().green());
 }
 
+fn use_json_logs() -> bool {
+    matches!(
+        std::env::var("STRYI_LOG_FORMAT").ok().as_deref(),
+        Some("json") | Some("JSON")
+    )
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Initialize the tracing subscriber.
-
-    // Tracing subscriber for normal log output (filtering via env vars)
-    let fmt_layer = fmt::layer().with_target(true).with_level(true);
-    //.with_thread_names(true);
 
     // Use EnvFilter to filter out some of the unnecessary logs (like h2, handshakes, etc.)
     // Set the default log level to info if RUST_LOG is not set
@@ -130,20 +133,47 @@ async fn main() -> Result<(), Box<dyn Error>> {
     {
         let console_layer = console_subscriber::spawn();
 
-        tracing_subscriber::registry()
-            .with(filter_layer)
-            .with(fmt_layer)
-            .with(console_layer)
-            .init();
+        if use_json_logs() {
+            tracing_subscriber::registry()
+                .with(filter_layer)
+                .with(
+                    fmt::layer()
+                        .json()
+                        .with_target(true)
+                        .with_level(true)
+                        .flatten_event(true),
+                )
+                .with(console_layer)
+                .init();
+        } else {
+            tracing_subscriber::registry()
+                .with(filter_layer)
+                .with(fmt::layer().with_target(true).with_level(true))
+                .with(console_layer)
+                .init();
+        }
     }
 
     // Without telemetry: omit the console layer entirely
     #[cfg(not(feature = "telemetry"))]
     {
-        tracing_subscriber::registry()
-            .with(filter_layer)
-            .with(fmt_layer)
-            .init();
+        if use_json_logs() {
+            tracing_subscriber::registry()
+                .with(filter_layer)
+                .with(
+                    fmt::layer()
+                        .json()
+                        .with_target(true)
+                        .with_level(true)
+                        .flatten_event(true),
+                )
+                .init();
+        } else {
+            tracing_subscriber::registry()
+                .with(filter_layer)
+                .with(fmt::layer().with_target(true).with_level(true))
+                .init();
+        }
     }
 
     // Initialize cfg. We use both .toml file and cli parameters for configuration

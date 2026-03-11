@@ -1,4 +1,4 @@
-name: "E2E: IBD Sync + Chain Reorganization"
+name: "E2E"
 
 on:
   workflow_dispatch:
@@ -7,9 +7,15 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      checks: write
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Bencher
+        uses: bencherdev/bencher@main
 
       - name: Run E2E
         working-directory: e2e/docker
@@ -38,25 +44,49 @@ jobs:
           echo "Service '$SVC' exited with code: $EXIT_CODE"
           exit "$EXIT_CODE"
 
-      - name: Collect metrics
+      - name: Collect benchmark metrics
         if: always()
+        id: collect_metrics
         working-directory: e2e/docker
         run: bash ../scripts/collect-benchmark.sh
 
-      - name: Upload benchmark data
-        if: always()
+      - name: Upload benchmark artifacts
+        if: always() && steps.collect_metrics.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-${{ github.run_number }}
+          name: e2e-benchmark-${{ github.run_number }}
           path: |
             /tmp/benchmark.json
             /tmp/benchmark-summary.md
+            /tmp/benchmark.bmf.json
           retention-days: 90
 
-      - name: Announce benchmark report location
-        if: always()
+      - name: Publish Bencher report
+        if: always() && steps.collect_metrics.outcome == 'success'
+        env:
+          BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
+          BENCHER_PROJECT: ${{ vars.BENCHER_PROJECT }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          echo "::notice title=Benchmark report::Open the e2e job Summary tab for the rendered report, or download the benchmark-${{ github.run_number }} artifact for benchmark-summary.md and benchmark.json."
+          bencher run \
+            --project "$BENCHER_PROJECT" \
+            --token "$BENCHER_API_TOKEN" \
+            --branch "${GITHUB_REF_NAME}" \
+            --testbed ubuntu-latest \
+            --adapter json \
+            --file /tmp/benchmark.bmf.json \
+            --github-actions "$GITHUB_TOKEN"
+
+      - name: Announce Bencher report location
+        if: always()
+        env:
+          BENCHER_PROJECT_URL: ${{ vars.BENCHER_PROJECT_URL }}
+        run: |
+          if [ -n "${BENCHER_PROJECT_URL}" ]; then
+            echo "::notice title=Benchmark report::Open the job Summary tab for the Bencher report, download the e2e-benchmark-${{ github.run_number }} artifact for the benchmark JSON and Markdown files, or view the full history at ${BENCHER_PROJECT_URL}."
+          else
+            echo "::notice title=Benchmark report::Open the job Summary tab for the Bencher report or download the e2e-benchmark-${{ github.run_number }} artifact for the benchmark JSON and Markdown files. Set BENCHER_PROJECT_URL to include a direct Bencher history link here."
+          fi
 
       - name: Dump logs on failure
         if: failure()
