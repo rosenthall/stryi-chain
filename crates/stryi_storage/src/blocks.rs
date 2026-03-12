@@ -2,6 +2,7 @@ use crate::StryiStorage;
 use crate::error::StryiStorageError;
 use crate::index::BlockIndexData;
 use crate::stats::StorageStateInformation;
+use crate::tx_index::TransactionIndexData;
 use bincode::config::standard;
 use fjall::{Slice, UserKey, UserValue};
 use futures::future::BoxFuture;
@@ -101,6 +102,22 @@ impl BlockStorage for StryiStorage {
                 Slice::from(&block_hash.data[..]),
                 Slice::from(index_bytes),
             );
+
+            for (tx_index, transaction) in block.data.transactions.iter().enumerate() {
+                let tx_hash = transaction.data.hash();
+                let tx_index_data = TransactionIndexData {
+                    block_hash,
+                    block_height: block.header.height,
+                    tx_index: tx_index as u32,
+                };
+                let tx_index_bytes = bincode::serde::encode_to_vec(&tx_index_data, standard())?;
+
+                tx.insert(
+                    &self.transaction_index_partition,
+                    Slice::from(&tx_hash.data[..]),
+                    Slice::from(tx_index_bytes),
+                );
+            }
 
             // Update storage state value in stats_partition
             let state_key = UserKey::from([0u8; 32]);
@@ -301,6 +318,9 @@ pub(crate) mod tests {
         let block_index_partition = keyspace
             .open_partition("block_indexes", PartitionCreateOptions::default())
             .expect("Failed to create undo partition");
+        let transaction_index_partition = keyspace
+            .open_partition("transaction_indexes", PartitionCreateOptions::default())
+            .expect("Failed to create transaction index partition");
 
         let mut storage = StryiStorage {
             keyspace,
@@ -311,6 +331,7 @@ pub(crate) mod tests {
             stats_partition,
             undo_partition,
             block_index_partition,
+            transaction_index_partition,
         };
 
         // Some tests require correct storage state, while some of them creating own, so I kept this optional

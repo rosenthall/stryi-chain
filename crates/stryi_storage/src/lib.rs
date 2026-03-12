@@ -1,6 +1,6 @@
 //! The database uses a **key-value storage model** to ensure efficiency and scalability.
 //!
-//! We maintain **seven** separate partitions in this design:
+//! We maintain **eight** separate partitions in this design:
 //!
 //! 1. **Blocks**
 //!    - Key   : `stryi_core::block::BlockHash` (32 bytes of the block hash)
@@ -44,13 +44,17 @@
 //!
 //!     This partition is our per-block backup data. The thing allows us easily restore pre-block state, by just keeping
 //!    `BlockUndo` in base. Restoration is just simple as deleting all the new outputs and restoring all the existing ones.
-//!    High-level struct for implementing this functionality is `ChainReorganizer`
+//!    A high-level struct for implementing this functionality is `ChainReorganizer`
 //!
 //! 7. **Block Indexes**
 //!     - Key : `stryi_core::block::BlockHash` (32 bytes of the block hash)
 //!     - Value : A `bincode`-serialized `stryi_storage::index::BlockIndexData` object
 //!
-//! By maintaining these 7 partitions, we get efficient lookups for blocks, block heights, UTXOs by
+//! 8. **Transaction Indexes**
+//!     - Key : `stryi_core::transactions::TransactionHash` (32 bytes of the transaction hash)
+//!     - Value : A `bincode`-serialized `stryi_storage::tx_index::TransactionIndexData` object
+//!
+//! By maintaining these 8 partitions, we get efficient lookups for blocks, block heights, UTXOs by
 //! outpoint, addresses to outpoint sets and will be able to correctly and safely reorganize chain for consensus purposes.
 
 #![allow(incomplete_features)]
@@ -73,6 +77,7 @@ pub mod chaingen;
 mod index;
 mod meta;
 mod stats;
+mod tx_index;
 mod undo;
 
 pub use meta::*;
@@ -94,7 +99,7 @@ use stryi_core::block::{Block, BlockHash, GenesisState};
 use stryi_core::storage::{BlockStorage, UtxoStorage};
 use stryi_core::transactions::{OutPoint, TransactionKind, UTXO};
 
-/// `StryiStorage` manages seven partitions within a single Fjall keyspace:
+/// `StryiStorage` manages eight partitions within a single Fjall keyspace:
 /// - `blocks_partition`: For storing blocks keyed by hash
 /// - `heights_partition`: For storing mappings from height -> hash
 /// - `utxo_partition`: For storing actual UTXOs keyed by outpoints (txid+vout)
@@ -102,6 +107,7 @@ use stryi_core::transactions::{OutPoint, TransactionKind, UTXO};
 /// - `stats_partition`: For storing the only value with current statistics for entire chain
 /// - `undo_partition` : For storing per-block restoration data to be able to restore any previous state
 /// - `block_index_partition`: For storing some metadata like parent_hash, height, current chain work, etc
+/// - `transaction_index_partition`: For storing canonical transaction -> block location mappings
 ///
 /// Each partition is opened once at initialization, and we keep a reference in this struct.
 pub struct StryiStorage {
@@ -125,6 +131,9 @@ pub struct StryiStorage {
 
     /// Partition storing block hash -> `stryi_storage::index::BlockIndexData`
     pub(crate) block_index_partition: TxPartition,
+
+    /// Partition storing transaction hash -> canonical block location metadata.
+    pub(crate) transaction_index_partition: TxPartition,
 
     /// Keyspace for the entire database
     pub keyspace: TxKeyspace,
@@ -303,6 +312,8 @@ impl StryiStorage {
         let undo_partition = keyspace.open_partition("undo", PartitionCreateOptions::default())?;
         let block_index_partition =
             keyspace.open_partition("block_indexes", PartitionCreateOptions::default())?;
+        let transaction_index_partition =
+            keyspace.open_partition("transaction_indexes", PartitionCreateOptions::default())?;
 
         // Create storage instance
         let mut storage = Self {
@@ -313,6 +324,7 @@ impl StryiStorage {
             stats_partition,
             undo_partition,
             block_index_partition,
+            transaction_index_partition,
             keyspace,
         };
 
