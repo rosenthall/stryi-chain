@@ -7,6 +7,7 @@ use crate::node::event_loop::EventLoop;
 use crate::node::miner_bridge::MinerBridge;
 use crate::tls::NodeTlsIdentity;
 use multiaddr::Multiaddr;
+use std::collections::HashMap;
 use std::sync::Arc;
 use stryi_core::block::BlockHash;
 use stryi_core::consensus::StryiConsensusEngine;
@@ -146,4 +147,23 @@ impl SyncedNode {
             cancellation_token: ctx.cancel_token,
         }
     }
+}
+
+pub(crate) async fn prune_reorg_transaction_indexes(
+    storage: &Arc<RwLock<StryiStorage>>,
+    deleted_blocks: &HashMap<u64, BlockHash>,
+) -> Result<(), StryiNodeError> {
+    if deleted_blocks.is_empty() {
+        return Ok(());
+    }
+
+    let mut storage = storage.write().await;
+    storage
+        .prune_confirmed_transaction_indexes_for_blocks(deleted_blocks.values().copied())
+        .await
+        .map_err(|e| {
+            StryiNodeError::other(format!(
+                "failed to prune confirmed transaction index after reorg: {e}"
+            ))
+        })
 }

@@ -168,6 +168,7 @@ impl ConnectedNode {
 
         run_ibd(
             &mut engine,
+            &self.storage,
             &mut remote_peer,
             sync_start_height,
             external_height,
@@ -520,6 +521,7 @@ fn grpc_uri_from_multiaddr(addr: &Multiaddr) -> Result<tonic::transport::Uri, St
 
 async fn run_ibd(
     engine: &mut StryiConsensusEngine<StryiStorage>,
+    storage: &Arc<RwLock<StryiStorage>>,
     remote_peer: &mut RemotePeer,
     from_height: u64,
     to_height: u64,
@@ -542,11 +544,7 @@ async fn run_ibd(
 
         let fetched_count = downloaded_blocks.len() as u64;
 
-        ingest_ibd_batch(engine, downloaded_blocks)
-            .await
-            .map_err(|e| {
-                StryiNodeError::other(format!("Got critical error during IBD process : {e}"))
-            })?;
+        ingest_ibd_batch(engine, storage, downloaded_blocks).await?;
 
         current_height += fetched_count;
     }

@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
+use stryi_core::address::AccountAddress;
 use stryi_core::transactions::TransactionHash;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +34,62 @@ pub struct NodeStateResponse {
 pub struct BlockQueryResponse {
     pub hash: String,
     pub block: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransactionQueryStatus {
+    Pending,
+    Confirmed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TransactionKindResponse {
+    Coinbase,
+    Genesis,
+    Payment,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OutPointResponse {
+    pub txid: TransactionHash,
+    pub vout: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TransactionInputResponse {
+    pub previous_output: OutPointResponse,
+    pub sequence: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TransactionOutputResponse {
+    pub value: u64,
+    pub recipient: AccountAddress,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TransactionDataResponse {
+    pub version: u16,
+    pub kind: TransactionKindResponse,
+    pub inputs: Vec<TransactionInputResponse>,
+    pub outputs: Vec<TransactionOutputResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TransactionResponse {
+    pub data: TransactionDataResponse,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TransactionQueryResponse {
+    pub status: TransactionQueryStatus,
+    pub tx_hash: TransactionHash,
+    pub transaction: TransactionResponse,
+    pub block_hash: Option<String>,
+    pub block_height: Option<u64>,
+    pub tx_index: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -117,6 +174,24 @@ impl NodeClient {
             .json()
             .await
             .context("failed to parse block response")
+    }
+
+    /// Fetches a transaction by hash.
+    pub async fn get_transaction(&self, tx_hash: &str) -> Result<TransactionQueryResponse> {
+        let url = format!("{}/api/tx/{}", self.base_url, tx_hash);
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .context("failed to connect to node")?;
+
+        let response = Self::ensure_success(response, "GET", &url).await?;
+
+        response
+            .json()
+            .await
+            .context("failed to parse transaction response")
     }
 
     /// Submits a base64-encoded signed transaction to the node.

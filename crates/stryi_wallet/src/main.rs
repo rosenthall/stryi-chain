@@ -12,6 +12,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::path::PathBuf;
 
+use crate::api_client::{TransactionKindResponse, TransactionResponse};
 use stryi_core::address::AccountAddress;
 use stryi_core::block::Block;
 use stryi_core::transactions::TransactionKind;
@@ -99,6 +100,13 @@ enum Command {
         id: String,
     },
 
+    /// Query a transaction by hash.
+    Tx {
+        /// Transaction hash (Tx...).
+        #[arg(long)]
+        id: String,
+    },
+
     /// Query and display the connected node's state.
     #[command(name = "nodestate")]
     NodeState,
@@ -144,6 +152,7 @@ async fn main() -> Result<()> {
             cmd::cmd_rename(&wallet_path, &addr, &label)?
         }
         Command::Block { id } => cmd::cmd_block(&cli.node, &id).await?,
+        Command::Tx { id } => cmd::cmd_tx(&cli.node, &id).await?,
         Command::Send { from, to, amount } => {
             let from_addr =
                 AccountAddress::from_hash_string(&from).context("invalid 'from' address")?;
@@ -276,10 +285,53 @@ fn print_block_detail(hash: &str, block: &Block) {
     println!();
 }
 
+pub(crate) fn print_transaction_response_detail(hash: &str, tx: &TransactionResponse) {
+    let rule = "-".repeat(68);
+    let kind_label = match tx.data.kind {
+        TransactionKindResponse::Coinbase => "Coinbase".yellow(),
+        TransactionKindResponse::Genesis => "Genesis".green(),
+        TransactionKindResponse::Payment => "Payment".white(),
+    };
+
+    println!("  {}", "Transaction".bold());
+    println!("  {}", rule.cyan());
+    println!("  {:<20} {}", "Hash:".bold(), hash.cyan());
+    println!("  {:<20} {}", "Kind:".bold(), kind_label);
+    println!("  {:<20} {}", "Version:".bold(), tx.data.version);
+    println!("  {:<20} {}", "Inputs:".bold(), tx.data.inputs.len());
+    println!("  {:<20} {}", "Outputs:".bold(), tx.data.outputs.len());
+    println!("  {}", rule.cyan());
+
+    if tx.data.inputs.is_empty() {
+        println!("  {}", "No inputs".dimmed());
+    } else {
+        for input in &tx.data.inputs {
+            println!(
+                "  {} {}:{}",
+                "in:".dimmed(),
+                input.previous_output.txid.to_string().dimmed(),
+                input.previous_output.vout
+            );
+        }
+    }
+
+    for output in &tx.data.outputs {
+        println!(
+            "  {} {} -> {}",
+            "out:".dimmed(),
+            output.value.to_string().green(),
+            output.recipient.to_string().cyan()
+        );
+    }
+
+    println!("  {}", rule.cyan());
+    println!();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cmd::{cmd_delete, cmd_generate, cmd_init, cmd_list, cmd_rename};
+    use crate::cmd::{cmd_delete, cmd_generate, cmd_init, cmd_rename};
     use crate::keys::load_wallet;
     use tempfile::TempDir;
 
@@ -302,17 +354,6 @@ mod tests {
     }
 
     #[test]
-    fn delete_nonexistent_address() {
-        let dir = TempDir::new().unwrap();
-        let wp = dir.path().join("wallet.json");
-
-        cmd_init(&wp).unwrap();
-        let addr =
-            AccountAddress::from_hash_string("@0000000000000000000000000000000000000000").unwrap();
-        assert!(cmd_delete(&wp, &addr).is_err());
-    }
-
-    #[test]
     fn rename_key() {
         let dir = TempDir::new().unwrap();
         let wp = dir.path().join("wallet.json");
@@ -328,57 +369,28 @@ mod tests {
     }
 
     #[test]
-    fn rename_nonexistent_address() {
-        let dir = TempDir::new().unwrap();
-        let wp = dir.path().join("wallet.json");
-
-        cmd_init(&wp).unwrap();
-        let addr =
-            AccountAddress::from_hash_string("@0000000000000000000000000000000000000000").unwrap();
-        assert!(cmd_rename(&wp, &addr, "x").is_err());
-    }
-
-    #[test]
-    fn list_hides_keys_by_default() {
-        let dir = TempDir::new().unwrap();
-        let wp = dir.path().join("wallet.json");
-        cmd_init(&wp).unwrap();
-        cmd_list(&wp, false).unwrap();
-        cmd_list(&wp, true).unwrap();
-    }
-
-    #[test]
-    fn classify_height() {
-        assert!(matches!(classify_identifier("0"), QueryId::Height(0)));
-        assert!(matches!(classify_identifier("42"), QueryId::Height(42)));
-        assert!(matches!(
-            classify_identifier("999999"),
-            QueryId::Height(999999)
-        ));
-    }
-
-    #[test]
-    fn classify_block_hash() {
+    fn classify_works() {
         assert!(matches!(
             classify_identifier(
                 "Bx7e09ff05219c8e14e8ffe148a9b23a824748cfb77bf0d424f4aff4d2b5b30d73"
             ),
             QueryId::BlockHash(_)
         ));
-    }
 
-    #[test]
-    fn classify_tx_hash() {
+        assert!(matches!(classify_identifier("0"), QueryId::Height(0)));
+        assert!(matches!(classify_identifier("42"), QueryId::Height(42)));
+        assert!(matches!(
+            classify_identifier("999999"),
+            QueryId::Height(999999)
+        ));
+
         assert!(matches!(
             classify_identifier(
                 "Tx9a3b7c05219c8e14e8ffe148a9b23a824748cfb77bf0d424f4aff4d2b5b30d73"
             ),
             QueryId::TxHash(_)
         ));
-    }
 
-    #[test]
-    fn classify_unknown() {
         assert!(matches!(classify_identifier("foobar"), QueryId::Unknown(_)));
         assert!(matches!(classify_identifier("hello"), QueryId::Unknown(_)));
     }

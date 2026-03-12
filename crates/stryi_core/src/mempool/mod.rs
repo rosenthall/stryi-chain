@@ -221,6 +221,12 @@ impl MemPool {
         Ok(sync_data)
     }
 
+    pub async fn get_transaction(&self, tx_hash: &TransactionHash) -> Option<Transaction> {
+        self.storage
+            .get(tx_hash)
+            .map(|entry| entry.transaction.clone())
+    }
+
     /// Restores the mempool state from a serialized snapshot.
     ///
     /// Clears current storage and dependency tracker, then re-inserts transactions from the snapshot.
@@ -312,14 +318,15 @@ impl MemPool {
         let mut individual_scores: HashMap<NodeIndex, f64> = HashMap::new();
         for &node_idx in &order {
             if let Some(tx_hash) = self.dependency_tracker.get_tx_by_node(node_idx)
-                && let Some(mem_tx) = self.storage.get(&tx_hash) {
-                    let fee_rate = if mem_tx.serialized_size > 0 {
-                        mem_tx.fee as f64 / mem_tx.serialized_size as f64
-                    } else {
-                        0.0
-                    };
-                    individual_scores.insert(node_idx, fee_rate);
-                }
+                && let Some(mem_tx) = self.storage.get(&tx_hash)
+            {
+                let fee_rate = if mem_tx.serialized_size > 0 {
+                    mem_tx.fee as f64 / mem_tx.serialized_size as f64
+                } else {
+                    0.0
+                };
+                individual_scores.insert(node_idx, fee_rate);
+            }
         }
 
         // Calculate ancestor package scores
@@ -353,29 +360,30 @@ impl MemPool {
             }
 
             if let Some(tx_hash) = self.dependency_tracker.get_tx_by_node(node_idx)
-                && self.storage.get(&tx_hash).is_some() {
-                    // Get all required ancestors in topological order
-                    let ancestors = self.dependency_tracker.gather_ancestors(node_idx);
+                && self.storage.get(&tx_hash).is_some()
+            {
+                // Get all required ancestors in topological order
+                let ancestors = self.dependency_tracker.gather_ancestors(node_idx);
 
-                    // Count new transactions (not already selected)
-                    let new_txs: Vec<NodeIndex> = ancestors
-                        .into_iter()
-                        .filter(|&anc| !used_nodes.contains(&anc))
-                        .collect();
+                // Count new transactions (not already selected)
+                let new_txs: Vec<NodeIndex> = ancestors
+                    .into_iter()
+                    .filter(|&anc| !used_nodes.contains(&anc))
+                    .collect();
 
-                    // Check if all ancestors fit in remaining space
-                    if new_txs.len() <= remaining_space {
-                        for anc in new_txs {
-                            if used_nodes.insert(anc)
-                                && let Some(anc_tx_hash) =
-                                    self.dependency_tracker.get_tx_by_node(anc)
-                                    && let Some(anc_tx) = self.storage.get(&anc_tx_hash) {
-                                        result.push(anc_tx.transaction.clone());
-                                        remaining_space -= 1;
-                                    }
+                // Check if all ancestors fit in remaining space
+                if new_txs.len() <= remaining_space {
+                    for anc in new_txs {
+                        if used_nodes.insert(anc)
+                            && let Some(anc_tx_hash) = self.dependency_tracker.get_tx_by_node(anc)
+                            && let Some(anc_tx) = self.storage.get(&anc_tx_hash)
+                        {
+                            result.push(anc_tx.transaction.clone());
+                            remaining_space -= 1;
                         }
                     }
                 }
+            }
         }
 
         Ok(result)
@@ -411,11 +419,12 @@ fn build_ancestor_scores(
 
         for anc in ancestors {
             if let Some(tx_hash) = tracker.get_tx_by_node(anc)
-                && let Some(mem_tx) = storage.get(&tx_hash) {
-                    total_fee = total_fee.saturating_add(mem_tx.fee);
-                    // Use cached size instead of recalculating
-                    total_size = total_size.saturating_add(mem_tx.serialized_size);
-                }
+                && let Some(mem_tx) = storage.get(&tx_hash)
+            {
+                total_fee = total_fee.saturating_add(mem_tx.fee);
+                // Use cached size instead of recalculating
+                total_size = total_size.saturating_add(mem_tx.serialized_size);
+            }
         }
 
         let score = if total_size == 0 {

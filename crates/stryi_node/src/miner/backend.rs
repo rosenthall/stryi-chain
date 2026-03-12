@@ -1,11 +1,11 @@
-use std::sync::Arc;
 use futures_util::future::BoxFuture;
+use std::sync::Arc;
 use stryi_core::block::BlockHash;
 use stryi_core::consensus::ConsensusConsts;
 use stryi_core::storage::StorageStats;
 use stryi_storage::{StryiStorage, StryiStorageError};
-use tokio::sync::broadcast;
 use tokio::sync::RwLock;
+use tokio::sync::broadcast;
 
 /// Single dependency the miner needs from the node layer.
 /// Keeps the miner decoupled from concrete storage, consensus, and difficulty types.
@@ -32,9 +32,7 @@ pub struct NodeMinerBackend {
 }
 
 impl MinerBackend for NodeMinerBackend {
-    fn tip(
-        &self,
-    ) -> BoxFuture<'_, Result<(u64, BlockHash), StryiStorageError>> {
+    fn tip(&self) -> BoxFuture<'_, Result<(u64, BlockHash), StryiStorageError>> {
         Box::pin(async { self.storage.read().await.tip().await })
     }
 

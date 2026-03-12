@@ -83,9 +83,10 @@ impl TransactionStorage {
             for input in &mem_tx.transaction.data.inputs {
                 // Only remove if THIS transaction is the one spending it
                 if let Some(spending_tx) = self.get_spending_tx(&input.previous_output)
-                    && spending_tx == tx_hash {
-                        self.input_spending_index.remove(&input.previous_output);
-                    }
+                    && spending_tx == tx_hash
+                {
+                    self.input_spending_index.remove(&input.previous_output);
+                }
             }
         }
 

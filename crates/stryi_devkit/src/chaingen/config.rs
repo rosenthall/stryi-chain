@@ -158,9 +158,7 @@ impl ChainGenConfig {
 
         // undo + direct_insert is not supported - undo records are only produced
         // by the consensus engine, so require consensus_engine mode when undo is requested.
-        if self.blocks.need_undo
-            && self.chain.persistence_mode == PersistenceMode::DirectInsert
-        {
+        if self.blocks.need_undo && self.chain.persistence_mode == PersistenceMode::DirectInsert {
             return Err(
                 "need_undo=true requires persistence_mode=\"consensus_engine\". \
                  Direct-insert mode cannot produce BlockUndo records."

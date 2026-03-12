@@ -15,7 +15,7 @@ use std::path::Path;
 use crate::api_client::NodeClient;
 use crate::cmd::{
     cmd_balance, cmd_balance_all, cmd_block, cmd_delete, cmd_generate, cmd_import, cmd_init,
-    cmd_list, cmd_nodestate, cmd_rename, cmd_send,
+    cmd_list, cmd_nodestate, cmd_rename, cmd_send, cmd_tx,
 };
 use crate::keys::load_wallet;
 use stryi_core::address::AccountAddress;
@@ -33,6 +33,7 @@ const REPL_COMMANDS: &[&str] = &[
     "balance",
     "send",
     "block",
+    "tx",
     "nodestate",
     "help",
     "clear",
@@ -409,6 +410,7 @@ async fn dispatch_repl(wallet_path: &Path, node_url: &str, line: &str) -> Result
 
         // -- node and chain queries --
         "block" => handle_block(node_url, &input).await?,
+        "tx" => handle_tx(node_url, &input).await?,
         "nodestate" => cmd_nodestate(node_url).await?,
 
         // fallback to our suggester
@@ -496,6 +498,11 @@ async fn handle_block(node_url: &str, input: &CommandInput<'_>) -> Result<()> {
     cmd_block(node_url, &id).await
 }
 
+async fn handle_tx(node_url: &str, input: &CommandInput<'_>) -> Result<()> {
+    let id = input.value(0, "Transaction hash", None)?;
+    cmd_tx(node_url, &id).await
+}
+
 fn handle_unknown_command(cmd: &str) {
     if let Some(suggestion) = fuzzy_suggest(cmd) {
         eprintln!(
@@ -525,6 +532,7 @@ fn print_repl_help() {
     println!("    {:<12} Query address balance", "balance".cyan());
     println!("    {:<12} Send a payment", "send".cyan());
     println!("    {:<12} Query a block by height or hash", "block".cyan());
+    println!("    {:<12} Query a transaction by hash", "tx".cyan());
     println!("    {:<12} Show node state", "nodestate".cyan());
     println!("    {:<12} Show this help", "help".cyan());
     println!("    {:<12} Clear screen", "clear".cyan());
@@ -622,7 +630,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn block_with_tx_hash_shows_stub() {
+    async fn block_with_tx_hash_returns_redirect_error() {
         let dir = TempDir::new().unwrap();
         let wp = dir.path().join("wallet.json");
         let result = dispatch_repl(
@@ -631,8 +639,9 @@ mod tests {
             "block Tx9a3b7c05219c8e14e8ffe148a9b23a824748cfb77bf0d424f4aff4d2b5b30d73",
         )
         .await;
-        assert!(result.is_ok());
-        assert!(!result.unwrap());
+        assert!(result.is_err());
+        let message = result.err().unwrap().to_string();
+        assert!(message.contains("Use `tx --id"));
     }
 
     #[tokio::test]
@@ -653,6 +662,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let wp = dir.path().join("wallet.json");
         let result = dispatch_repl(&wp, "http://localhost:0", "block Bxzzzz").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn tx_rejects_invalid_hash() {
+        let dir = TempDir::new().unwrap();
+        let wp = dir.path().join("wallet.json");
+        let result = dispatch_repl(&wp, "http://localhost:0", "tx nope").await;
         assert!(result.is_err());
     }
 }

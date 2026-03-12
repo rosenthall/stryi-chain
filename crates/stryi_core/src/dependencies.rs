@@ -93,11 +93,12 @@ impl DependencyGraph {
 
                 // Ensure correct transaction ordering
                 if let Some(&dep_tx_idx) = self.output_index.get(&input.previous_output)
-                    && dep_tx_idx >= tx_idx {
-                        return Err(StryiCoreError::TransactionDependencyError {
-                            msg: "Invalid transaction order".to_string(),
-                        });
-                    }
+                    && dep_tx_idx >= tx_idx
+                {
+                    return Err(StryiCoreError::TransactionDependencyError {
+                        msg: "Invalid transaction order".to_string(),
+                    });
+                }
             }
         }
         Ok(())
@@ -120,17 +121,6 @@ impl DependencyGraph {
             .collect()
     }
 
-    /// Returns list of transactions that depend on the given transaction
-    pub fn get_dependent_transactions(&self, tx_idx: usize) -> Vec<usize> {
-        if tx_idx >= self.node_indices.len() {
-            return Vec::new();
-        }
-
-        self.graph
-            .edges_directed(self.node_indices[tx_idx], Direction::Outgoing)
-            .map(|edge| self.graph[edge.target()])
-            .collect()
-    }
     pub fn get_parallel_execution_groups(&self) -> Vec<Vec<usize>> {
         let mut result = Vec::new();
         let mut processed = HashSet::new();

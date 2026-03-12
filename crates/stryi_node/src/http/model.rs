@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use stryi_core::address::AccountAddress;
 use stryi_core::block::BlockHash;
-use stryi_core::transactions::TransactionHash;
+use stryi_core::transactions::{
+    OutPoint, Transaction, TransactionHash, TransactionIn, TransactionKind, TransactionOut,
+};
 use utoipa::ToSchema;
 
 /// Generic error body for the API, used in various endpoints.
@@ -88,4 +91,145 @@ pub struct BlockResponse {
     /// Full block
     #[schema(value_type = Object)]
     pub block: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransactionQueryStatus {
+    Pending,
+    Confirmed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub enum TransactionKindResponse {
+    Coinbase,
+    Genesis,
+    Payment,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct OutPointResponse {
+    #[schema(
+        value_type = String,
+        example = "Tx68e8dfa2225f7776c2f141e500bb27da09cb9e241dfc67b82573d7439ced28b2"
+    )]
+    pub txid: TransactionHash,
+    pub vout: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct TransactionInputResponse {
+    pub previous_output: OutPointResponse,
+    pub sequence: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct TransactionOutputResponse {
+    pub value: u64,
+
+    #[schema(
+        value_type = String,
+        example = "@dd0ca8155d946853106a5a5fb126ce17fdd9136c"
+    )]
+    pub recipient: AccountAddress,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct TransactionDataResponse {
+    pub version: u16,
+    pub kind: TransactionKindResponse,
+    pub inputs: Vec<TransactionInputResponse>,
+    pub outputs: Vec<TransactionOutputResponse>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct TransactionResponse {
+    pub data: TransactionDataResponse,
+
+    #[schema(
+        value_type = String,
+        example = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+    )]
+    pub signature: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct TransactionQueryResponse {
+    #[schema(value_type = String, example = "confirmed")]
+    pub status: TransactionQueryStatus,
+
+    #[schema(value_type = String, example = "Tx68e8dfa2225f7776c2f141e500bb27da09cb9e241dfc67b82573d7439ced28b2")]
+    pub tx_hash: TransactionHash,
+
+    pub transaction: TransactionResponse,
+
+    #[schema(
+        value_type = String,
+        nullable,
+        example = "Bx7e09ff05219c8e14e8ffe148a9b23a824748cfb77bf0d424f4aff4d2b5b30d73"
+    )]
+    pub block_hash: Option<BlockHash>,
+
+    #[schema(nullable, example = 42)]
+    pub block_height: Option<u64>,
+
+    #[schema(nullable, example = 1)]
+    pub tx_index: Option<u32>,
+}
+
+impl From<TransactionKind> for TransactionKindResponse {
+    fn from(value: TransactionKind) -> Self {
+        match value {
+            TransactionKind::Coinbase => Self::Coinbase,
+            TransactionKind::Genesis => Self::Genesis,
+            TransactionKind::Payment => Self::Payment,
+        }
+    }
+}
+
+impl From<OutPoint> for OutPointResponse {
+    fn from(value: OutPoint) -> Self {
+        Self {
+            txid: value.txid,
+            vout: value.vout,
+        }
+    }
+}
+
+impl From<TransactionIn> for TransactionInputResponse {
+    fn from(value: TransactionIn) -> Self {
+        Self {
+            previous_output: value.previous_output.into(),
+            sequence: value.sequence,
+        }
+    }
+}
+
+impl From<TransactionOut> for TransactionOutputResponse {
+    fn from(value: TransactionOut) -> Self {
+        Self {
+            value: value.value,
+            recipient: value.recipient,
+        }
+    }
+}
+
+impl From<Transaction> for TransactionResponse {
+    fn from(value: Transaction) -> Self {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::STANDARD;
+
+        let signature = STANDARD.encode(value.signature().0.as_slice());
+        let data = value.data;
+
+        Self {
+            data: TransactionDataResponse {
+                version: data.version,
+                kind: data.kind.into(),
+                inputs: data.inputs.into_iter().map(Into::into).collect(),
+                outputs: data.outputs.into_iter().map(Into::into).collect(),
+            },
+            signature,
+        }
+    }
 }

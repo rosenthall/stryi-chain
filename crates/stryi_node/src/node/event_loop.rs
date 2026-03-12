@@ -6,6 +6,7 @@ use crate::middleware::ready::{ReadyFlag, ReadyGateLayer};
 use crate::node::ibd::ingest_ibd_batch;
 use crate::node::lca::find_lca;
 use crate::node::miner_bridge::MinerBridge;
+use crate::node::prune_reorg_transaction_indexes;
 use crate::node::remote_peer::RemotePeer;
 use crate::node::sync::{connect_to_peer, query_sync_peers};
 use crate::tls::NodeTlsIdentity;
@@ -247,6 +248,12 @@ impl EventLoop {
                         match engine.on_block(mined_block.clone()).await {
                             Ok(verdict) => {
                                 info!("Mined block consensus verdict: {:?}", verdict);
+                                let deleted_blocks = match &verdict {
+                                    ConsensusVerdict::CausedReorganization { deleted_blocks } => {
+                                        Some(deleted_blocks.clone())
+                                    }
+                                    _ => None,
+                                };
 
 
                                 // If the block was accepted - propagate it to other nodes and send a tip announcement
@@ -256,6 +263,12 @@ impl EventLoop {
 
                                     let _ = tip_updates_sender.send(mined_block.block_hash());
                                     drop(engine);
+
+                                    if let Some(deleted_blocks) = deleted_blocks
+                                        && let Err(e) = prune_reorg_transaction_indexes(&storage, &deleted_blocks).await
+                                    {
+                                        warn!("Failed to prune transaction index after reorg: {e}");
+                                    }
 
                                     let mut pool = mempool_for_events.write().await;
                                     if let Err(e) = pool.update_on_block(mined_block.data.clone()).await {
@@ -308,6 +321,12 @@ impl EventLoop {
                                 match engine.on_block(block.clone()).await {
                                     Ok(verdict) => {
                                         info!("Consensus verdict: {:?}", verdict);
+                                        let deleted_blocks = match &verdict {
+                                            ConsensusVerdict::CausedReorganization { deleted_blocks } => {
+                                                Some(deleted_blocks.clone())
+                                            }
+                                            _ => None,
+                                        };
 
                                         let is_reorg = matches!(verdict, ConsensusVerdict::CausedReorganization { .. });
 
@@ -319,6 +338,12 @@ impl EventLoop {
 
                                             let _ = tip_updates_sender.send(block.block_hash());
                                             drop(engine);
+
+                                            if let Some(deleted_blocks) = deleted_blocks
+                                                && let Err(e) = prune_reorg_transaction_indexes(&storage, &deleted_blocks).await
+                                            {
+                                                warn!("Failed to prune transaction index after reorg: {e}");
+                                            }
 
                                             let mut pool = mempool_for_events.write().await;
                                             if let Err(e) = pool.update_on_block(block.data.clone()).await {
@@ -491,8 +516,7 @@ async fn sync_from_peer(
                         if *peer_id == source_peer {
                             continue;
                         }
-                        if let Ok(client) =
-                            connect_to_peer(&net_cmd, &sync_config, *peer_id).await
+                        if let Ok(client) = connect_to_peer(&net_cmd, &sync_config, *peer_id).await
                         {
                             info!("Fallback: connected to peer {} for sync", peer_id);
                             found = Some((client, *peer_id));
@@ -512,7 +536,11 @@ async fn sync_from_peer(
                 Err(err) => {
                     warn!(
                         "connect_to_peer attempt {}/{} for peer {} failed: {}. Retrying in {:?}...",
-                        attempt, SYNC_PEER_CONNECT_MAX_RETRIES, source_peer, err, SYNC_PEER_CONNECT_RETRY_DELAY
+                        attempt,
+                        SYNC_PEER_CONNECT_MAX_RETRIES,
+                        source_peer,
+                        err,
+                        SYNC_PEER_CONNECT_RETRY_DELAY
                     );
                     let (tx, rx) = tokio::sync::oneshot::channel();
                     let _ = net_cmd
@@ -549,9 +577,7 @@ async fn sync_from_peer(
     }
 
     // Compare the peer's canonical block at our tip height, not just block presence in storage.
-    let peer_includes_local_tip = match remote_peer
-        .request_block_by_height(local_tip_height)
-        .await
+    let peer_includes_local_tip = match remote_peer.request_block_by_height(local_tip_height).await
     {
         Ok(block) => block.block_hash() == local_tip_hash,
         Err(_) => false,
@@ -602,7 +628,7 @@ async fn sync_from_peer(
         let fetched_count = blocks.len() as u64;
 
         let mut engine = consensus_engine.lock().await;
-        ingest_ibd_batch(&mut *engine, blocks)
+        ingest_ibd_batch(&mut *engine, &storage, blocks)
             .await
             .map_err(|e| StryiNodeError::other(format!("Sync batch failed: {e}")))?;
 

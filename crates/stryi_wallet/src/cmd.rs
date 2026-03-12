@@ -1,5 +1,5 @@
 use crate::QueryId;
-use crate::api_client::NodeClient;
+use crate::api_client::{NodeClient, TransactionQueryStatus};
 use crate::keys::{
     WalletFile, find_key_by_address, generate_keypair, import_key, load_wallet, require_wallet,
     save_wallet,
@@ -10,7 +10,7 @@ use colored::Colorize;
 use std::path::Path;
 use stryi_core::address::AccountAddress;
 use stryi_core::block::{Block, BlockHash};
-use stryi_core::transactions::{FeePolicy, OutPoint};
+use stryi_core::transactions::{FeePolicy, OutPoint, TransactionHash};
 
 pub(crate) fn cmd_init(wallet_path: &Path) -> anyhow::Result<()> {
     if wallet_path.exists() {
@@ -321,15 +321,11 @@ pub(crate) async fn cmd_nodestate(node_url: &str) -> anyhow::Result<()> {
 pub(crate) async fn cmd_block(node_url: &str, identifier: &str) -> anyhow::Result<()> {
     let query = match crate::classify_identifier(identifier) {
         QueryId::TxHash(h) => {
-            println!(
-                "  {} '{}' looks like a transaction hash.",
-                "Note:".yellow().bold(),
+            anyhow::bail!(
+                "'{}' is a transaction hash. Use `tx --id {}` instead.",
+                h,
                 h
             );
-            println!(
-                "  Transaction query is not yet implemented. Use a block height or hash (Bx...)."
-            );
-            return Ok(());
         }
         QueryId::Unknown(s) => {
             anyhow::bail!(
@@ -352,4 +348,54 @@ pub(crate) async fn cmd_block(node_url: &str, identifier: &str) -> anyhow::Resul
 
     crate::print_block_detail(&resp.hash, &block);
     Ok(())
+}
+
+pub(crate) async fn cmd_tx(node_url: &str, identifier: &str) -> anyhow::Result<()> {
+    let tx_hash =
+        TransactionHash::from_hash_string(identifier).context("invalid transaction hash")?;
+
+    let client = NodeClient::new(node_url);
+    let resp = client.get_transaction(&tx_hash.to_string()).await?;
+
+    let rule = "-".repeat(40);
+    println!();
+    println!("  {}", "Transaction Query".bold());
+    println!("  {}", rule.cyan());
+    println!(
+        "  {:<20} {}",
+        "Status:".bold(),
+        format_tx_status(&resp.status)
+    );
+    println!(
+        "  {:<20} {}",
+        "Hash:".bold(),
+        resp.tx_hash.to_string().cyan()
+    );
+
+    if resp.status == TransactionQueryStatus::Confirmed {
+        if let Some(block_hash) = &resp.block_hash {
+            println!("  {:<20} {}", "Block:".bold(), block_hash);
+        }
+        if let Some(block_height) = resp.block_height {
+            println!(
+                "  {:<20} {}",
+                "Block height:".bold(),
+                block_height.to_string().cyan()
+            );
+        }
+        if let Some(tx_index) = resp.tx_index {
+            println!("  {:<20} {}", "Tx index:".bold(), tx_index);
+        }
+    }
+
+    println!("  {}", rule.cyan());
+    crate::print_transaction_response_detail(&resp.tx_hash.to_string(), &resp.transaction);
+    Ok(())
+}
+
+fn format_tx_status(status: &TransactionQueryStatus) -> colored::ColoredString {
+    match status {
+        TransactionQueryStatus::Pending => "pending".yellow(),
+        TransactionQueryStatus::Confirmed => "confirmed".green(),
+    }
 }

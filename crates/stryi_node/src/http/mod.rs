@@ -21,8 +21,11 @@ use crate::http::model::AddressBalanceResponse;
 use crate::http::model::BlockResponse;
 use crate::http::model::NodeStateBody;
 use crate::http::model::SendTransactionRequest;
+use crate::http::model::TransactionQueryResponse;
 use crate::http::model::UtxoEntry;
 use crate::http::tx::__path_send_tx;
+use crate::http::tx::ConfirmedTransactionLookup;
+use crate::http::tx::get_tx;
 use crate::http::tx::send_tx;
 use crate::middleware::ready::{NotReadyResponder, ReadyFlag, ReadyGateLayer};
 use axum::Router;
@@ -127,6 +130,7 @@ where
         BlockResponse,
         AddressBalanceResponse,
         UtxoEntry,
+        TransactionQueryResponse,
         StryiNodeHttpApiError
     ))
 )]
@@ -143,7 +147,13 @@ pub async fn start_http_server<DB>(
     cancel_token: tokio_util::sync::CancellationToken,
 ) -> Result<(), StryiNodeError>
 where
-    DB: BlockStorage + UtxoStorage + StorageStats + Send + Sync + 'static,
+    DB: BlockStorage
+        + UtxoStorage
+        + StorageStats
+        + ConfirmedTransactionLookup
+        + Send
+        + Sync
+        + 'static,
 {
     // shared service state
     let svc = StryiHttpService {
@@ -172,6 +182,7 @@ where
         .route("/api/nodestate", get(get_nodestate))
         // TODO: Make BlockData.inputs skip serialization of no inputs
         .route("/api/block/{param}", get(blocks::get_block))
+        .route("/api/tx/{hash}", get(get_tx))
         .route("/api/tx", post(send_tx))
         .route("/api/address/{addr}/balance", get(address::get_balance))
         .with_state(state);
