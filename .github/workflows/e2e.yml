@@ -2,6 +2,15 @@ name: "E2E"
 
 on:
   workflow_dispatch:
+    inputs:
+      scenario:
+        description: "Scenario to run"
+        required: true
+        default: "reorg"
+        type: choice
+        options:
+          - reorg
+          - tx-lifecycle
 
 jobs:
   e2e:
@@ -14,17 +23,39 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Resolve scenario
+        id: scenario
+        run: |
+          case "${{ inputs.scenario }}" in
+            reorg)
+              echo "compose_args=-p stryi-e2e-reorg -f docker-compose.e2e.yml -f docker-compose.e2e.reorg.yml" >> "$GITHUB_OUTPUT"
+              echo "target_service=wait-for-reorg" >> "$GITHUB_OUTPUT"
+              echo "benchmarks=true" >> "$GITHUB_OUTPUT"
+              echo "artifact_name=e2e-reorg-benchmark-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+              ;;
+            tx-lifecycle)
+              echo "compose_args=-p stryi-e2e-tx-lifecycle -f docker-compose.e2e.yml -f docker-compose.e2e.tx-lifecycle.yml" >> "$GITHUB_OUTPUT"
+              echo "target_service=wait-for-tx-lifecycle" >> "$GITHUB_OUTPUT"
+              echo "benchmarks=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unsupported scenario: ${{ inputs.scenario }}" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Install Bencher
+        if: steps.scenario.outputs.benchmarks == 'true'
         uses: bencherdev/bencher@main
 
       - name: Run E2E
         working-directory: e2e/docker
         run: |
           set -euo pipefail
-          DC="docker compose -f docker-compose.e2e.yml"
-          SVC="wait-for-reorg"
+          DC="docker compose ${{ steps.scenario.outputs.compose_args }}"
+          SVC="${{ steps.scenario.outputs.target_service }}"
 
-          $DC up -d --build "$SVC"
+          $DC up -d --build --remove-orphans "$SVC"
 
           $DC logs -f --no-color &
           LOGS_PID=$!
@@ -32,20 +63,19 @@ jobs:
 
           $DC wait "$SVC" >/dev/null 2>&1 || true
 
-          # `ps` must include exited containers because `wait-for-reorg` is one-shot.
           CID="$($DC ps -a -q "$SVC")"
           if [ -z "$CID" ]; then
             echo "ERROR: '$SVC' container still not found. Dumping compose state:"
             $DC ps -a
             exit 1
           fi
-          
+
           EXIT_CODE="$(docker inspect -f '{{.State.ExitCode}}' "$CID")"
           echo "Service '$SVC' exited with code: $EXIT_CODE"
           exit "$EXIT_CODE"
 
       - name: Collect benchmark metrics
-        if: always()
+        if: always() && steps.scenario.outputs.benchmarks == 'true'
         id: collect_metrics
         working-directory: e2e/docker
         run: bash ../scripts/collect-benchmark.sh
@@ -54,7 +84,7 @@ jobs:
         if: always() && steps.collect_metrics.outcome == 'success'
         uses: actions/upload-artifact@v6
         with:
-          name: e2e-benchmark-${{ github.run_number }}
+          name: ${{ steps.scenario.outputs.artifact_name }}
           path: |
             /tmp/benchmark.json
             /tmp/benchmark-summary.md
@@ -77,23 +107,27 @@ jobs:
             --file /tmp/benchmark.bmf.json \
             --github-actions "$GITHUB_TOKEN"
 
-      - name: Announce Bencher report location
+      - name: Announce result locations
         if: always()
         env:
           BENCHER_PROJECT_URL: ${{ vars.BENCHER_PROJECT_URL }}
         run: |
-          if [ -n "${BENCHER_PROJECT_URL}" ]; then
-            echo "::notice title=Benchmark report::Open the job Summary tab for the Bencher report, download the e2e-benchmark-${{ github.run_number }} artifact for the benchmark JSON and Markdown files, or view the full history at ${BENCHER_PROJECT_URL}."
+          if [ "${{ steps.scenario.outputs.benchmarks }}" = "true" ]; then
+            if [ -n "${BENCHER_PROJECT_URL}" ]; then
+              echo "::notice title=E2E result::Scenario '${{ inputs.scenario }}' finished. Open the job Summary tab for the Bencher report, download the ${{ steps.scenario.outputs.artifact_name }} artifact for the benchmark JSON and Markdown files, or view history at ${BENCHER_PROJECT_URL}."
+            else
+              echo "::notice title=E2E result::Scenario '${{ inputs.scenario }}' finished. Open the job Summary tab for the Bencher report or download the ${{ steps.scenario.outputs.artifact_name }} artifact for the benchmark JSON and Markdown files."
+            fi
           else
-            echo "::notice title=Benchmark report::Open the job Summary tab for the Bencher report or download the e2e-benchmark-${{ github.run_number }} artifact for the benchmark JSON and Markdown files. Set BENCHER_PROJECT_URL to include a direct Bencher history link here."
+            echo "::notice title=E2E result::Scenario '${{ inputs.scenario }}' finished. This scenario does not publish benchmark artifacts."
           fi
 
       - name: Dump logs on failure
         if: failure()
         working-directory: e2e/docker
-        run: docker compose -f docker-compose.e2e.yml logs
+        run: docker compose ${{ steps.scenario.outputs.compose_args }} logs
 
       - name: Cleanup
         if: always()
         working-directory: e2e/docker
-        run: docker compose -f docker-compose.e2e.yml down -v --remove-orphans
+        run: docker compose ${{ steps.scenario.outputs.compose_args }} down -v --remove-orphans

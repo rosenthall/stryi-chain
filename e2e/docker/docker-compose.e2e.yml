@@ -9,26 +9,12 @@ services:
       - ../config:/config:ro
     environment:
       - RUST_LOG=${RUST_LOG}
-    command: [ "chaingen", "--config-path", "/config/e2e_chaingen.toml" ]
     restart: "no"
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-
-  check-chaingen:
-    image: busybox:1.36
-    env_file: .env
-    depends_on:
-      chaingen:
-        condition: service_completed_successfully
-    volumes:
-      - stryi-e2e:/data
-      - ../scripts:/scripts:ro
-    command: [ "/bin/sh", "-lc", "/scripts/check-chaingen.sh /data/chain" ]
-    restart: "no"
-
 
   server-node:
     networks:
@@ -37,26 +23,13 @@ services:
       context: ../..
       dockerfile: e2e/docker/node.Dockerfile
     env_file: .env
-    depends_on:
-      check-chaingen:
-        condition: service_completed_successfully
     volumes:
       - stryi-e2e:/data
       - ../config:/config:ro
     environment:
       - RUST_LOG=${RUST_LOG}
-    command:
-      [
-        "--config-path",
-        "/config/e2e_server_node.toml",
-        "--auto-accept-genesis",
-        "true"
-      ]
     restart: "no"
     stop_grace_period: 5s
-    ports:
-      - "${SERVER_NODE_GRPC_API_PORT}:${SERVER_NODE_GRPC_API_PORT}"
-      - "${SERVER_NODE_HTTP_API_PORT}:${SERVER_NODE_HTTP_API_PORT}"
     healthcheck:
       test:
         [
@@ -67,33 +40,8 @@ services:
         ]
       interval: 5s
       timeout: 3s
-      retries: 5
-      start_period: 5s
-
-
-  wait-for-server-node:
-    networks:
-      - e2e
-    build:
-      context: ../..
-      dockerfile: e2e/docker/tools.Dockerfile
-    env_file: .env
-    depends_on:
-      server-node:
-        condition: service_healthy
-    volumes:
-      - ../scripts:/scripts:ro
-    entrypoint: [ "/bin/sh", "/scripts/assert-node-ready.sh" ]
-    command:
-      - --address
-      - ${SERVER_NODE_HTTP_API_ADDRESS}
-      - --http
-      - "${SERVER_NODE_HTTP_API_PORT}"
-      - --expected-height
-      - "${EXPECTED_HEIGHT_BLOCK_250}"
-      - --expected-hash
-      - "${EXPECTED_HASH_BLOCK_250}"
-    restart: "no"
+      retries: 10
+      start_period: 10s
 
   client-node-1:
     networks:
@@ -102,24 +50,11 @@ services:
       context: ../..
       dockerfile: e2e/docker/node.Dockerfile
     env_file: .env
-    depends_on:
-      server-node:
-        condition: service_healthy
     volumes:
       - stryi-e2e:/data
       - ../config:/config:ro
     environment:
       - RUST_LOG=${RUST_LOG}
-    command:
-      [
-        "--config-path",
-        "/config/e2e_client_node1.toml",
-        "--auto-accept-genesis",
-        "true"
-      ]
-    ports:
-      - "${CLIENT1_NODE_GRPC_API_PORT}:${CLIENT1_NODE_GRPC_API_PORT}"
-      - "${CLIENT1_NODE_HTTP_API_PORT}:${CLIENT1_NODE_HTTP_API_PORT}"
     healthcheck:
       test:
         [
@@ -135,65 +70,6 @@ services:
     restart: "no"
     stop_grace_period: 5s
 
-
-  wait-for-client-node-1:
-    networks:
-      - e2e
-    build:
-      context: ../..
-      dockerfile: e2e/docker/tools.Dockerfile
-    env_file: .env
-    depends_on:
-      client-node-1:
-        condition: service_healthy
-    volumes:
-      - ../scripts:/scripts:ro
-    entrypoint: [ "/bin/sh", "/scripts/assert-node-ready.sh" ]
-    command:
-      - --address
-      - ${CLIENT1_NODE_HTTP_API_ADDRESS}
-      - --http
-      - "${CLIENT1_NODE_HTTP_API_PORT}"
-      - --expected-height
-      - "${EXPECTED_HEIGHT_BLOCK_250}"
-      - --expected-hash
-      - "${EXPECTED_HASH_BLOCK_250}"
-    restart: "no"
-
-
-  chaingen-reorg:
-    build:
-      context: ../..
-      dockerfile: e2e/docker/devkit.Dockerfile
-    env_file: .env
-    depends_on:
-      chaingen:
-        condition: service_completed_successfully
-    volumes:
-      - stryi-e2e:/data
-      - ../config:/config:ro
-    environment:
-      - RUST_LOG=${RUST_LOG}
-    command: [ "chaingen", "--config-path", "/config/e2e_chaingen_reorg.toml" ]
-    restart: "no"
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  check-chaingen-reorg:
-    image: busybox:1.36
-    env_file: .env
-    depends_on:
-      chaingen-reorg:
-        condition: service_completed_successfully
-    volumes:
-      - stryi-e2e:/data
-      - ../scripts:/scripts:ro
-    command: [ "/bin/sh", "-lc", "/scripts/check-chaingen.sh /data/chain_reorg" ]
-    restart: "no"
-
   client-node-2:
     networks:
       - e2e
@@ -201,28 +77,11 @@ services:
       context: ../..
       dockerfile: e2e/docker/node.Dockerfile
     env_file: .env
-    depends_on:
-      check-chaingen-reorg:
-        condition: service_completed_successfully
-      wait-for-client-node-1:
-        condition: service_completed_successfully
-      server-node:
-        condition: service_healthy
     volumes:
       - stryi-e2e:/data
       - ../config:/config:ro
     environment:
       - RUST_LOG=${RUST_LOG}
-    command:
-      [
-        "--config-path",
-        "/config/e2e_client_node2.toml",
-        "--auto-accept-genesis",
-        "true"
-      ]
-    ports:
-      - "${CLIENT2_NODE_GRPC_API_PORT}:${CLIENT2_NODE_GRPC_API_PORT}"
-      - "${CLIENT2_NODE_HTTP_API_PORT}:${CLIENT2_NODE_HTTP_API_PORT}"
     healthcheck:
       test:
         [
@@ -237,33 +96,6 @@ services:
       start_period: 10s
     restart: "no"
     stop_grace_period: 5s
-
-  wait-for-reorg:
-    networks:
-      - e2e
-    build:
-      context: ../..
-      dockerfile: e2e/docker/tools.Dockerfile
-    env_file: .env
-    depends_on:
-      client-node-2:
-        condition: service_healthy
-    volumes:
-      - ../scripts:/scripts:ro
-    entrypoint: [ "/bin/sh", "/scripts/assert-reorg-complete.sh" ]
-    command:
-      - --node
-      - "${SERVER_NODE_HTTP_API_ADDRESS}:${SERVER_NODE_HTTP_API_PORT}"
-      - --node
-      - "${CLIENT1_NODE_HTTP_API_ADDRESS}:${CLIENT1_NODE_HTTP_API_PORT}"
-      - --node
-      - "${CLIENT2_NODE_HTTP_API_ADDRESS}:${CLIENT2_NODE_HTTP_API_PORT}"
-      - --expected-height
-      - "${EXPECTED_HEIGHT_BLOCK_275}"
-      - --expected-hash
-      - "${EXPECTED_HASH_BLOCK_275}"
-    restart: "no"
-
 
 volumes:
   stryi-e2e:

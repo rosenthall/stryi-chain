@@ -1,0 +1,43 @@
+services:
+  server-node:
+    command:
+      [
+        "--config-path",
+        "/config/e2e_server_node.toml",
+        "--auto-accept-genesis",
+        "true",
+        "--miner-enabled",
+        "true",
+        "--miner-tx-threshold",
+        "100",
+        "--miner-max-delay-secs",
+        "5",
+        "--miner-reward-address",
+        "${TX_RECIPIENT_ADDRESS}"
+      ]
+
+  wait-for-tx-lifecycle:
+    networks:
+      - e2e
+    build:
+      context: ../..
+      dockerfile: e2e/docker/tools.Dockerfile
+    env_file: .env
+    depends_on:
+      server-node:
+        condition: service_healthy
+    volumes:
+      - ../scripts:/scripts:ro
+    entrypoint: ["/bin/sh", "/scripts/assert-tx-lifecycle.sh"]
+    command:
+      - --node-url
+      - "http://${SERVER_NODE_HTTP_API_ADDRESS}:${SERVER_NODE_HTTP_API_PORT}"
+      - --sender-address
+      - "${TX_SENDER_ADDRESS}"
+      - --sender-key
+      - "${TX_SENDER_PRIVATE_KEY}"
+      - --recipient-address
+      - "${TX_RECIPIENT_ADDRESS}"
+      - --amount
+      - "${TX_AMOUNT}"
+    restart: "no"

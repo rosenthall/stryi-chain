@@ -9,6 +9,11 @@ RUN apt-get update && apt-get install -y \
     clang \
  && rm -rf /var/lib/apt/lists/*
 
+COPY rust-toolchain.toml ./
+RUN channel="$(awk -F'"' '/^channel = / { print $2 }' rust-toolchain.toml)" && \
+    test -n "$channel" && \
+    rustup toolchain install "$channel" --profile minimal && \
+    rustup default "$channel"
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
