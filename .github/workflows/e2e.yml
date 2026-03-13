@@ -31,18 +31,54 @@ jobs:
               echo "compose_args=-p stryi-e2e-reorg -f docker-compose.e2e.yml -f docker-compose.e2e.reorg.yml" >> "$GITHUB_OUTPUT"
               echo "target_service=wait-for-reorg" >> "$GITHUB_OUTPUT"
               echo "benchmarks=true" >> "$GITHUB_OUTPUT"
+              echo "build_devkit=true" >> "$GITHUB_OUTPUT"
               echo "artifact_name=e2e-reorg-benchmark-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
               ;;
             tx-lifecycle)
               echo "compose_args=-p stryi-e2e-tx-lifecycle -f docker-compose.e2e.yml -f docker-compose.e2e.tx-lifecycle.yml" >> "$GITHUB_OUTPUT"
               echo "target_service=wait-for-tx-lifecycle" >> "$GITHUB_OUTPUT"
               echo "benchmarks=false" >> "$GITHUB_OUTPUT"
+              echo "build_devkit=false" >> "$GITHUB_OUTPUT"
               ;;
             *)
               echo "Unsupported scenario: ${{ inputs.scenario }}" >&2
               exit 1
               ;;
           esac
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build cached node image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: e2e/docker/node.Dockerfile
+          tags: stryi-e2e-node:ci
+          load: true
+          cache-from: type=gha,scope=e2e-node
+          cache-to: type=gha,mode=max,scope=e2e-node
+
+      - name: Build cached tools image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: e2e/docker/tools.Dockerfile
+          tags: stryi-e2e-tools:ci
+          load: true
+          cache-from: type=gha,scope=e2e-tools
+          cache-to: type=gha,mode=max,scope=e2e-tools
+
+      - name: Build cached devkit image
+        if: steps.scenario.outputs.build_devkit == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: e2e/docker/devkit.Dockerfile
+          tags: stryi-e2e-devkit:ci
+          load: true
+          cache-from: type=gha,scope=e2e-devkit
+          cache-to: type=gha,mode=max,scope=e2e-devkit
 
       - name: Install Bencher
         if: steps.scenario.outputs.benchmarks == 'true'
@@ -55,7 +91,7 @@ jobs:
           DC="docker compose ${{ steps.scenario.outputs.compose_args }}"
           SVC="${{ steps.scenario.outputs.target_service }}"
 
-          $DC up -d --build --remove-orphans "$SVC"
+          $DC up -d --remove-orphans "$SVC"
 
           $DC logs -f --no-color &
           LOGS_PID=$!

@@ -27,6 +27,7 @@ services:
       ]
 
   wait-for-server-node:
+    image: stryi-e2e-tools:ci
     networks:
       - e2e
     build:
@@ -63,6 +64,7 @@ services:
       ]
 
   wait-for-client-node-1:
+    image: stryi-e2e-tools:ci
     networks:
       - e2e
     build:
@@ -87,6 +89,7 @@ services:
     restart: "no"
 
   chaingen-reorg:
+    image: stryi-e2e-devkit:ci
     build:
       context: ../..
       dockerfile: e2e/docker/devkit.Dockerfile
@@ -136,6 +139,7 @@ services:
       ]
 
   wait-for-reorg:
+    image: stryi-e2e-tools:ci
     networks:
       - e2e
     build:

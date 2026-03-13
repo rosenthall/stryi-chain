@@ -17,6 +17,7 @@ services:
       ]
 
   wait-for-tx-lifecycle:
+    image: stryi-e2e-tools:ci
     networks:
       - e2e
     build:
