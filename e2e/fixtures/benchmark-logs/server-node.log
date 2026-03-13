@@ -1,0 +1,8 @@
+server-node  | 2026-03-10T17:11:26.000000Z  INFO stryi_node: Start mode: bootstrap
+server-node  | 2026-03-10T17:11:26.200000Z  INFO http: HTTP API listening
+server-node  | 2026-03-10T17:11:37.000000Z  INFO sync: Remote chain heavier
+server-node  | 2026-03-10T17:11:38.000000Z  INFO sync: LCA found at height 224
+server-node  | 2026-03-10T17:11:38.100000Z  INFO sync: Performing reorg
+server-node  | 2026-03-10T17:11:38.110000Z  INFO stryi_core::consensus::engine: Rewound 50 canonical block(s) (overlay)
+server-node  | 2026-03-10T17:11:38.110000Z  INFO stryi_core::consensus::engine: Reorg complete: applied 51 fork block(s), new tip work=4701
+server-node  | 2026-03-10T17:11:38.700000Z  INFO sync: Peer sync complete, synced to height 275

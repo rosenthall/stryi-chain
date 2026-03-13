@@ -1,0 +1,3 @@
+client-node-2  | 2026-03-10T17:11:36.600000Z  INFO stryi_node: Start mode: bootstrap
+client-node-2  | 2026-03-10T17:11:36.700000Z  INFO http: HTTP API listening
+client-node-2  | 2026-03-10T17:11:36.700000Z  INFO sync: Publishing initial chain tip
