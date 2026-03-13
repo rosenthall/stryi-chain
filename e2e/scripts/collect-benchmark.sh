@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DC="docker compose -f docker-compose.e2e.yml"
+COMPOSE_ARGS="${BENCHMARK_COMPOSE_ARGS:--f docker-compose.e2e.yml}"
+DC="docker compose ${COMPOSE_ARGS}"
 OUTPUT_PATH="${BENCHMARK_OUTPUT_PATH:-/tmp/benchmark.bmf.json}"
 BENCHMARK_JSON_PATH="${BENCHMARK_JSON_PATH:-/tmp/benchmark.json}"
 BENCHMARK_SUMMARY_PATH="${BENCHMARK_SUMMARY_PATH:-/tmp/benchmark-summary.md}"

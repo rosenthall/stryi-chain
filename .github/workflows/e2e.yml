@@ -114,6 +114,8 @@ jobs:
         if: always() && steps.scenario.outputs.benchmarks == 'true'
         id: collect_metrics
         working-directory: e2e/docker
+        env:
+          BENCHMARK_COMPOSE_ARGS: ${{ steps.scenario.outputs.compose_args }}
         run: bash ../scripts/collect-benchmark.sh
 
       - name: Upload benchmark artifacts
