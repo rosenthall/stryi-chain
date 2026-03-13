@@ -1,23 +1,31 @@
-FROM rust:1.86.0-bullseye AS builder
+FROM rust:1.86.0-bullseye AS chef
 
 WORKDIR /build
 
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
-    ca-certificates \
     clang \
+    ca-certificates \
+    protobuf-compiler \
  && rm -rf /var/lib/apt/lists/*
 
 COPY rust-toolchain.toml ./
 RUN channel="$(awk -F'"' '/^channel = / { print $2 }' rust-toolchain.toml)" && \
     test -n "$channel" && \
     rustup toolchain install "$channel" --profile minimal && \
-    rustup default "$channel"
-COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
+    rustup default "$channel" && \
+    cargo install --locked cargo-chef --version 0.1.77
 
-RUN cargo build --release --bin stryi-wallet || true
+FROM chef AS planner
+
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
 RUN cargo build --release --bin stryi-wallet

@@ -1,4 +1,4 @@
-FROM rust:1.86.0-bullseye AS builder
+FROM rust:1.86.0-bullseye AS chef
 
 WORKDIR /build
 
@@ -14,13 +14,18 @@ COPY rust-toolchain.toml ./
 RUN channel="$(awk -F'"' '/^channel = / { print $2 }' rust-toolchain.toml)" && \
     test -n "$channel" && \
     rustup toolchain install "$channel" --profile minimal && \
-    rustup default "$channel"
-COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
+    rustup default "$channel" && \
+    cargo install --locked cargo-chef --version 0.1.77
 
-# Warm the dependency cache before copying the full workspace.
-RUN mkdir -p src && echo "fn main() {}" > src/main.rs
-RUN cargo build --release || true
+FROM chef AS planner
+
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
 RUN cargo build --release --bin stryi_node
