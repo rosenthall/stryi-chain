@@ -79,7 +79,11 @@ pub(crate) async fn find_lca(
         }
     }
 
-    debug!(best_height, ?best_hash, "Finished standalone LCA binary search");
+    debug!(
+        best_height,
+        ?best_hash,
+        "Finished standalone LCA binary search"
+    );
 
     Ok((best_height, best_hash))
 }
@@ -139,12 +143,12 @@ impl ConnectedNode {
                 ?remote_hash,
                 hashes_match = (local_hash == remote_hash),
                 "Compared local and remote block hashes at mid height"
-        );
+            );
 
-        if local_hash == remote_hash {
-            best_height = mid_height;
-            best_hash = local_hash;
-            low_height = mid_height.saturating_add(1);
+            if local_hash == remote_hash {
+                best_height = mid_height;
+                best_hash = local_hash;
+                low_height = mid_height.saturating_add(1);
 
                 debug!(
                     best_height,
@@ -152,10 +156,10 @@ impl ConnectedNode {
                     high_height,
                     "Common ancestor found at mid height, searching upper half"
                 );
-        } else {
-            if mid_height == 0 {
-                debug!("Hash mismatch at genesis height, stopping LCA search");
-                break;
+            } else {
+                if mid_height == 0 {
+                    debug!("Hash mismatch at genesis height, stopping LCA search");
+                    break;
                 }
 
                 high_height = mid_height - 1;

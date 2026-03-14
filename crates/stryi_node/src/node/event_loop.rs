@@ -21,10 +21,10 @@ use stryi_network::{
     BroadcastBlock, ChainTipAnnouncement, NetworkCommand, NetworkEvent, PeerId, ServiceRecord,
     StryiNetworkError,
 };
-use tokio::sync::oneshot;
 use stryi_storage::StryiStorage;
 use tokio::join;
 use tokio::sync::broadcast::Sender;
+use tokio::sync::oneshot;
 use tokio::sync::{Mutex, RwLock, Semaphore, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tonic::transport::{Server, ServerTlsConfig};
@@ -203,7 +203,12 @@ impl EventLoop {
                 );
                 let hash = ann.tip_hash;
                 let (respond_to, rx) = oneshot::channel();
-                let _ = net_cmd.send(NetworkCommand::PublishChainTip { announcement: ann, respond_to }).await;
+                let _ = net_cmd
+                    .send(NetworkCommand::PublishChainTip {
+                        announcement: ann,
+                        respond_to,
+                    })
+                    .await;
                 if let Ok(Err(e)) = rx.await {
                     warn!("Failed to publish initial chain tip: {e}");
                 }

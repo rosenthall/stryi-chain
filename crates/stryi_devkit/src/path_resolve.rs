@@ -13,14 +13,15 @@ pub fn config_base_dir(config_path: &Path) -> PathBuf {
 pub fn expand_tilde(path: &Path) -> PathBuf {
     let s = path.to_string_lossy();
     if (s == "~" || s.starts_with("~/"))
-        && let Ok(home) = env::var("HOME") {
-            let mut p = PathBuf::from(home);
-            if s.len() > 1 {
-                // skip "~/"
-                p.push(&s[2..]);
-            }
-            return p;
+        && let Ok(home) = env::var("HOME")
+    {
+        let mut p = PathBuf::from(home);
+        if s.len() > 1 {
+            // skip "~/"
+            p.push(&s[2..]);
         }
+        return p;
+    }
     path.to_path_buf()
 }
 

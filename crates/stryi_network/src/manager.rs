@@ -1,6 +1,8 @@
 use crate::mempool::MempoolRequest;
 use crate::peer::PeerInfo;
-use crate::services::{ServiceRecord, ServicesInfoRequest, SignedServiceRecord, filter_verified_records};
+use crate::services::{
+    ServiceRecord, ServicesInfoRequest, SignedServiceRecord, filter_verified_records,
+};
 use crate::{
     NetworkCommand, NetworkEvent, RendezvousMode, StryiNetworkManagerConfig,
     behaviour::{StryiBehaviour, StryiBehaviourConfig},

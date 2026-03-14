@@ -226,14 +226,10 @@ async fn init_consensus_engine(
 
             let utxo_processor = UtxoProcessor::new();
 
-            let engine = StryiConsensusEngine::new(
-                consts,
-                validator,
-                utxo_processor,
-                storage.clone(),
-            )
-            .await
-            .map_err(|e| format!("Failed to initialize consensus engine: {e:?}"))?;
+            let engine =
+                StryiConsensusEngine::new(consts, validator, utxo_processor, storage.clone())
+                    .await
+                    .map_err(|e| format!("Failed to initialize consensus engine: {e:?}"))?;
 
             engine.startup_message();
             Ok(Some(engine))

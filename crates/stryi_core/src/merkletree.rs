@@ -138,7 +138,11 @@ impl MerkleTree {
 
         // Traverse each level except the root level to gather sibling hashes
         for level in &self.levels[..self.levels.len() - 1] {
-            let sibling_index = if index.is_multiple_of(2) { index + 1 } else { index - 1 };
+            let sibling_index = if index.is_multiple_of(2) {
+                index + 1
+            } else {
+                index - 1
+            };
             // If sibling index is out-of-bound, duplicate the last element as sibling.
             let sibling = if sibling_index < level.len() {
                 level[sibling_index]

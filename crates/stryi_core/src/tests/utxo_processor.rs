@@ -108,7 +108,10 @@ async fn test_rewind_block_restores_previous_state() {
 
     // alice's UTXO should be restored
     let restored = utxo_exists(&db, alice_op).await;
-    assert!(restored.is_some(), "Alice's UTXO should be restored after rewind");
+    assert!(
+        restored.is_some(),
+        "Alice's UTXO should be restored after rewind"
+    );
     assert_eq!(restored.unwrap().value, 50_000);
 
     // newly created outputs should be removed

@@ -61,7 +61,7 @@ impl FundAccount {
         Ok(Self {
             funder_address,
             private_key,
-            utxos
+            utxos,
         })
     }
 

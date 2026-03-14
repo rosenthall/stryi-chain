@@ -48,8 +48,7 @@ pub fn import_key(hex_key: &str, label: &str) -> Result<KeyEntry> {
 pub fn load_wallet(path: &Path) -> Result<WalletFile> {
     let data = fs::read_to_string(path)
         .with_context(|| format!("cannot read wallet file at {}", path.display()))?;
-    let wallet: WalletFile =
-        serde_json::from_str(&data).context("failed to parse wallet JSON")?;
+    let wallet: WalletFile = serde_json::from_str(&data).context("failed to parse wallet JSON")?;
     Ok(wallet)
 }
 

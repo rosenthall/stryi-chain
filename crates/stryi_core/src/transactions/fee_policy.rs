@@ -1,5 +1,5 @@
-use crate::transactions::Transaction;
 use super::size::estimate_transaction_size;
+use crate::transactions::Transaction;
 
 /// Represents a static fee calculation policy using fixed costs for transaction components.
 ///

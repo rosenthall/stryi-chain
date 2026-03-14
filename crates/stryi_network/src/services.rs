@@ -226,8 +226,7 @@ impl TryFrom<&[u8]> for SignedServiceRecord {
 }
 
 /// Our ServiceInfo NetworkBehaviour relies on https://docs.rs/libp2p/latest/libp2p/request_response/cbor/type.Behaviour.html to perform serialization in binary format
-pub type ServicesInfoBehaviour =
-    RequestResponseBehaviour<ServicesInfoRequest, ServicesResponse>;
+pub type ServicesInfoBehaviour = RequestResponseBehaviour<ServicesInfoRequest, ServicesResponse>;
 
 /*
 /// Definition of an inbound request or response for service-protocol

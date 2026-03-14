@@ -125,9 +125,9 @@ impl Block {
         // convert balances to TxOuts
         let mut tx_outs: Vec<TransactionOut> = vec![];
 
-
         // sort by highest balance
-        let mut wanted_balances_vec: Vec<(AccountAddress, u64)> = wanted_balances.into_iter().collect();
+        let mut wanted_balances_vec: Vec<(AccountAddress, u64)> =
+            wanted_balances.into_iter().collect();
 
         wanted_balances_vec.sort_by(|a, b| b.1.cmp(&a.1));
 

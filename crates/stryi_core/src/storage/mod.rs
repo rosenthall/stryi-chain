@@ -70,7 +70,10 @@ pub trait UtxoStorage: Send + Sync {
 
     /// Fetches **exactly one** UTXO. `None` means “not found or already spent”.
     /// By default, this just forwards to [`batch_get_utxos`]. Override if you need
-    fn get_utxo(&self, outpoint: OutPoint) -> BoxFuture<'_, Result<Option<UTXO>, Self::StorageError>> {
+    fn get_utxo(
+        &self,
+        outpoint: OutPoint,
+    ) -> BoxFuture<'_, Result<Option<UTXO>, Self::StorageError>> {
         Box::pin(async move {
             self.batch_get_utxos(std::iter::once(outpoint))
                 .await

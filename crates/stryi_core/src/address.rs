@@ -25,11 +25,11 @@ impl AccountAddress {
 
 #[cfg(test)]
 mod tests {
+    use crate::PrivateKey;
     use crate::address::{AccountAddress, AddressHasher};
     use crate::hash::HashKind;
     use k256::ecdsa::SigningKey;
     use k256::elliptic_curve::rand_core::OsRng;
-    use crate::PrivateKey;
 
     #[test]
     fn test_create_multiple_account_addresses() {

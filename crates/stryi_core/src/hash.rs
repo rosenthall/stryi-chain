@@ -1,8 +1,8 @@
 use crate::error::StryiCoreError;
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
-use std::fmt;
 use std::convert::TryFrom;
+use std::fmt;
 
 // --- Sealed helper to avoid recursive "well-formed" obligations that cause E0275 ---
 // Implementing a blanket trait for arrays prevents the compiler from re-entering
