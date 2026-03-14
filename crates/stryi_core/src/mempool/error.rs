@@ -2,7 +2,7 @@ use crate::mempool::validator::MempoolValidationError;
 use crate::transactions::{OutPoint, TransactionHash};
 use thiserror::Error;
 
-/// A definition of errors related to mempool implementation
+/// Errors returned by the mempool.
 #[derive(Debug, Error)]
 pub enum MemPoolError {
     #[error("Pool is full ({size} transactions)")]
@@ -22,7 +22,4 @@ pub enum MemPoolError {
 
     #[error("Storage error: {0}")]
     Storage(#[from] Box<dyn std::error::Error + Send + Sync>),
-
-    #[error("Concurrent operation error: {0}")]
-    ConcurrencyError(String),
 }

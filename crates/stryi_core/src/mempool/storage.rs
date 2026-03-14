@@ -4,35 +4,28 @@ use crate::transactions::{OutPoint, Transaction, TransactionHash};
 use bincode::config::standard;
 use std::collections::HashMap;
 
-/// TransactionStorage is a container for mempool transactions with
-/// separate indices for created and spent outpoints.
-///
-/// # Responsibilities
-/// - Store `MemPoolTx` entries keyed by their `TransactionHash`.
-/// - Track which transactions created outpoints (`output_creation_index`).
-/// - Track which transactions spend outpoints (`input_spending_index`).
-/// - Provide methods to insert and remove transactions, automatically
-///   maintaining indices consistency.
+/// Stores mempool transactions and the indexes needed to resolve dependencies.
 #[derive(Default)]
 pub struct TransactionStorage {
-    /// A map from transaction hash to the stored mempool transaction data.
-    pub(crate) transactions: HashMap<TransactionHash, MemPoolTx>,
-
-    /// A map from outpoints to the transaction hash that created them.
+    transactions: HashMap<TransactionHash, MemPoolTx>,
     output_creation_index: HashMap<OutPoint, TransactionHash>,
-
-    /// A map from outpoints to the transaction hash that spends them.
     input_spending_index: HashMap<OutPoint, TransactionHash>,
 }
 
 impl TransactionStorage {
-    /// Inserts a transaction into the storage.
-    /// - tx_hash: the hash of the transaction (e.g., tx.data.hash()).
-    /// - tx: the Transaction itself
-    /// - fee: computed fee for the transaction
-    ///
-    /// This method stores the entry in `transactions` and manages both output and input indices.
+    /// Inserts a transaction and stamps it with the current time.
     pub fn insert(&mut self, tx_hash: TransactionHash, tx: Transaction, fee: u64) {
+        self.insert_with_timestamp(tx_hash, tx, fee, current_timestamp());
+    }
+
+    /// Inserts a transaction with an explicit timestamp.
+    pub fn insert_with_timestamp(
+        &mut self,
+        tx_hash: TransactionHash,
+        tx: Transaction,
+        fee: u64,
+        timestamp: u64,
+    ) {
         // Calculate serialized size once during insertion
         let serialized_size = bincode::serde::encode_to_vec(&tx, standard())
             .expect("Transaction serialization cannot fail")
@@ -40,15 +33,13 @@ impl TransactionStorage {
 
         let mem_tx = MemPoolTx {
             transaction: tx.clone(),
-            timestamp: current_timestamp(),
+            timestamp,
             fee,
             serialized_size,
         };
 
-        // Insert the new entry
         self.transactions.insert(tx_hash, mem_tx);
 
-        // Index outputs (this transaction CREATES these outpoints)
         for (vout_idx, _) in tx.data.outputs.iter().enumerate() {
             let op = OutPoint {
                 txid: tx_hash,
@@ -64,13 +55,11 @@ impl TransactionStorage {
         }
     }
 
-    /// Removes a transaction by hash, returning the removed MemPoolTx if found.
-    /// Also, properly updates both output and input indices.
+    /// Removes a transaction and cleans up its indexes.
     pub fn remove(&mut self, tx_hash: &TransactionHash) -> Option<MemPoolTx> {
         let removed = self.transactions.remove(tx_hash);
 
         if let Some(ref mem_tx) = removed {
-            // Clean up output creation index (outputs this tx created)
             for (vout_idx, _) in mem_tx.transaction.data.outputs.iter().enumerate() {
                 let op = OutPoint {
                     txid: *tx_hash,
@@ -79,9 +68,7 @@ impl TransactionStorage {
                 self.output_creation_index.remove(&op);
             }
 
-            // Clean up input spending index (inputs this tx spends)
             for input in &mem_tx.transaction.data.inputs {
-                // Only remove if THIS transaction is the one spending it
                 if let Some(spending_tx) = self.get_spending_tx(&input.previous_output)
                     && spending_tx == tx_hash
                 {
@@ -98,19 +85,14 @@ impl TransactionStorage {
         self.transactions.get(tx_hash)
     }
 
-    /// Gets all the stored transactions in mempool
+    /// Returns all stored transactions.
     pub fn get_all(&self) -> Vec<&MemPoolTx> {
         self.transactions.values().collect()
     }
 
-    /// Checks if such transaction exists in mempool
+    /// Returns `true` if the transaction is stored.
     pub fn exists(&self, tx_hash: &TransactionHash) -> bool {
         self.transactions.contains_key(tx_hash)
-    }
-
-    /// Retrieves a mutable reference to a stored MemPoolTx by hash.
-    pub fn get_mut(&mut self, tx_hash: &TransactionHash) -> Option<&mut MemPoolTx> {
-        self.transactions.get_mut(tx_hash)
     }
 
     /// Returns which transaction created a given outpoint, if any.
@@ -138,10 +120,5 @@ impl TransactionStorage {
     /// Returns the total number of transactions in storage.
     pub fn len(&self) -> usize {
         self.transactions.len()
-    }
-
-    /// Returns whether the storage is empty
-    pub fn is_empty(&self) -> bool {
-        self.transactions.is_empty()
     }
 }

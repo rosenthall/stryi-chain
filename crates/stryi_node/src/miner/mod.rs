@@ -258,13 +258,13 @@ impl StryiMiner {
             );
         }
 
-        // snapshot best transactions
         let best_txs = {
             let mp = self.mempool.read().await;
-            match mp.get_best_transactions(10_000).await {
-                Ok(v) if !v.is_empty() => v,
-                _ => return,
+            let best = mp.get_best_transactions(10_000);
+            if best.is_empty() {
+                return;
             }
+            best
         };
 
         // build a block base

@@ -285,9 +285,7 @@ impl EventLoop {
                                     }
 
                                     let mut pool = mempool_for_events.write().await;
-                                    if let Err(e) = pool.update_on_block(mined_block.data.clone()).await {
-                                        warn!("Failed to clean mempool after mined block: {:?}", e);
-                                    }
+                                    pool.update_on_block(mined_block.data.clone());
                                     drop(pool);
 
                                     let first_seen = SystemTime::now()
@@ -367,9 +365,7 @@ impl EventLoop {
                                             }
 
                                             let mut pool = mempool_for_events.write().await;
-                                            if let Err(e) = pool.update_on_block(block.data.clone()).await {
-                                                warn!("Failed to clean mempool after block: {:?}", e);
-                                            }
+                                            pool.update_on_block(block.data.clone());
                                             drop(pool);
 
                                             if let Some(ann) = tip_ann {

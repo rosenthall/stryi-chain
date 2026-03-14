@@ -29,38 +29,30 @@ pub enum MempoolValidationError {
     #[error("Potential RBF transaction")]
     PotentialRbf(Vec<UTXO>),
 
-    #[error("Outpoint {0:?} is already spent by another transaction in mempool")]
-    AlreadySpent(OutPoint),
-
     #[error(
         "Mempool works only for Payment transactions, not Coinbase/Genesis, transaction hash: {0}"
     )]
     NonPaymentTx(String),
 }
 
-/// MempoolTxValidator validates any transaction so we can add it mempool without risks or inconsistencies.
-/// Recovers the public key (verifying ECDSA signature).
-/// Then checks each input's UTXO.owner matches the recovered address.
-/// Also ensures total inputs >= total outputs and detects double-spends.
+/// Validates transactions before they enter the mempool.
 pub struct MempoolTxValidator {
     utxo_lookup: UtxoLookup,
 }
 
 impl MempoolTxValidator {
-    /// Creates a validator with a user-provided async function that fetches UTXOs from some hypothetical storage.
+    /// Creates a validator with an async UTXO lookup.
     pub fn new(utxo_lookup: UtxoLookup) -> Self {
         Self { utxo_lookup }
     }
 
-    /// Validates a transaction inputs.
-    /// Returns error if transaction kind is not payment, signature is invalid,
-    /// inputs are insufficient, or if double-spends are detected.
+    /// Validates a transaction and returns the resolved input UTXOs.
     pub async fn validate(
         &self,
         tx: &Transaction,
         storage: &TransactionStorage,
     ) -> Result<Vec<UTXO>, MempoolValidationError> {
-        // Check if transaction kind is not payment
+        // Check if the transaction kind is not payment
         if !matches!(tx.data.kind, TransactionKind::Payment) {
             return Err(MempoolValidationError::NonPaymentTx(
                 tx.data.hash().to_string(),
@@ -72,8 +64,6 @@ impl MempoolTxValidator {
             Ok(k) => k,
             Err(e) => return Err(MempoolValidationError::SignatureFailed(e.to_string())),
         };
-
-        // Derive address from the verifying key
         let recovered_addr = AccountAddress::from_public_key(&rec_key);
 
         // Gather input UTXOs
@@ -84,19 +74,13 @@ impl MempoolTxValidator {
         for (i, input) in tx.data.inputs.iter().enumerate() {
             let outpoint = &input.previous_output;
 
-            // Check if the outpoint is already spent by another transaction
             if let Some(spending_tx_hash) = storage.get_spending_tx(outpoint) {
-                // If this outpoint is spent by another transaction (not the current one)
                 if spending_tx_hash != &tx.data.hash() {
-                    // Mark as potential RBF instead of failing immediately
                     potential_rbf = true;
-                    // Continue with validation to collect all potential conflicts
                 }
             }
 
-            // Try to find the UTXO either in mempool or external storage
             let utxo = if let Some(tx_hash) = storage.get_creating_tx(outpoint) {
-                // UTXO is from a transaction in mempool
                 if let Some(mem_tx) = storage.get(tx_hash) {
                     if outpoint.vout < mem_tx.transaction.data.outputs.len() as u32 {
                         let output = &mem_tx.transaction.data.outputs[outpoint.vout as usize];
@@ -142,13 +126,10 @@ impl MempoolTxValidator {
             });
         }
 
-        // If we detected potential RBF but there were other validation errors, we would have returned early
-        // So if we get here and potential_rbf is true, we'll return a special result
         if potential_rbf {
             return Err(MempoolValidationError::PotentialRbf(utxos));
         }
 
-        // If all checks pass, we return the input UTXOs
         Ok(utxos)
     }
 }

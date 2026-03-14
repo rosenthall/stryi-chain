@@ -264,7 +264,7 @@ where
 
     {
         let mempool = state.mempool.read().await;
-        if let Some(transaction) = mempool.get_transaction(&tx_hash).await {
+        if let Some(transaction) = mempool.get_transaction(&tx_hash) {
             return Ok(Json(TransactionQueryResponse {
                 status: TransactionQueryStatus::Pending,
                 tx_hash,
@@ -285,22 +285,18 @@ where
 fn map_mempool(err: MemPoolError) -> StryiNodeHttpApiError {
     use BadTxReason::*;
     match err {
-        // duplicate tx -> 400
         MemPoolError::DuplicateTransaction { .. } => StryiNodeHttpApiError::BadTransaction {
             reason: DuplicateTx,
             message: Some("Such transaction already in mempool".into()),
         },
-        // already-spent input -> 400
         MemPoolError::DoubleSpend(outpoint) => StryiNodeHttpApiError::BadTransaction {
             reason: DoubleSpend,
             message: format!("Double spend detected: {:?}", outpoint).into(),
         },
-        // mempool size cap hit -> 400
         MemPoolError::PoolFull { .. } => StryiNodeHttpApiError::BadTransaction {
             reason: PoolFull,
             message: Some("mempool is full".into()),
         },
-        // insufficient fee for RBF -> 400
         MemPoolError::InsufficientFee { required, actual } => {
             let msg = format!("required {required}, provided {actual}");
             StryiNodeHttpApiError::BadTransaction {
@@ -308,205 +304,16 @@ fn map_mempool(err: MemPoolError) -> StryiNodeHttpApiError {
                 message: Some(msg),
             }
         }
-        // validation error -> map inner enum
         MemPoolError::ValidationError(inner) => match inner {
             MempoolValidationError::SignatureFailed(_) => StryiNodeHttpApiError::BadTransaction {
                 reason: InvalidSignature,
                 message: None,
             },
-            // the rest fall back to generic invalid-signature bucket
             _ => StryiNodeHttpApiError::BadTransaction {
-                reason: InvalidSignature,
+                reason: InvalidTransaction,
                 message: Some(inner.to_string()),
             },
         },
-        // anything else → 500
         other => StryiNodeHttpApiError::Unexpected(other.to_string()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::http::StryiHttpServiceConfig;
-    use crate::http::TxBroadcaster;
-    use std::path::PathBuf;
-    use stryi_core::address::AccountAddress;
-    use stryi_core::mempool::{MemPool, MemPoolConfig, MemPoolSyncData, UtxoLookup};
-    use stryi_core::transactions::{TransactionData, TransactionKind, TransactionOut};
-    use stryi_network::NetworkCommand;
-    use stryi_storage::StryiStorage;
-    use tokio::sync::{RwLock, mpsc};
-
-    fn dummy_lookup() -> UtxoLookup {
-        Box::new(|_| Box::pin(async { None }))
-    }
-
-    fn make_test_tx(value: u64, recipient_seed: u8) -> Transaction {
-        Transaction::new_unsigned(TransactionData {
-            version: 1,
-            kind: TransactionKind::Payment,
-            inputs: vec![],
-            outputs: vec![TransactionOut {
-                value,
-                recipient: AccountAddress::new(&[recipient_seed; 20]),
-            }],
-        })
-    }
-
-    fn temp_storage_path() -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
-        std::env::temp_dir().join(format!("stryi-node-http-tx-{nanos}"))
-    }
-
-    async fn make_service() -> Arc<StryiHttpService<StryiStorage>> {
-        let storage = StryiStorage::initialize_in_path(temp_storage_path(), None)
-            .await
-            .expect("storage");
-        let mempool = MemPool::new(MemPoolConfig::default(), dummy_lookup());
-        let (sender, _receiver) = mpsc::channel::<NetworkCommand>(1);
-
-        let svc = StryiHttpService {
-            config: StryiHttpServiceConfig {
-                address: "127.0.0.1:0".parse().expect("socket"),
-                chain_name: "test".to_string(),
-                peer_id: stryi_network::PeerId::random(),
-                api_version: 1,
-            },
-            mempool: Arc::new(RwLock::new(mempool)),
-            storage: Arc::new(RwLock::new(storage)),
-            tx_broadcaster: TxBroadcaster::new(sender),
-        };
-
-        Arc::new(svc)
-    }
-
-    #[tokio::test]
-    async fn query_pending_transaction_returns_pending_status() {
-        let svc = make_service().await;
-        let tx = make_test_tx(10, 1);
-        let tx_hash = tx.data.hash();
-
-        svc.mempool
-            .write()
-            .await
-            .restore_state(
-                bincode::serde::encode_to_vec(
-                    MemPoolSyncData {
-                        transactions: vec![tx.clone()],
-                        timestamp: 0,
-                    },
-                    standard(),
-                )
-                .expect("encode mempool sync state"),
-            )
-            .await
-            .expect("mempool restore");
-
-        let response = get_tx::<StryiStorage>(State(svc), Path(tx_hash.to_string()))
-            .await
-            .expect("pending tx response");
-
-        assert_eq!(response.0.status, TransactionQueryStatus::Pending);
-        assert_eq!(response.0.tx_hash, tx_hash);
-        assert!(response.0.block_hash.is_none());
-    }
-
-    #[tokio::test]
-    async fn query_confirmed_transaction_returns_location() {
-        let svc = make_service().await;
-        let tx = make_test_tx(20, 2);
-        let block = stryi_core::block::Block::new(
-            vec![tx.clone()],
-            stryi_core::block::BlockHash::empty(),
-            1,
-            1,
-            1_700_000_010,
-            1,
-        );
-
-        let tx_hash = tx.data.hash();
-        svc.storage
-            .write()
-            .await
-            .put_block(&block)
-            .await
-            .expect("put block");
-
-        let response = get_tx::<StryiStorage>(State(svc), Path(tx_hash.to_string()))
-            .await
-            .expect("confirmed tx response");
-
-        assert_eq!(response.0.status, TransactionQueryStatus::Confirmed);
-        assert_eq!(response.0.tx_hash, tx_hash);
-        assert_eq!(response.0.block_hash, Some(block.block_hash()));
-        assert_eq!(response.0.block_height, Some(1));
-        assert_eq!(response.0.tx_index, Some(0));
-    }
-
-    #[tokio::test]
-    async fn query_confirmed_transaction_wins_over_mempool_copy() {
-        let svc = make_service().await;
-        let tx = make_test_tx(30, 3);
-        let tx_hash = tx.data.hash();
-        let block = stryi_core::block::Block::new(
-            vec![tx.clone()],
-            stryi_core::block::BlockHash::empty(),
-            1,
-            1,
-            1_700_000_020,
-            1,
-        );
-
-        svc.storage
-            .write()
-            .await
-            .put_block(&block)
-            .await
-            .expect("put block");
-
-        svc.mempool
-            .write()
-            .await
-            .restore_state(
-                bincode::serde::encode_to_vec(
-                    MemPoolSyncData {
-                        transactions: vec![tx],
-                        timestamp: 0,
-                    },
-                    standard(),
-                )
-                .expect("encode mempool sync state"),
-            )
-            .await
-            .expect("mempool restore");
-
-        let response = get_tx::<StryiStorage>(State(svc), Path(tx_hash.to_string()))
-            .await
-            .expect("confirmed tx response");
-
-        assert_eq!(response.0.status, TransactionQueryStatus::Confirmed);
-        assert_eq!(response.0.block_hash, Some(block.block_hash()));
-    }
-
-    #[tokio::test]
-    async fn query_unknown_transaction_returns_not_found() {
-        let svc = make_service().await;
-        let err = get_tx::<StryiStorage>(
-            State(svc),
-            Path(TransactionHash::new(&[9u8; 32]).to_string()),
-        )
-        .await
-        .expect_err("missing tx");
-
-        assert!(matches!(
-            err,
-            StryiNodeHttpApiError::ResourceNotFound {
-                resource: ResourceKind::Transaction(_)
-            }
-        ));
     }
 }

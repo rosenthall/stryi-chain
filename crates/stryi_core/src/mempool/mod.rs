@@ -1,6 +1,4 @@
-//! Mempool module that stores unconfirmed transactions, manages dependencies,
-//! and provides features such as Replace-by-Fee (RBF), topological ordering,
-//! and ancestor scoring for transaction selection.
+//! Stores unconfirmed transactions, their dependencies, and RBF state.
 
 use crate::transactions::{FeeCalculator, FeePolicy};
 
@@ -12,11 +10,12 @@ pub use validator::MempoolValidationError;
 mod error;
 pub use error::MemPoolError;
 mod types;
-pub use types::{MemPoolConfig, MemPoolSyncData};
+pub use types::{MemPoolConfig, MemPoolSyncData, MemPoolSyncEntry};
 
 mod dependencies;
 mod storage;
 
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -27,39 +26,23 @@ use crate::mempool::dependencies::DependencyTracker;
 use crate::mempool::storage::TransactionStorage;
 use crate::mempool::validator::MempoolTxValidator;
 use crate::transactions::{OutPoint, Transaction, TransactionHash, UTXO};
-use petgraph::graph::NodeIndex;
 use tracing::warn;
 
-/// A type alias for the asynchronous UTXO lookup function.
-/// Given an OutPoint, returns a Future resolving to Option<UTXO>.
+/// Async lookup used to resolve UTXOs that are not produced by the mempool.
 pub type UtxoLookup =
     Box<dyn Fn(&OutPoint) -> Pin<Box<dyn Future<Output = Option<UTXO>> + Send>> + Send + Sync>;
 
-/// Main mempool structure.
+/// Mempool state and the helpers needed to maintain it.
 pub struct MemPool {
-    /// Storage for unconfirmed transactions.
     storage: TransactionStorage,
-    /// Dependency tracker that maintains a DAG of transaction dependencies.
     dependency_tracker: DependencyTracker,
-    /// Internal conflict resolver using Replace-by-Fee.
     rbf_resolver: RbfConflictResolver,
-    /// Validator for incoming transactions.
     validator: MempoolTxValidator,
-    /// Fee calculator (based on FeePolicy).
     fee_calculator: FeeCalculator,
-    /// General configuration (max_size, fee_policy, rbf_policy, expiry_time, etc.).
     config: MemPoolConfig,
 }
 
 impl MemPool {
-    /// Creates a new mempool instance.
-    ///
-    /// Initializes internal modules:
-    ///  - TransactionStorage for storing transactions.
-    ///  - DependencyTracker for maintaining the dependency graph.
-    ///  - FeeCalculator (from config).
-    ///  - RbfConflictResolver (from config).
-    ///  - MempoolTxValidator with the provided async UTXO lookup.
     pub fn new(config: MemPoolConfig, utxo_lookup: UtxoLookup) -> Self {
         Self {
             storage: TransactionStorage::default(),
@@ -71,20 +54,10 @@ impl MemPool {
         }
     }
 
-    /// Adds a new transaction to the mempool.
-    ///
-    /// 1. Checks if the transaction is already in the pool or if the pool is full.
-    /// 2. Validates the transaction using MempoolTxValidator.
-    /// 3. Calculates the required fee.
-    /// 4. Finds conflicts via `rbf_resolver.find_conflicts(...)`.
-    /// 5. Attempts to resolve them with `rbf_resolver.resolve_conflicts(...)`,
-    ///    which may remove conflicting transactions and their descendants if the new fee is sufficient.
-    /// 6. Inserts the new transaction into storage.
-    /// 7. Updates the dependency tracker with parent–child relationships.
+    /// Validates and inserts a transaction.
     pub async fn add_transaction(&mut self, tx: Transaction) -> Result<(), MemPoolError> {
         let tx_hash = tx.data.hash();
 
-        // 1. Check for duplicate or pool capacity
         if self.storage.exists(&tx_hash) {
             return Err(MemPoolError::DuplicateTransaction { hash: tx_hash });
         }
@@ -95,142 +68,87 @@ impl MemPool {
             });
         }
 
-        // 2. Validate the transaction (signatures, UTXO ownership, etc.)
-        let validation_result = self.validator.validate(&tx, &self.storage).await;
-        let utxos = match validation_result {
-            Ok(utxos) => utxos,
-            Err(MempoolValidationError::PotentialRbf(utxos)) => {
-                // This is a special case - it passed all validation except for potentially replacing existing tx
-                // We'll proceed with conflict resolution
-                utxos
-            }
+        let utxos = match self.validator.validate(&tx, &self.storage).await {
+            Ok(utxos) | Err(MempoolValidationError::PotentialRbf(utxos)) => utxos,
             Err(err) => return Err(MemPoolError::ValidationError(err)),
         };
 
-        // 3. Calculate both explicit and implicit fees
-        let explicit_fee = self.fee_calculator.calculate_fee(&tx);
-
-        // Calculate implicit fee (input sum - output sum)
-        let input_sum = utxos.iter().map(|utxo| utxo.value).sum::<u64>();
-        let output_sum = tx.data.outputs.iter().map(|out| out.value).sum::<u64>();
-        let implicit_fee = input_sum.saturating_sub(output_sum);
-
-        // Use the greater of the two fees
-        let actual_fee = std::cmp::max(explicit_fee, implicit_fee);
-
-        // For now, we can hardcode a load_factor of 1.0
-        let load_factor = 1.0;
-
-        // 4. Find conflicts
+        let actual_fee = self.actual_fee(&tx, &utxos);
         let conflicts = self.rbf_resolver.find_conflicts(&tx, &self.storage);
 
-        // 5. If there are conflicts, resolve them via RBF
         if !conflicts.is_empty() {
-            // Check if RBF is disabled,
             if self.config.rbf_policy.is_disabled() {
-                warn!(
-                    "RBF is disabled, cannot resolve conflicts for transaction: {}",
-                    tx_hash
-                );
-
-                // If RBF is disabled, we cannot resolve conflicts so just return any error
-                let first = conflicts.iter().next().unwrap();
-                return Err(MemPoolError::DuplicateTransaction { hash: *first });
+                warn!("RBF is disabled, rejecting conflicting transaction: {tx_hash}");
+                return Err(self
+                    .first_conflicting_outpoint(&tx)
+                    .map(MemPoolError::DoubleSpend)
+                    .unwrap_or(MemPoolError::DuplicateTransaction { hash: tx_hash }));
             }
 
-            // Process RBF conflicts using the actual fee
-            if let Err(rbf_err) = self.rbf_resolver.resolve_conflicts(
-                &conflicts,
-                &mut self.storage,
-                &mut self.dependency_tracker,
-                actual_fee, // Use actual_fee here
-                load_factor,
-            ) {
-                return match rbf_err {
-                    // If the new fee is too low
+            self.rbf_resolver
+                .resolve_conflicts(
+                    &conflicts,
+                    &mut self.storage,
+                    &mut self.dependency_tracker,
+                    actual_fee,
+                    1.0,
+                )
+                .map_err(|err| match err {
                     RbfConflictError::InsufficientFee { required, actual } => {
-                        Err(MemPoolError::InsufficientFee { required, actual })
+                        MemPoolError::InsufficientFee { required, actual }
                     }
-                    // Fallback for any other error
-                    RbfConflictError::Other(msg) => {
-                        Err(MemPoolError::Storage(Box::new(std::io::Error::other(msg))))
+                    RbfConflictError::Other(message) => {
+                        MemPoolError::Storage(Box::new(std::io::Error::other(message)))
                     }
-                };
-            }
+                })?;
         }
 
-        // 6. Insert the new transaction with the actual fee
         self.storage.insert(tx_hash, tx.clone(), actual_fee);
-
-        // 7. Update dependency tracker with parent-child relationships
-        let parent_hashes: Vec<TransactionHash> = tx
-            .data
-            .inputs
-            .iter()
-            .filter_map(|input| {
-                self.storage
-                    .get_creating_tx(&input.previous_output)
-                    .cloned()
-            })
-            .collect();
-
+        let parent_hashes = self.parent_hashes(&tx);
         self.dependency_tracker
             .add_transaction(tx_hash, &parent_hashes);
 
         Ok(())
     }
 
-    /// Removes a transaction (and its dependent transactions) from the mempool.
-    ///
-    /// Uses the DependencyTracker to obtain descendant transactions.
-    pub async fn remove_transaction(
-        &mut self,
-        tx_hash: TransactionHash,
-    ) -> Result<(), MemPoolError> {
-        // Get descendants before removing the transaction
+    /// Removes a transaction and any descendants that depend on its outputs.
+    pub fn remove_transaction(&mut self, tx_hash: TransactionHash) {
         let descendants = self.dependency_tracker.get_descendants(&tx_hash);
 
-        // Remove each descendant
-        for child_hash in &descendants {
-            // Storage.remove now handles all index cleaning properly
-            self.storage.remove(child_hash);
-            self.dependency_tracker.remove_transaction(child_hash);
+        for descendant in descendants {
+            self.remove_stored_transaction(&descendant);
         }
 
-        // Remove the transaction itself
-        self.storage.remove(&tx_hash);
-        self.dependency_tracker.remove_transaction(&tx_hash);
-
-        Ok(())
+        self.remove_stored_transaction(&tx_hash);
     }
 
-    /// Serializes the mempool state for network synchronization or persistence.
-    ///
-    /// Builds a MemPoolSyncData struct containing all transactions and the current timestamp,
-    /// then serializes it using bincode.
-    pub async fn get_sync_state(&self) -> Result<MemPoolSyncData, MemPoolError> {
-        let all_tx = self.storage.get_all();
-        let sync_data = MemPoolSyncData {
-            transactions: all_tx
-                .iter()
-                .map(|entry| entry.transaction.clone())
-                .collect(),
+    /// Builds a serializable snapshot of the current mempool contents.
+    pub fn get_sync_state(&self) -> MemPoolSyncData {
+        let entries = self
+            .storage
+            .get_all()
+            .into_iter()
+            .map(|entry| MemPoolSyncEntry {
+                transaction: entry.transaction.clone(),
+                fee: entry.fee,
+                timestamp: entry.timestamp,
+            })
+            .collect();
+
+        MemPoolSyncData {
+            entries,
             timestamp: current_timestamp(),
-        };
-
-        Ok(sync_data)
+        }
     }
 
-    pub async fn get_transaction(&self, tx_hash: &TransactionHash) -> Option<Transaction> {
+    pub fn get_transaction(&self, tx_hash: &TransactionHash) -> Option<Transaction> {
         self.storage
             .get(tx_hash)
             .map(|entry| entry.transaction.clone())
     }
 
-    /// Restores the mempool state from a serialized snapshot.
-    ///
-    /// Clears current storage and dependency tracker, then re-inserts transactions from the snapshot.
-    pub async fn restore_state(&mut self, data: Vec<u8>) -> Result<(), MemPoolError> {
+    /// Restores storage and dependency state from a serialized snapshot.
+    pub fn restore_state(&mut self, data: Vec<u8>) -> Result<(), MemPoolError> {
         let sync_data: MemPoolSyncData =
             bincode::serde::decode_from_slice(&data, bincode::config::standard())
                 .map_err(|e| MemPoolError::Storage(Box::new(e)))?
@@ -239,23 +157,21 @@ impl MemPool {
         self.storage.clear();
         self.dependency_tracker.clear();
 
-        for tx in sync_data.transactions {
+        let mut transactions = Vec::with_capacity(sync_data.entries.len());
+        for entry in sync_data.entries {
+            let tx_hash = entry.transaction.data.hash();
+            self.storage.insert_with_timestamp(
+                tx_hash,
+                entry.transaction.clone(),
+                entry.fee,
+                entry.timestamp,
+            );
+            transactions.push(entry.transaction);
+        }
+
+        for tx in transactions {
             let tx_hash = tx.data.hash();
-            let fee = self.fee_calculator.calculate_fee(&tx);
-
-            self.storage.insert(tx_hash, tx.clone(), fee);
-
-            let parent_hashes: Vec<TransactionHash> = tx
-                .data
-                .inputs
-                .iter()
-                .filter_map(|input| {
-                    self.storage
-                        .get_creating_tx(&input.previous_output)
-                        .cloned()
-                })
-                .collect();
-
+            let parent_hashes = self.parent_hashes(&tx);
             self.dependency_tracker
                 .add_transaction(tx_hash, &parent_hashes);
         }
@@ -263,22 +179,15 @@ impl MemPool {
         Ok(())
     }
 
-    /// Updates the mempool after a block is confirmed.
-    ///
-    /// For every transaction in the block, removes it (and its descendants) from the mempool.
-    pub async fn update_on_block(&mut self, block: BlockData) -> Result<(), MemPoolError> {
+    /// Removes transactions that were confirmed in a block and leaves their children in place.
+    pub fn update_on_block(&mut self, block: BlockData) {
         for tx in block.transactions {
-            let tx_hash = tx.data.hash();
-            self.remove_transaction(tx_hash).await?;
+            self.remove_stored_transaction(&tx.data.hash());
         }
-        Ok(())
     }
 
-    /// Removes expired transactions from the mempool.
-    ///
-    /// Checks each stored transaction's timestamp and removes it (and its descendants)
-    /// if its age exceeds the configured expiry time.
-    pub async fn cleanup_expired(&mut self) -> Result<(), MemPoolError> {
+    /// Removes transactions older than `config.expiry_time`.
+    pub fn cleanup_expired(&mut self) {
         let now = current_timestamp();
         let expired: Vec<TransactionHash> = self
             .storage
@@ -294,145 +203,136 @@ impl MemPool {
             .collect();
 
         for tx_hash in expired {
-            self.remove_transaction(tx_hash).await?;
+            self.remove_transaction(tx_hash);
         }
-
-        Ok(())
     }
 
-    /// Retrieves up to `limit` best transactions for block inclusion.
+    /// Returns up to `limit` transactions in a valid inclusion order.
     ///
-    /// Uses a sophisticated selection algorithm that balances between:
-    /// - package fee rate (transaction and its ancestors)
-    /// - individual fee rate
-    /// - dependency constraints
-    ///   Returns transactions in valid inclusion order (parents before children).
-    pub async fn get_best_transactions(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<Transaction>, MemPoolError> {
-        // Get topological ordering of transactions
+    /// Transactions are ranked by the fee rate of the package needed to include them:
+    /// the transaction itself plus any unconfirmed ancestors.
+    pub fn get_best_transactions(&self, limit: usize) -> Vec<Transaction> {
+        if limit == 0 {
+            return Vec::new();
+        }
+
         let order = self.dependency_tracker.topological_order();
+        let positions: HashMap<TransactionHash, usize> = order
+            .iter()
+            .enumerate()
+            .map(|(idx, hash)| (*hash, idx))
+            .collect();
 
-        // Calculate individual fee rates for each transaction
-        let mut individual_scores: HashMap<NodeIndex, f64> = HashMap::new();
-        for &node_idx in &order {
-            if let Some(tx_hash) = self.dependency_tracker.get_tx_by_node(node_idx)
-                && let Some(mem_tx) = self.storage.get(&tx_hash)
-            {
-                let fee_rate = if mem_tx.serialized_size > 0 {
-                    mem_tx.fee as f64 / mem_tx.serialized_size as f64
-                } else {
-                    0.0
-                };
-                individual_scores.insert(node_idx, fee_rate);
-            }
-        }
+        let mut ranked: Vec<(TransactionHash, f64)> = order
+            .iter()
+            .map(|hash| (*hash, self.package_fee_rate(*hash)))
+            .collect();
 
-        // Calculate ancestor package scores
-        let ancestor_scores =
-            build_ancestor_scores(&order, &self.storage, &self.dependency_tracker);
+        ranked.sort_by(|(left_hash, left_rate), (right_hash, right_rate)| {
+            right_rate
+                .partial_cmp(left_rate)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| {
+                    let left_pos = positions.get(left_hash).copied().unwrap_or(usize::MAX);
+                    let right_pos = positions.get(right_hash).copied().unwrap_or(usize::MAX);
+                    left_pos.cmp(&right_pos)
+                })
+        });
 
-        // Create combined score using weighted approach
-        let mut combined_scores: Vec<(NodeIndex, f64)> = Vec::new();
-        for (node_idx, package_score) in ancestor_scores {
-            let individual_score = individual_scores.get(&node_idx).copied().unwrap_or(0.0);
-
-            // Weighted combination (can be tuned based on blockchain economics)
-            // Higher weight on package score ensures dependencies are preserved
-            let combined_score = (package_score * 0.7) + (individual_score * 0.3);
-
-            combined_scores.push((node_idx, combined_score));
-        }
-
-        // Sort by combined score
-        combined_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Select transactions with knapsack-like approach
+        let mut selected = HashSet::new();
         let mut result = Vec::new();
-        let mut used_nodes = HashSet::new();
-        let mut remaining_space = limit;
 
-        for (node_idx, _) in combined_scores {
-            // Skip if already included or no space left
-            if used_nodes.contains(&node_idx) || remaining_space == 0 {
+        for (tx_hash, _) in ranked {
+            if selected.contains(&tx_hash) {
                 continue;
             }
 
-            if let Some(tx_hash) = self.dependency_tracker.get_tx_by_node(node_idx)
-                && self.storage.get(&tx_hash).is_some()
-            {
-                // Get all required ancestors in topological order
-                let ancestors = self.dependency_tracker.gather_ancestors(node_idx);
+            let package: Vec<TransactionHash> = self
+                .dependency_tracker
+                .get_with_ancestors(&tx_hash)
+                .into_iter()
+                .filter(|hash| !selected.contains(hash))
+                .collect();
 
-                // Count new transactions (not already selected)
-                let new_txs: Vec<NodeIndex> = ancestors
-                    .into_iter()
-                    .filter(|&anc| !used_nodes.contains(&anc))
-                    .collect();
+            if package.len() > limit.saturating_sub(result.len()) {
+                continue;
+            }
 
-                // Check if all ancestors fit in remaining space
-                if new_txs.len() <= remaining_space {
-                    for anc in new_txs {
-                        if used_nodes.insert(anc)
-                            && let Some(anc_tx_hash) = self.dependency_tracker.get_tx_by_node(anc)
-                            && let Some(anc_tx) = self.storage.get(&anc_tx_hash)
-                        {
-                            result.push(anc_tx.transaction.clone());
-                            remaining_space -= 1;
-                        }
-                    }
+            for hash in package {
+                if selected.insert(hash)
+                    && let Some(entry) = self.storage.get(&hash)
+                {
+                    result.push(entry.transaction.clone());
                 }
+            }
+
+            if result.len() == limit {
+                break;
             }
         }
 
-        Ok(result)
+        result
     }
 
-    /// Returns the current number of transactions in the mempool.
     pub fn transaction_count(&self) -> usize {
         self.storage.len()
     }
+
+    fn actual_fee(&self, tx: &Transaction, utxos: &[UTXO]) -> u64 {
+        let explicit_fee = self.fee_calculator.calculate_fee(tx);
+        let input_sum = utxos.iter().map(|utxo| utxo.value).sum::<u64>();
+        let output_sum = tx.data.outputs.iter().map(|out| out.value).sum::<u64>();
+        let implicit_fee = input_sum.saturating_sub(output_sum);
+        explicit_fee.max(implicit_fee)
+    }
+
+    fn package_fee_rate(&self, tx_hash: TransactionHash) -> f64 {
+        let mut total_fee = 0u64;
+        let mut total_size = 0usize;
+
+        for hash in self.dependency_tracker.get_with_ancestors(&tx_hash) {
+            if let Some(entry) = self.storage.get(&hash) {
+                total_fee = total_fee.saturating_add(entry.fee);
+                total_size = total_size.saturating_add(entry.serialized_size);
+            }
+        }
+
+        if total_size == 0 {
+            0.0
+        } else {
+            total_fee as f64 / total_size as f64
+        }
+    }
+
+    fn parent_hashes(&self, tx: &Transaction) -> Vec<TransactionHash> {
+        tx.data
+            .inputs
+            .iter()
+            .filter_map(|input| {
+                self.storage
+                    .get_creating_tx(&input.previous_output)
+                    .copied()
+            })
+            .collect()
+    }
+
+    fn first_conflicting_outpoint(&self, tx: &Transaction) -> Option<OutPoint> {
+        tx.data.inputs.iter().find_map(|input| {
+            self.storage
+                .get_spending_tx(&input.previous_output)
+                .map(|_| input.previous_output)
+        })
+    }
+
+    fn remove_stored_transaction(&mut self, tx_hash: &TransactionHash) {
+        self.storage.remove(tx_hash);
+        self.dependency_tracker.remove_transaction(tx_hash);
+    }
 }
 
-/// Helper function to get current Unix timestamp
 fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
         .as_secs()
-}
-
-/// Computes ancestor fee scores for each node in the dependency graph.
-/// For each node, sums fees and serialized sizes for itself and all its ancestors,
-/// then computes a fee rate as total_fee/total_size.
-fn build_ancestor_scores(
-    order: &[NodeIndex],
-    storage: &TransactionStorage,
-    tracker: &DependencyTracker,
-) -> Vec<(NodeIndex, f64)> {
-    let mut scores = Vec::new();
-    for &node in order {
-        let ancestors = tracker.gather_ancestors(node);
-        let mut total_fee = 0u64;
-        let mut total_size = 0usize;
-
-        for anc in ancestors {
-            if let Some(tx_hash) = tracker.get_tx_by_node(anc)
-                && let Some(mem_tx) = storage.get(&tx_hash)
-            {
-                total_fee = total_fee.saturating_add(mem_tx.fee);
-                // Use cached size instead of recalculating
-                total_size = total_size.saturating_add(mem_tx.serialized_size);
-            }
-        }
-
-        let score = if total_size == 0 {
-            0.0
-        } else {
-            total_fee as f64 / total_size as f64
-        };
-        scores.push((node, score));
-    }
-    scores
 }

@@ -22,6 +22,8 @@ pub enum BadTxReason {
     RecoverPublicKey,
     #[error("invalid_signature")]
     InvalidSignature,
+    #[error("invalid_transaction")]
+    InvalidTransaction,
     #[error("duplicate_transaction")]
     DuplicateTx,
     #[error("double_spend")]

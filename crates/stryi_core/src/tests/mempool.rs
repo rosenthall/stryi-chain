@@ -88,8 +88,7 @@ async fn test_remove_transaction_cascades_to_dependents() {
 
     assert_eq!(pool.transaction_count(), 3);
 
-    // removing tx1 should cascade and remove tx2 and tx3
-    pool.remove_transaction(tx1_hash).await.unwrap();
+    pool.remove_transaction(tx1_hash);
     assert_eq!(pool.transaction_count(), 0);
 }
 
@@ -129,10 +128,9 @@ async fn test_get_best_transactions_respects_dependency_order() {
     let tx3_hash = tx3.data.hash();
     pool.add_transaction(tx3).await.unwrap();
 
-    let best = pool.get_best_transactions(10).await.unwrap();
+    let best = pool.get_best_transactions(10);
     assert_eq!(best.len(), 3);
 
-    // find positions: tx1 must come before tx2, tx2 before tx3
     let pos1 = best.iter().position(|t| t.data.hash() == tx1_hash).unwrap();
     let pos2 = best.iter().position(|t| t.data.hash() == tx2_hash).unwrap();
     let pos3 = best.iter().position(|t| t.data.hash() == tx3_hash).unwrap();
@@ -153,12 +151,46 @@ async fn test_update_on_block_removes_confirmed_transactions() {
     pool.add_transaction(tx.clone()).await.unwrap();
     assert_eq!(pool.transaction_count(), 1);
 
-    // simulate block confirmation containing that tx
     let block_data = BlockData {
         transactions: vec![tx],
     };
-    pool.update_on_block(block_data).await.unwrap();
+    pool.update_on_block(block_data);
     assert_eq!(pool.transaction_count(), 0);
+}
+
+#[tokio::test]
+async fn test_update_on_block_keeps_mempool_children() {
+    let (alice_key, alice_addr) = keypair_from_seed(1);
+    let (_, bob_addr) = keypair_from_seed(2);
+    let (op, utxo, _) = alice_funded(100_000);
+
+    let mut pool = setup_mempool(vec![(op, utxo)]);
+
+    let parent = make_payment_tx(&alice_key, vec![op], vec![(90_000, bob_addr)]);
+    let parent_hash = parent.data.hash();
+    pool.add_transaction(parent.clone()).await.unwrap();
+
+    let (bob_key, _) = keypair_from_seed(2);
+    let child = make_payment_tx(
+        &bob_key,
+        vec![OutPoint {
+            txid: parent_hash,
+            vout: 0,
+        }],
+        vec![(80_000, alice_addr)],
+    );
+    let child_hash = child.data.hash();
+    pool.add_transaction(child).await.unwrap();
+
+    pool.update_on_block(BlockData {
+        transactions: vec![parent],
+    });
+
+    assert_eq!(pool.transaction_count(), 1);
+
+    let best = pool.get_best_transactions(10);
+    assert_eq!(best.len(), 1);
+    assert_eq!(best[0].data.hash(), child_hash);
 }
 
 #[tokio::test]
@@ -181,7 +213,7 @@ async fn test_rbf_replaces_transaction_with_higher_fee() {
     // tx2 should have replaced tx1
     assert_eq!(pool.transaction_count(), 1);
 
-    let best = pool.get_best_transactions(10).await.unwrap();
+    let best = pool.get_best_transactions(10);
     assert_eq!(best.len(), 1);
     assert_eq!(best[0].data.hash(), tx2.data.hash());
 }

@@ -109,7 +109,7 @@ impl StryiNetworkManager {
                                         MempoolResponse::State(sync_data) => {
                                             debug!(
                                                 "Received mempool sync data with {} transactions",
-                                                sync_data.transactions.len()
+                                                sync_data.entries.len()
                                             );
                                             let _ = sender.send(Ok(sync_data));
                                         }
@@ -483,14 +483,7 @@ impl StryiNetworkManager {
 
         match request {
             MempoolRequest::GetState => {
-                // Ask the mempool for its sync snapshot.
-                let state = self
-                    .mempool
-                    .read()
-                    .await
-                    .get_sync_state()
-                    .await
-                    .map_err(StryiNetworkError::MempoolError)?;
+                let state = self.mempool.read().await.get_sync_state();
 
                 let response = MempoolResponse::State(state);
 

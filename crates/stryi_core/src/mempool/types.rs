@@ -2,25 +2,33 @@ use crate::mempool::{FeePolicy, RbfPolicy};
 use crate::transactions::Transaction;
 use serde::{Deserialize, Serialize};
 
-/// Serializable mempool state for network synchronization
+/// Serialized mempool state used for sync and restore.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MemPoolSyncData {
-    /// List of all transactions in mempool
-    pub transactions: Vec<Transaction>,
-    /// Timestamp when state was created
+    /// Transactions and metadata captured from the mempool.
+    pub entries: Vec<MemPoolSyncEntry>,
+    /// Timestamp when the snapshot was created.
     pub timestamp: u64,
 }
 
-/// Configuration for mempool behavior and limits
+/// Serialized form of one mempool entry.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MemPoolSyncEntry {
+    pub transaction: Transaction,
+    pub fee: u64,
+    pub timestamp: u64,
+}
+
+/// Configuration for mempool limits and policies.
 #[derive(Clone, Debug)]
 pub struct MemPoolConfig {
-    /// Maximum number of transactions in pool
+    /// Maximum number of transactions in the pool.
     pub max_size: usize,
-    /// Fee calculation policy
+    /// Fee calculation policy.
     pub fee_policy: FeePolicy,
-    /// Replace-by-Fee policy
+    /// Replace-by-Fee policy.
     pub rbf_policy: RbfPolicy,
-    /// Time in seconds after which transaction is considered expired
+    /// Maximum age for `cleanup_expired`.
     pub expiry_time: u64,
 }
 
@@ -36,7 +44,7 @@ impl Default for MemPoolConfig {
 }
 
 impl MemPoolConfig {
-    /// Creates new mempool configuration with custom parameters
+    /// Creates a mempool configuration with custom parameters.
     pub fn new(
         max_size: usize,
         fee_policy: FeePolicy,
@@ -52,15 +60,11 @@ impl MemPoolConfig {
     }
 }
 
-/// `Transaction` wrapper with mempool-specific metadata
+/// Transaction plus mempool metadata.
 #[derive(Debug)]
 pub struct MemPoolTx {
-    /// The actual transaction
     pub(crate) transaction: Transaction,
-    /// Unix timestamp when transaction was added
     pub(crate) timestamp: u64,
-    /// Calculated fee based on inputs/outputs
     pub(crate) fee: u64,
-    /// Cached serialized size in bytes
     pub(crate) serialized_size: usize,
 }
