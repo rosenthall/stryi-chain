@@ -74,16 +74,20 @@ impl Default for StryiNetworkManagerConfig {
 }
 
 /// Commands that can be sent to the network service.
-// TODO: Major refactor is needed for NetworkCommand, all the commands should be have tokio::sync::oneshot channel to answer with result
+/// Every variant carries a `respond_to` oneshot so the caller can observe the outcome.
 #[derive(Debug)]
 pub enum NetworkCommand {
-    // /// Dial a remote peer using the provided multiaddr.
-    // Dial { address: String },
-    /// Publish a new block to the network.
-    PublishBlock(BroadcastBlock),
+    /// Publish a new block to the network via gossipsub.
+    PublishBlock {
+        block: BroadcastBlock,
+        respond_to: tokio::sync::oneshot::Sender<Result<(), StryiNetworkError>>,
+    },
 
-    /// Publish a new transaction to the network.
-    PublishTransaction(Transaction),
+    /// Publish a new transaction to the network via gossipsub.
+    PublishTransaction {
+        transaction: Transaction,
+        respond_to: tokio::sync::oneshot::Sender<Result<(), StryiNetworkError>>,
+    },
 
     /// Get the current network status, including connected peers and their addresses.
     /// This returns only service-records that were signed and already validated.
@@ -113,7 +117,10 @@ pub enum NetworkCommand {
     },
 
     /// Publish a chain tip announcement to the network via gossipsub.
-    PublishChainTip(ChainTipAnnouncement),
+    PublishChainTip {
+        announcement: ChainTipAnnouncement,
+        respond_to: tokio::sync::oneshot::Sender<Result<(), StryiNetworkError>>,
+    },
 
     /// Re-query a specific peer's services via the existing ListServices protocol.
     /// The response is cached automatically by the existing response handler.

@@ -64,12 +64,20 @@ impl TxBroadcaster {
     }
 
     pub async fn publish_tx(&self, tx: Transaction) {
+        let (respond_to, rx) = tokio::sync::oneshot::channel();
         if let Err(e) = self
             .net_cmd
-            .send(NetworkCommand::PublishTransaction(tx))
+            .send(NetworkCommand::PublishTransaction {
+                transaction: tx,
+                respond_to,
+            })
             .await
         {
-            tracing::warn!("Failed to broadcast transaction to network: {e}");
+            tracing::warn!("Failed to send publish-tx command to network: {e}");
+            return;
+        }
+        if let Ok(Err(e)) = rx.await {
+            tracing::warn!("Network failed to publish transaction: {e}");
         }
     }
 }

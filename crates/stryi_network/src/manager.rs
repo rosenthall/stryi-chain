@@ -379,51 +379,66 @@ impl StryiNetworkManager {
                         }
 
                         // -- PublishBlock command --
-                        Some(NetworkCommand::PublishBlock(broadcast_block)) => {
+                        Some(NetworkCommand::PublishBlock { block: broadcast_block, respond_to }) => {
                             debug!("NetworkManager: Got PublishBlock command.");
-                            match bincode::serde::encode_to_vec(&broadcast_block, standard()) {
+                            let result = match bincode::serde::encode_to_vec(&broadcast_block, standard()) {
                                 Ok(encoded) => {
                                     let topic = IdentTopic::new(BLOCKS_TOPIC_NAME);
                                     if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
                                         warn!("Failed to publish block to gossipsub: {e:?}");
+                                        Err(StryiNetworkError::other(format!("gossipsub publish: {e:?}")))
+                                    } else {
+                                        Ok(())
                                     }
                                 }
                                 Err(e) => {
                                     error!("Failed to encode block for gossipsub: {e:?}");
+                                    Err(StryiNetworkError::other(format!("encode block: {e:?}")))
                                 }
-                            }
+                            };
+                            let _ = respond_to.send(result);
                         }
 
                         // -- PublishTransaction command --
-                        Some(NetworkCommand::PublishTransaction(tx)) => {
+                        Some(NetworkCommand::PublishTransaction { transaction: tx, respond_to }) => {
                             debug!("NetworkManager: Got PublishTransaction command.");
-                            match bincode::serde::encode_to_vec(&tx, standard()) {
+                            let result = match bincode::serde::encode_to_vec(&tx, standard()) {
                                 Ok(encoded) => {
                                     let topic = IdentTopic::new(TRANSACTIONS_TOPIC_NAME);
                                     if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
                                         warn!("Failed to publish transaction to gossipsub: {e:?}");
+                                        Err(StryiNetworkError::other(format!("gossipsub publish: {e:?}")))
+                                    } else {
+                                        Ok(())
                                     }
                                 }
                                 Err(e) => {
                                     error!("Failed to encode transaction for gossipsub: {e:?}");
+                                    Err(StryiNetworkError::other(format!("encode transaction: {e:?}")))
                                 }
-                            }
+                            };
+                            let _ = respond_to.send(result);
                         }
 
                         // -- PublishChainTip command --
-                        Some(NetworkCommand::PublishChainTip(announcement)) => {
+                        Some(NetworkCommand::PublishChainTip { announcement, respond_to }) => {
                             debug!("NetworkManager: Got PublishChainTip command.");
-                            match bincode::serde::encode_to_vec(&announcement, standard()) {
+                            let result = match bincode::serde::encode_to_vec(&announcement, standard()) {
                                 Ok(encoded) => {
                                     let topic = IdentTopic::new(TIPS_TOPIC_NAME);
                                     if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
                                         warn!("Failed to publish chain tip to gossipsub: {e:?}");
+                                        Err(StryiNetworkError::other(format!("gossipsub publish: {e:?}")))
+                                    } else {
+                                        Ok(())
                                     }
                                 }
                                 Err(e) => {
                                     error!("Failed to encode chain tip for gossipsub: {e:?}");
+                                    Err(StryiNetworkError::other(format!("encode chain tip: {e:?}")))
                                 }
-                            }
+                            };
+                            let _ = respond_to.send(result);
                         }
 
                         // -- FetchMempoolState command --

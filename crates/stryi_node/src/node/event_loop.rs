@@ -21,6 +21,7 @@ use stryi_network::{
     BroadcastBlock, ChainTipAnnouncement, NetworkCommand, NetworkEvent, PeerId, ServiceRecord,
     StryiNetworkError,
 };
+use tokio::sync::oneshot;
 use stryi_storage::StryiStorage;
 use tokio::join;
 use tokio::sync::broadcast::Sender;
@@ -201,7 +202,11 @@ impl EventLoop {
                     ann.height, ann.cumulative_work
                 );
                 let hash = ann.tip_hash;
-                let _ = net_cmd.send(NetworkCommand::PublishChainTip(ann)).await;
+                let (respond_to, rx) = oneshot::channel();
+                let _ = net_cmd.send(NetworkCommand::PublishChainTip { announcement: ann, respond_to }).await;
+                if let Ok(Err(e)) = rx.await {
+                    warn!("Failed to publish initial chain tip: {e}");
+                }
                 Some(hash)
             } else {
                 None
@@ -230,7 +235,11 @@ impl EventLoop {
                         {
                             trace!("Tip heartbeat: height={}, work={}", ann.height, ann.cumulative_work);
                             last_announced_tip = Some(ann.tip_hash);
-                            let _ = net_cmd.send(NetworkCommand::PublishChainTip(ann)).await;
+                            let (respond_to, rx) = oneshot::channel();
+                            let _ = net_cmd.send(NetworkCommand::PublishChainTip { announcement: ann, respond_to }).await;
+                            if let Ok(Err(e)) = rx.await {
+                                warn!("Failed to publish chain tip heartbeat: {e}");
+                            }
                         }
                     }
 
@@ -283,13 +292,20 @@ impl EventLoop {
 
                                     // wrap it to BroadCastBlock
                                     let wrapped = BroadcastBlock::new(mined_block, miner_address.expect("Miner's address has to be set"), first_seen);
-                                    let _ = net_cmd.send(NetworkCommand::PublishBlock(wrapped)).await;
-
+                                    let (respond_to, rx) = oneshot::channel();
+                                    let _ = net_cmd.send(NetworkCommand::PublishBlock { block: wrapped, respond_to }).await;
+                                    if let Ok(Err(e)) = rx.await {
+                                        warn!("Failed to publish mined block: {e}");
+                                    }
 
                                     if let Some(ann) = tip_ann {
                                         info!("Reorg: announcing new tip height={}, work={}", ann.height, ann.cumulative_work);
                                         last_announced_tip = Some(ann.tip_hash);
-                                        let _ = net_cmd.send(NetworkCommand::PublishChainTip(ann)).await;
+                                        let (respond_to, rx) = oneshot::channel();
+                                        let _ = net_cmd.send(NetworkCommand::PublishChainTip { announcement: ann, respond_to }).await;
+                                        if let Ok(Err(e)) = rx.await {
+                                            warn!("Failed to publish reorg chain tip: {e}");
+                                        }
                                     }
 
 
@@ -354,7 +370,11 @@ impl EventLoop {
                                             if let Some(ann) = tip_ann {
                                                 info!("Reorg: announcing new tip height={}, work={}", ann.height, ann.cumulative_work);
                                                 last_announced_tip = Some(ann.tip_hash);
-                                                let _ = net_cmd.send(NetworkCommand::PublishChainTip(ann)).await;
+                                                let (respond_to, rx) = oneshot::channel();
+                                                let _ = net_cmd.send(NetworkCommand::PublishChainTip { announcement: ann, respond_to }).await;
+                                                if let Ok(Err(e)) = rx.await {
+                                                    warn!("Failed to publish reorg chain tip: {e}");
+                                                }
                                             }
                                         } else {
                                             drop(engine);
@@ -370,7 +390,11 @@ impl EventLoop {
                                                 orig_miner_address,
                                                 orig_first_seen,
                                             );
-                                            let _ = net_cmd.send(NetworkCommand::PublishBlock(wrapped)).await;
+                                            let (respond_to, rx) = oneshot::channel();
+                                            let _ = net_cmd.send(NetworkCommand::PublishBlock { block: wrapped, respond_to }).await;
+                                            if let Ok(Err(e)) = rx.await {
+                                                warn!("Failed to re-broadcast block: {e}");
+                                            }
                                         }
                                     }
                                     Err(e) => warn!("Block rejected by consensus: {:?}", e),
@@ -542,11 +566,11 @@ async fn sync_from_peer(
                         err,
                         SYNC_PEER_CONNECT_RETRY_DELAY
                     );
-                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    let (respond_to, rx) = oneshot::channel();
                     let _ = net_cmd
                         .send(NetworkCommand::RefreshPeerServices {
                             peer: source_peer,
-                            respond_to: tx,
+                            respond_to,
                         })
                         .await;
                     let _ = rx.await;
