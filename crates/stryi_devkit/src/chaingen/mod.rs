@@ -46,7 +46,6 @@ use tracing::{debug, error, info, warn};
 
 /// Generator for synthetic blockchain data.
 /// Builds and persists a chain of blocks according to the provided configuration.
-// TODO: Make ChainGenerator use ConsensusConsts from genesis.
 pub struct ChainGenerator {
     /// Config for this run.
     config: ChainGenConfig,
@@ -69,9 +68,6 @@ pub struct ChainGenerator {
 }
 
 impl ChainGenerator {
-    /// Deterministic, sequential generation: build and persist N blocks after the latest block.
-    /// Uses the preferred way of persistence, direct insert or consensus engine, as per config.
-    /// Initializes SeedSchedule and reseeds exactly at switch heights.
     pub async fn start(mut self) -> Result<(), String> {
         info!("Starting chain generation and persistence...");
 
@@ -199,7 +195,6 @@ impl ChainGenerator {
             "|->  persisted Distributor Block (seed {}) on height {}, it created {} outputs",
             current_seed, distributor_height, dist_utxo_count
         );
-        /* TODO: inserting undo here if flag passed */
 
         // acc for tx count; include distributor transactions if you want to count them
         let mut tx_count = distributor.data.transactions.len();
@@ -293,7 +288,7 @@ impl ChainGenerator {
             tx_count += block.data.transactions.len();
 
             let blocks_done = height - normal_blocks + 1;
-            let avg_tx_count = blocks_done as f64 / tx_count as f64;
+            let avg_tx_count = tx_count as f64 / blocks_done as f64;
 
             // insert undo if needed
             // note: if config is set to PersistenceMode::ConsensusEngine, this will be done by consensus engine automatically.
@@ -337,8 +332,6 @@ impl ChainGenerator {
                 total_to_generate, tx_count
             );
         }
-
-        // TODO: Finalize chaingen run: e.g., write summary file with some stats, etc.
 
         Ok(())
     }

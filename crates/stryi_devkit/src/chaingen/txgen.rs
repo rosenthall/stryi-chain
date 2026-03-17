@@ -10,7 +10,7 @@ use stryi_core::transactions::{
 };
 use tracing::{debug, info};
 
-/// Transaction generation parameters that affect UTXO complexity
+/// Transaction generation parameters that affect UTXO forms and complexity
 #[derive(Clone, Debug)]
 pub struct TransactionGenerationParams {
     /// Minimum viable output value
@@ -244,16 +244,17 @@ pub fn generate_simple_tx(
             "UTXO value {} not enough to cover fee {}",
             utxo_to_spend.value, fee
         );
+        return None;
     }
 
     // Calculate output value (entire UTXO minus fee)
     let output_value = utxo_to_spend.value - fee;
+    let min_viable = min_viable_output(params);
 
-    // Ensure output meets minimum value requirement
-    if output_value < params.min_output_value {
+    if output_value < min_viable {
         debug!(
-            "Output value too small: {} < {}",
-            output_value, params.min_output_value
+            "Output value not economically viable: {} < {}",
+            output_value, min_viable
         );
         return None;
     }
@@ -355,9 +356,13 @@ fn generate_splitting_tx(
 
     // Limit splitting to reasonable range (2-4 outputs) to avoid UTXO explosion
     let max_split_outputs = 4.min(params.max_outputs).min(receiver_pool.len());
+    if max_split_outputs < 2 {
+        debug!("Need at least 2 receivers for splitting transaction");
+        return None;
+    }
 
     // Calculate maximum possible outputs based on available value
-    let mut max_possible_outputs = 2;
+    let mut max_possible_outputs = 0;
     for num_outputs in 2..=max_split_outputs {
         let fee = params.fee_policy.estimate_fee(1, num_outputs);
         if utxo_to_spend.value <= fee {
@@ -434,8 +439,11 @@ fn generate_splitting_tx(
             // Ensure we have enough remaining value
             let available_for_this = remaining.saturating_sub(reserved_for_remaining);
             if available_for_this < min_viable {
-                // Not enough left, give minimum viable
-                min_viable
+                debug!(
+                    "Cannot split UTXO {} into {} viable outputs after fee {}",
+                    utxo_to_spend.value, num_outputs, fee
+                );
+                return None;
             } else {
                 let fair_share = remaining / (num_outputs - i) as u64;
                 let max_val = fair_share.min(available_for_this);
@@ -452,6 +460,15 @@ fn generate_splitting_tx(
             recipient: *receiver,
         });
         remaining = remaining.saturating_sub(output_value);
+    }
+
+    let output_sum: u64 = outputs.iter().map(|output| output.value).sum();
+    if output_sum != available_for_outputs {
+        debug!(
+            "Split tx output sum {} does not match available value {}",
+            output_sum, available_for_outputs
+        );
+        return None;
     }
 
     debug!(
@@ -491,9 +508,13 @@ fn generate_complex_tx(
 
     // Limit complex outputs to reasonable range (2-5) to avoid UTXO explosion
     let max_complex_outputs = 5.min(params.max_outputs).min(receiver_pool.len());
+    if max_complex_outputs < 2 {
+        debug!("Need at least 2 receivers for complex transaction");
+        return None;
+    }
 
     // Calculate maximum possible outputs based on available value
-    let mut max_possible_outputs = 2;
+    let mut max_possible_outputs = 0;
     for num_outputs in 2..=max_complex_outputs {
         let fee = params.fee_policy.estimate_fee(num_inputs, num_outputs);
         if total_input <= fee {
@@ -534,7 +555,20 @@ fn generate_complex_tx(
         num_inputs, total_input, num_outputs, fee
     );
 
+    if total_input <= fee {
+        debug!("Complex tx inputs {} do not cover fee {}", total_input, fee);
+        return None;
+    }
+
     let available_for_outputs = total_input - fee;
+    let required_minimum = min_viable * num_outputs as u64;
+    if available_for_outputs < required_minimum {
+        debug!(
+            "Available value {} insufficient for {} viable outputs (need {})",
+            available_for_outputs, num_outputs, required_minimum
+        );
+        return None;
+    }
 
     // Select random receivers
     let receivers: Vec<AccountAddress> = receiver_pool
@@ -559,8 +593,11 @@ fn generate_complex_tx(
             let available_for_this = remaining.saturating_sub(reserved_for_remaining);
 
             if available_for_this < min_viable {
-                // Not enough left, give minimum viable
-                min_viable
+                debug!(
+                    "Cannot distribute {} across {} viable outputs after fee {}",
+                    total_input, num_outputs, fee
+                );
+                return None;
             } else {
                 let fair_share = remaining / (num_outputs - i) as u64;
                 let max_val = fair_share.min(available_for_this);
@@ -581,6 +618,15 @@ fn generate_complex_tx(
         remaining = remaining.saturating_sub(output_value);
     }
 
+    let output_sum: u64 = outputs.iter().map(|output| output.value).sum();
+    if output_sum != available_for_outputs {
+        debug!(
+            "Complex tx output sum {} does not match available value {}",
+            output_sum, available_for_outputs
+        );
+        return None;
+    }
+
     let tx_data = TransactionData {
         version: 0,
         kind: TransactionKind::Payment,
@@ -589,4 +635,95 @@ fn generate_complex_tx(
     };
 
     Some((tx_data, outputs))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand_chacha::ChaCha8Rng;
+    use rand_chacha::rand_core::SeedableRng;
+    use stryi_core::address::AccountAddress;
+    use stryi_core::transactions::{OutPoint, TransactionHash};
+
+    fn address(input: &str) -> AccountAddress {
+        AccountAddress::from_hash_string(input).expect("valid test address")
+    }
+
+    fn single_receiver() -> [AccountAddress; 1] {
+        [address("@2fdf51216b8d12feb0ecd4299446465cd8c013a5")]
+    }
+
+    fn receiver_pair() -> [AccountAddress; 2] {
+        [
+            address("@2fdf51216b8d12feb0ecd4299446465cd8c013a5"),
+            address("@ee4a3a385d2bc7c46bc0925a5b3052f70e5f7b87"),
+        ]
+    }
+
+    fn rng(seed: u64) -> ChaCha8Rng {
+        ChaCha8Rng::seed_from_u64(seed)
+    }
+
+    fn utxo(value: u64) -> UtxoInfo {
+        utxo_at(value, 0)
+    }
+
+    fn utxo_at(value: u64, vout: u32) -> UtxoInfo {
+        UtxoInfo {
+            outpoint: OutPoint {
+                txid: TransactionHash::new(b"chaingen-test-utxo"),
+                vout,
+            },
+            value,
+            height_created: 1,
+            is_coinbase: false,
+        }
+    }
+
+    #[test]
+    fn simple_tx_rejects_unspendable_inputs() {
+        let params = TransactionGenerationParams::default();
+        let fee = params.fee_policy.estimate_fee(1, 1);
+        let min_viable = min_viable_output(&params);
+        let receivers = single_receiver();
+
+        let cases = [fee, fee + min_viable - 1];
+
+        for (seed, value) in [(42, cases[0]), (7, cases[1])] {
+            let mut rng = rng(seed);
+            let tx = generate_simple_tx(utxo(value), &receivers, &mut rng, &params);
+            assert!(
+                tx.is_none(),
+                "expected simple tx to reject utxo value {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn splitting_tx_rejects_utxo_that_cannot_fund_two_viable_outputs() {
+        let params = TransactionGenerationParams::default();
+        let min_viable = min_viable_output(&params);
+        let fee = params.fee_policy.estimate_fee(1, 2);
+        let utxo_value = fee + (min_viable * 2) - 1;
+        let mut rng = rng(99);
+
+        let tx = generate_splitting_tx(utxo(utxo_value), &receiver_pair(), &mut rng, &params);
+
+        assert!(tx.is_none());
+    }
+
+    #[test]
+    fn complex_tx_rejects_inputs_that_cannot_fund_two_viable_outputs() {
+        let params = TransactionGenerationParams::default();
+        let min_viable = min_viable_output(&params);
+        let fee = params.fee_policy.estimate_fee(2, 2);
+        let total_input = fee + (min_viable * 2) - 1;
+        let first_input = total_input / 2;
+        let second_input = total_input - first_input;
+        let utxos = vec![utxo_at(first_input, 0), utxo_at(second_input, 1)];
+        let mut rng = rng(1234);
+
+        let tx = generate_complex_tx(utxos, &receiver_pair(), &mut rng, &params);
+
+        assert!(tx.is_none());
+    }
 }

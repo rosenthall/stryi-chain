@@ -140,6 +140,12 @@ impl ChainGenConfig {
                     .to_string(),
             );
         }
+        if self.blocks.min_transactions_per_block < 2 {
+            return Err(
+                "min_transactions_per_block must be >= 2, since the first transaction slot is always reserved for a coinbase.".to_string()
+            );
+        }
+
         if self.blocks.active_addresses_count < Self::MIN_ACTIVE_ADDRESSES {
             return Err(format!(
                 "active_addresses_count must be >= {}",
@@ -184,5 +190,62 @@ impl ChainGenConfig {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn write_test_genesis() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "stryi-chaingen-config-{unique}-{}.json",
+            std::process::id()
+        ));
+        fs::write(&path, "{}").expect("write test genesis");
+        path
+    }
+
+    fn valid_config(genesis_path: PathBuf) -> ChainGenConfig {
+        ChainGenConfig {
+            chain: ChainSettings {
+                num_blocks: 10,
+                seed: SeedValue::Single(42),
+                output_path: std::env::temp_dir(),
+                genesis_path,
+                persistence_mode: PersistenceMode::ConsensusEngine,
+            },
+            blocks: BlocksSettings {
+                funding_key: PrivateKey::try_from(
+                    "4d3720932c12ff71d29bcb9f56bfc620f131b7a97483248ecd199a22f4c6a416".to_string(),
+                )
+                .expect("valid private key"),
+                average_block_time_secs: 10,
+                miner_address: "@2fdf51216b8d12feb0ecd4299446465cd8c013a5".to_string(),
+                min_transactions_per_block: 2,
+                max_transactions_per_block: 6,
+                active_addresses_count: 10,
+                need_undo: false,
+            },
+        }
+    }
+
+    #[test]
+    fn validate_rejects_min_transactions_below_two() {
+        let genesis_path = write_test_genesis();
+        let mut config = valid_config(genesis_path.clone());
+        config.blocks.min_transactions_per_block = 1;
+
+        let err = config.validate().expect_err("config must be rejected");
+
+        assert!(err.contains("min_transactions_per_block must be >= 2"));
+
+        let _ = fs::remove_file(genesis_path);
     }
 }

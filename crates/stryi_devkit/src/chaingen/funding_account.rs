@@ -38,7 +38,10 @@ impl FundAccount {
             funder_address
         );
 
-        let utxos = storage.get_utxos_for_address(funder_address).await.unwrap();
+        let utxos = storage
+            .get_utxos_for_address(funder_address)
+            .await
+            .map_err(|e| format!("failed to load funder UTXOs from storage: {e}"))?;
         let utxos = IndexMap::from_iter(utxos);
         debug!("All the available utxos of funder account : {:#?}", utxos);
 

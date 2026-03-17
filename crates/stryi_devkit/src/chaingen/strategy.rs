@@ -99,14 +99,12 @@ impl TxGenerationStrategy {
         // If we've failed multiple times on this tx, simplify the pattern
         // Use increasingly aggressive simplification as failures accumulate
         if failure_rate >= 0.5 {
-            // After 50% of attempts do almost always Simple (90%)
-            if available_utxos >= 2 && rng.random_bool(0.1) {
+            if available_utxos >= 2 {
                 return TransactionPattern::Consolidation;
             }
             return TransactionPattern::Simple;
         } else if failure_rate >= 0.3 {
-            // After 30% of attempts do mostly Simple (70%)
-            if available_utxos >= 2 && rng.random_bool(0.3) {
+            if available_utxos >= 2 && rng.random_bool(0.8) {
                 return TransactionPattern::Consolidation;
             }
             return TransactionPattern::Simple;
@@ -309,20 +307,12 @@ impl TxGenerationStrategy {
                 // Calculate economically optimal consolidation size
                 let max_reasonable_inputs = params.max_inputs.min(available_utxos);
 
-                // In early phase, consolidate fewer UTXOs (preserve diversity)
-                // In late phase, consolidate more aggressively (cleanup)
                 let count = if progress < 0.3 {
-                    // Early: 2-4 UTXOs
-                    let max_early = 4.min(max_reasonable_inputs);
-                    rng.random_range(2..=max_early)
+                    max_reasonable_inputs.clamp(3, 6)
                 } else if progress < 0.7 {
-                    // Mid: 2 to max_inputs/2
-                    let mid_max = (max_reasonable_inputs / 2).max(2);
-                    rng.random_range(2..=mid_max)
+                    max_reasonable_inputs.clamp(4, 7)
                 } else {
-                    // Late: max_inputs/2 to max_inputs (aggressive cleanup)
-                    let late_min = (max_reasonable_inputs / 2).max(2);
-                    rng.random_range(late_min..=max_reasonable_inputs)
+                    max_reasonable_inputs
                 };
 
                 // Prefer smallest or oldest UTXOs for consolidation
@@ -521,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fallback_to_simple_on_failures() {
+    fn test_fallback_prefers_consolidation_on_failures() {
         let mut strategy = TxGenerationStrategy::new(10);
         let params = TransactionGenerationParams::default();
 
@@ -549,19 +539,19 @@ mod tests {
         // Reset RNG for consistent comparison
         let mut rng = ChaCha8Rng::seed_from_u64(100);
 
-        simple_count = 0;
+        let mut consolidation_count = 0;
         for _ in 0..100 {
             let pattern = strategy.choose_pattern(10, &params, &mut rng);
-            if pattern == TransactionPattern::Simple {
-                simple_count += 1;
+            if pattern == TransactionPattern::Consolidation {
+                consolidation_count += 1;
             }
         }
 
-        // After 30% failures, should strongly favor Simple (expect ~70%)
+        // After 30% failures, should strongly favor consolidation.
         assert!(
-            simple_count >= 60,
-            "After 30% failure rate, should favor Simple pattern (70%+), got {}",
-            simple_count
+            consolidation_count >= 70,
+            "After 30% failure rate, should favor Consolidation pattern, got {}",
+            consolidation_count
         );
 
         // Test 3: Push to 50% failure rate (15 out of 30)
@@ -571,19 +561,19 @@ mod tests {
 
         let mut rng = ChaCha8Rng::seed_from_u64(200);
 
-        simple_count = 0;
+        consolidation_count = 0;
         for _ in 0..100 {
             let pattern = strategy.choose_pattern(10, &params, &mut rng);
-            if pattern == TransactionPattern::Simple {
-                simple_count += 1;
+            if pattern == TransactionPattern::Consolidation {
+                consolidation_count += 1;
             }
         }
 
-        // After 50% failures, should almost always be Simple (expect ~90%)
-        assert!(
-            simple_count >= 85,
-            "After 50% failure rate, should almost always use Simple pattern (90%+), got {}",
-            simple_count
+        // After 50% failures, consolidation should be the deterministic recovery path.
+        assert_eq!(
+            consolidation_count, 100,
+            "After 50% failure rate, should always use Consolidation when possible, got {}",
+            consolidation_count
         );
     }
 }

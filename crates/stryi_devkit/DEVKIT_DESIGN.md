@@ -4,10 +4,10 @@ This subcrate provides CLI tools and utilities for development and testing of St
 It includes:
 
 - chain generation tool
-    - http load generator for node testing
+- http load generator for node testing
 
-Both of tools are provided by single binary `stryi-devkit`.
-So you can run them as:
+Both tools live in the same binary: `stryi-devkit`.
+So you run them as:
 
 ```bash
 stryi-devkit chaingen --help
@@ -16,47 +16,39 @@ stryi-devkit loadgen --help
 
 ##### Note: CLI arguments
 
-    None of the binaries meant to be run with any arguments except for `--config-path <path>` to specify custom config file location. 
-    Why? - because these tools are meant to be used in automated testing, CI/CD pipelines, and benchmarks.
-    So you can create a config file with all the parameters you need and run the tool with that config file.
-    I think it's more convenient than passing a lot of arguments via CLI, and the `overload case` (when you want to use config, but overload some values via CLI/ENV) is not that common as in `stryi-node` binary.
+    These tools are not meant to have a long list of CLI flags.
+    The expected interface is basically just `--config-path <path>`.
+    They are mostly for CI, benchmarks, and repeatable local runs, so a config file is simpler than pushing a lot of knobs through the command line.
 
 ##### Note: Why TOML?
 
     Config files are in TOML format.
-    Why TOML? - Initially I wanted to use YAML (which widely used in many CI/CD systems and configurations), but the Rust ecosystem for YAML is not that great as for TOML.
+    I considered YAML because it is common in CI configs, but TOML ended up being a better fit here.
+    The Rust tooling around it is simpler and generally nicer to work with.
 
 ## Chain Generation Tool
 
 ### Overview
 
-The chain generation tool is a command-line application that allows users to generate a deterministic blockchain history
-for testing purposes.
+The chain generation tool is a command-line application that generates deterministic blockchain history for testing.
 It helps test first-time node startup and Initial Block Download (IBD) performance, different consensus rules, and other
-scenarios such as :
+scenarios such as:
 
 - "Will the ConsensusEngine of node still work in chain of 100k blocks?"
 - "How fast can node sync 50k blocks from scratch?"
 - Experiment with different block intervals, difficulty adjustment algorithms, and other consensus parameters.
-- Benchmark "How fast can node validate 10k blocks with 100 txs each?", "How much memory ChainIndex will use?"
+- Benchmark "How fast can node validate 10k blocks with 100 txs each?", "How much memory will ChainIndex use?"
 - See how fast node can find LCA (Last Common Ancestor) from other peer when local chain diverged from the peer's chain
   at block 3k and the peer has 5k blocks.
 - etc.
-  So basically helps to see if blockchain is really working as expected.
-  This tool is meant to be used in automated testing, CI/CD pipelines, and benchmarks.
 
 ### How to use
 
-The chain generation tool can be run from the command line with provided configuration file.
+Run it with a config file:
 
 ```bash 
 stryi-devkit chaingen --config-path <path_to_config_file>
 ```
-
-#### Configuration
-
-The configuration file is in TOML format.
-Examples :
 
 #### Configuration
 
@@ -69,9 +61,13 @@ Top-level `[chain]` keys (comments kept immediately above fields)
 ```toml
 [chain]
 
-# Number of blocks to generate.
+# Number of blocks to generate after the current tip.
 # This number already includes the Distribution Block.
-# So for 100 blocks the tool will generate 1 dist. block and 99 real blocks after it.
+# On a fresh chain, 100 means:
+# - 1 distributor block
+# - 99 regular generated blocks
+# On a non-empty chain, the same rule applies after the existing tip.
+# Minimum value: 2
 num_blocks = 100
 
 # Seed for random number generator.
@@ -89,7 +85,8 @@ num_blocks = 100
 seed = 42
 
 # Path where to initialize the chain. This path will be created if it does not exist.
-# The tool also creates `CHAINGEN_PRIVATE_KEYS.txt` with generated account keys.
+# The tool also writes a generated accounts backup file:
+# `CHAINGEN_ACCOUNTS_<start_height>_<end_height>.txt`
 output_path = "/tmp/testchain1"
 
 # Path to genesis file in the same format as used in `stryi-node`.
@@ -119,6 +116,7 @@ miner_address = "@2fdf51216b8d12feb0ecd4299446465cd8c013a5"
 
 # Range for number of transactions per block.
 # Each block will have a random number of transactions in this range.
+# Minimum value is 2 because the first transaction slot is always coinbase.
 min_transactions_per_block = 5
 max_transactions_per_block = 25
 
@@ -129,37 +127,46 @@ active_addresses_count = 50
 # Whether to insert BlockUndo records for each block.
 # BlockUndo records are used to roll back the chain to previous state.
 # Usually not needed for testing; disable to save disk space and speed up generation.
-# NOTE: if persistence_mode is "consensus_engine", this setting is ignored and BlockUndo records are always created.
-undo = false
+# NOTE:
+# - `need_undo = true` requires `persistence_mode = "consensus_engine"`
+# - in consensus-engine mode, undo data is already produced by the engine
+need_undo = true
 
 ```
 
 #### Implementation details
 
-Implementation has two modes, mode depends on whether it relies on stryi_core's ConsensusEngine, or if it just naively
-interacts with Storage layer.
-Initially there was only direct-insert mode, but it failed a lot when ConsensusEngine of real node tried to validate the
-generated chain,
-because of some hard-to-debug issues of generated blocks not passing consensus validation.
-For now, direct-insert mode is *probably* slightly faster, and because of its bugginess it may help to detect some other
-kinds of ConsensusEngine's or node issues that are unlikely to appear on totally valid chains.
-That is why there are kept two modes.
+Chaingen has two persistence modes.
+
+- `consensus_engine`
+  This is the normal mode. Generated blocks go through `StryiConsensusEngine`, so the chain is checked the same way a
+  real node would check it.
+- `direct_insert`
+  This skips consensus validation and writes blocks straight to storage. It is useful for lower-level experiments and
+  some storage benchmarks, but it can also produce chains a real node would reject.
+  DO NOT USE IT FOR OTHER REASONS THAN EXPERIMENTING
+
+Chaingen is resume-friendly: it opens existing storage, reads the current tip, and keeps going from there.
+That also means rerunning the same config against the same `output_path` is different from starting fresh.
+The funding account may already be drained by an older run, so for clean benchmark runs it is usually better to use a
+fresh directory.
 
 ##### Account generation
 
-After config is read, and validation is passed, tool generates a list of addresses to use for transactions.
-All the generated transactions will be sent from these addresses to each other.
-The addresses are generated deterministically from the seed.
-Right after generation, the tool backups the private keys of all the addresses to a file in the output directory.
-File name includes start and end height of the generated chain, so it's possible to find the keys for a given chain
-piece.
+After config validation, chaingen deterministically generates the active addresses used for synthetic transactions.
+Payment transactions are created between those addresses.
+When the run finishes, their private keys are written to a file in the output directory.
+The file name includes the start and end heights of the generated segment, so it is easy to match the backup to a
+specific run.
 
 ##### Distribution Block
 
 The Distribution Block is a special block inserted into the chain at the beginning of the generation process.
 The purpose of this block is to evenly distribute funds among all the generated active addresses.
-The block contains a single transaction that transfers all the funds from the funding address to all the active
-addresses.
+The block contains:
+
+- the normal coinbase transaction for that height
+- one payment transaction that drains the configured funding account into the generated active addresses
 
 ## Load Generator Tool
 

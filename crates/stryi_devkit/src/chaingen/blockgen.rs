@@ -16,10 +16,10 @@ use stryi_core::consensus::BlockStorage;
 use stryi_core::transactions::{
     OutPoint, Transaction, TransactionData, TransactionKind, TransactionOut,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, info, warn};
 
 impl ChainGenerator {
-    /// generates a deterministic and valid block at `height` that has only one payment transaction which evenly distributes all the balance of funding account.the
+    /// generates a deterministic and valid block at `height` that has only one payment transaction which evenly distributes all the balance of the funding account.
     /// It uses all the existing UTXOs outputs of funder.
     pub async fn build_distributing_block(
         &self,
@@ -100,31 +100,22 @@ impl ChainGenerator {
             version,
         );
 
-        self.mine_block_parallel_ordered(&mut block);
+        self.mine_block_parallel_ordered(&mut block)?;
 
         Ok(block)
     }
 
-    /// Builds a new block.
+    /// Builds one generated block on top of the current tip.
     ///
-    /// # Arguments
+    /// `height` must be above genesis and the distributor block.
+    /// `rng` drives the deterministic randomness used for timestamps and transaction mix.
+    /// `state` holds the generated accounts and the UTXO view chaingen uses while building the block.
     ///
-    /// * `height` - The height of the block being created. Must be greater than 1 because genesis and distributor blocks are pre-defined.
-    /// * `rng` - A mutable reference to a `ChaCha8Rng` instance used for generating random values required during block construction.
-    /// * `state` - A mutable reference to the `GenerationState` object which stores information about accounts, UTXOs, and other state needed for transaction generation.
+    /// The result is a block ready to persist.
+    /// If no viable payment transactions can be created for this height, the block falls back to coinbase-only.
     ///
-    /// # Returns
-    ///
-    /// On success, it returns a `Block` that is ready to be inserted in the chain.
-    /// On failure, it returns a `Result::Err(String)` detailing the reason for the failure.
-    ///
-    /// # Errors
-    ///
-    /// * If `build_block` is invoked with `height` equal to 0 or 1, an error is returned because these blocks are reserved.
-    /// * If the previous block at `(height - 1)` cannot be loaded, an error is returned.
-    /// * If the miner address configured in the `config` is invalid, an error is returned.
-    /// * If an issue arises during the transaction generation process or if valid payment transactions cannot be created.
-    /// * If the block ends up containing only the coinbase transaction (indicating transaction generation failed), a panic is triggered.
+    /// Returns an error if the requested height is reserved, the previous block cannot be loaded,
+    /// the configured miner address is invalid, or block mining fails.
     pub async fn build_block(
         &self,
         height: u64,
@@ -136,8 +127,8 @@ impl ChainGenerator {
                 "build_block called with height=0 (genesis) or 1 (distributor)".to_string(),
             );
         }
-        // Lock storage for the entire block build.
-        let storage_guard = self.storage.write().await;
+        // Hold a shared lock long enough to load the previous block.
+        let storage_guard = self.storage.read().await;
 
         // Load previous block once
         let prev = storage_guard
@@ -186,7 +177,9 @@ impl ChainGenerator {
         let payment_tx_count = total_tx_count.saturating_sub(1); // Subtract 1 for coinbase
 
         if payment_tx_count == 0 {
-            panic!("Payment transaction count is zero at height {}!", height);
+            return Err(format!(
+                "block at height {height} must reserve room for at least one payment transaction"
+            ));
         }
 
         let params = TransactionGenerationParams::default();
@@ -260,10 +253,11 @@ impl ChainGenerator {
             transactions.len()
         );
 
-        // if only one tx in transaction (coinbase) - consider as a fail
         if transactions.len() == 1 {
-            error!("Failed to build block {}.", height);
-            panic!();
+            warn!(
+                "No viable payment transactions could be built for block {}. Falling back to coinbase-only block.",
+                height
+            );
         }
 
         // Assemble block
@@ -277,14 +271,14 @@ impl ChainGenerator {
         );
 
         // Mine nonce in parallel using ordered scan for a deterministic result.
-        self.mine_block_parallel_ordered(&mut block);
+        self.mine_block_parallel_ordered(&mut block)?;
 
         Ok(block)
     }
 
     /// Parallel, ordered nonce search using rayon.
     /// Scans 0..cap in increasing order; the first matching nonce is chosen (deterministic).
-    fn mine_block_parallel_ordered(&self, block: &mut Block) {
+    fn mine_block_parallel_ordered(&self, block: &mut Block) -> Result<(), String> {
         // Compute a sane attempt cap from difficulty.
         // cap ~= min(50M, 16 * 2^bits), with lower bound 1k.
         let pow_bits = block.header.difficulty_bits.min(31);
@@ -310,6 +304,12 @@ impl ChainGenerator {
 
         if let Some(nonce) = found {
             block.header.nonce = nonce;
+            return Ok(());
         }
+
+        Err(format!(
+            "failed to mine block at height {} within {} attempts (difficulty bits: {})",
+            block.header.height, cap, block.header.difficulty_bits
+        ))
     }
 }
