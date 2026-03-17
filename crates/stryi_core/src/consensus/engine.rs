@@ -32,7 +32,7 @@ where
     pub(crate) block_validator: BlockValidator<DB>,
 
     /// UTXO processor that applies transactions within a block to update the UTXO set.
-    // TODO: consider renaming it later, maybe in TransactionsProcessor? Current name is a little weird
+    // TODO: consider renaming it later, e.g. in TransactionsProcessor? Current name is a little weird
     pub(crate) utxo_processor: UtxoProcessor,
 
     /// Shared handle to the underlying storage wrapped in an `RwLock`.
@@ -170,7 +170,7 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
             blocks.push(block.clone());
 
             // Check if this block has undo
-            // NOTE: Maybe I should cache these at this point? For future reorgs or something
+            // NOTE: Maybe I should cache UNDOs at this point to avoid repeated storage reads ?
             if block.header.height != 0 {
                 let _undo = match db.get_block_undo(block.block_hash()).await {
                     Err(e) => Err(StryiCoreError::storage(

@@ -1,8 +1,8 @@
 use crate::block::{Block, BlockHash};
 use std::collections::HashMap;
 
-/// Metadata stored for **each** block that currently belongs to the
-/// active (canonical) chain.  Only lightweight fields – no full UTXO.
+/// Metadata stored for **each** block that currently belongs to the canonical chain.
+/// Does not store UTXO's themselves, but only required metadata.
 #[derive(Clone, Debug, PartialEq)]
 struct ChainIndexEntry {
     parent: BlockHash,
@@ -19,8 +19,8 @@ struct TipInfo {
 
 /// In‑memory index of the *active* chain.
 ///
-/// * `entries` – metadata for every block in the main chain;
-/// * `tip`     – cached best block for O(1) access.
+/// * `entries` are metadata for every block in the main chain;
+/// * `tip` is the cached best block for O(1) access.
 #[derive(Clone, PartialEq, Debug)]
 pub struct ChainIndex {
     entries: HashMap<BlockHash, ChainIndexEntry>,
@@ -67,8 +67,8 @@ impl ChainIndex {
         }
     }
 
-    /// Drop a block from the index.  If the removed block was tip –
-    /// re‑scans the map to pick the next heaviest.
+    /// Drop a block from the index.
+    /// If the removed block was the tip it re‑scans the map to pick the next heaviest.
     pub fn remove(&mut self, hash: &BlockHash) -> bool {
         let existed = self.entries.remove(hash).is_some();
         if !existed {
@@ -82,7 +82,7 @@ impl ChainIndex {
         true
     }
 
-    /// O(1) – does the hash belong to the active chain?
+    /// O(1) - does the hash belong to the active chain?
     pub fn has(&self, hash: &BlockHash) -> bool {
         self.entries.contains_key(hash)
     }

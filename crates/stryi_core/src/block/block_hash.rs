@@ -5,15 +5,14 @@ use crate::hash::HashKind;
 
 /// Represents a specific hash kind for block hashes using HashX + BLAKE3
 ///
-/// # Overview
-///
-/// 1) We take the input data and compute an initial BLAKE3 digest (32 bytes).
-/// 2) That digest serves as a seed for building a `HashX` program. If the seed
+/// How it works:
+/// 1. We take the input data and compute an initial BLAKE3 digest (32 bytes).
+/// 2. That digest serves as a seed for building a `HashX` program. If the seed
 ///    is "weak" (`Error::ProgramConstraints`), we keep re-hashing it with BLAKE3
 ///    until we get a "strong" seed.
-/// 3) We process the original data in 8-byte chunks, feeding each `u64` through
+/// 3. We process the original data in 8-byte chunks, feeding each `u64` through
 ///    the HashX program and updating a BLAKE3 hasher with the 32-byte partial output.
-/// 4) We finalize BLake3 to get a 32-byte final result.
+/// 4. We finalize BLake3 to get a 32-byte final result.
 #[derive(Default, Clone, Copy, PartialEq, Debug, Eq, Hash)]
 pub struct BlockHashKind;
 
@@ -34,8 +33,7 @@ impl HashKind for BlockHashKind {
     /// 4. Finalize BLAKE3 to get 32 bytes (`blake3_output`) and return it
     ///
     /// # Panics
-    /// - Panics if `HashX::new` hits an error other than `Error::ProgramConstraints`.
-    ///   So *probably* it will never panic in normal usage.
+    /// Panics on unexpected [`HashX::new`] errors other than [`Error::ProgramConstraints`].
     fn hash(data: &[u8]) -> [u8; Self::SIZE] {
         // (1) Compute an initial seed from BLAKE3(data)
         let mut seed = blake3::hash(data).as_bytes().to_vec();
@@ -50,7 +48,6 @@ impl HashKind for BlockHashKind {
                     seed = blake3::hash(&seed).as_bytes().to_vec();
                 }
 
-                // We assume no other error occurs in normal usage
                 Err(_) => panic!("Unexpected error while creating HashX."),
             }
         };

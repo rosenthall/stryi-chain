@@ -96,8 +96,7 @@ pub enum RangeError {
 }
 
 /// Thread‑safe backend for persistent block storage.
-/// Implementers must provide `put_block`, `batch_get_by_hashes`, `batch_get_by_heights`, `range` and `exists`.
-/// The single-item helpers `get_by_hash` and `get_by_height` have default implementations that simply wrap their batch counterparts
+/// NOTE: The single-item helpers `get_block_by_hash` and `get_block_by_height` have default implementations that simply wrap their batch counterparts
 pub trait BlockStorage: Send + Sync {
     type StorageError: Debug + Error + Send + Error;
 
@@ -119,9 +118,8 @@ pub trait BlockStorage: Send + Sync {
     ///
     /// Heights that lie beyond the current tip must trigger an error.
     /// * Each entry of the returned `HashMap` is guaranteed to exist;
-    ///   all requested hashes **must** be present, otherwise the
+    ///   all requested heights **must** be present, otherwise the
     ///   implementation must return an error.
-    ///  * height keys Returned map
     fn batch_get_blocks_by_heights<I>(
         &self,
         heights: I,
@@ -131,23 +129,22 @@ pub trait BlockStorage: Send + Sync {
         I::IntoIter: Send;
 
     /// Returns all blocks whose heights lie in the **inclusive** range, keyed by their height.
-    /// Must be `range.start < range.end`.
-    /// Shall return error if any of block in this range is unavailable or if range is incorrect.
+    /// Must be `range.end > range.start`.
+    /// Shall return an error if any of the blocks in this range is unavailable or if the range is incorrect.
     fn blocks_range(
         &self,
         range: RangeInclusive<usize>,
     ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>>;
 
-    /// Checks whether a block with the given hash exists.
-    /// Returns Ok(false) the block is absent.
-    /// May return Err(_) if it can't get value for any reason.
+    /// Returns `Ok(false)` if the block is absent.
+    /// Propagates storage errors from the backend.
     fn block_exists(&self, hash: BlockHash) -> BoxFuture<'_, Result<bool, Self::StorageError>>;
 
     // -- default impls for singular operations--
 
     /// Retrieves a block by its hash.
     /// Returns `Ok(None)` if not found.
-    /// By default, this just forwards to [`batch_get_by_hashes`]. Override if you need
+    /// By default, this just forwards to [`batch_get_blocks_by_hashes`]. Override if you need
     fn get_block_by_hash(
         &self,
         hash: BlockHash,
@@ -162,7 +159,7 @@ pub trait BlockStorage: Send + Sync {
 
     /// Retrieves a block by its height.
     /// Returns `Ok(None)` if not found.
-    /// By default, this just forwards to [`batch_get_by_heights`]. Override if you need
+    /// By default, this just forwards to [`batch_get_blocks_by_heights`]. Override if you need
     fn get_block_by_height(
         &self,
         height: u64,
@@ -175,8 +172,9 @@ pub trait BlockStorage: Send + Sync {
         })
     }
 
-    /// Default ranges validation method.
-    /// Returns common Err(Self::StorageError::RangeError) error if `start` is bigger then `end`
+    /// Validates an inclusive range.
+    /// Returns an error converted from [`RangeError::InvalidRange`] if `start > end`.
+
     fn validate_range(range: RangeInclusive<usize>) -> Result<(), Self::StorageError>
     where
         Self::StorageError: From<RangeError>,

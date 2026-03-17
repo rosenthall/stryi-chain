@@ -4,8 +4,7 @@ use bincode::config::standard;
 use serde::{Deserialize, Serialize};
 
 /// 32-byte Merkle hash kind.
-/// The prefix chosen is "MKR" for compact human-readable form like: "MKR<hex...>".
-/// MKR stands for MerKle Root.
+/// The prefix chosen is "MKR" for a compact human-readable form like: "MKR<hex...>".
 /// Uses blake3 hash function.
 #[derive(Default, Eq, PartialEq, Debug, Clone, Copy, Hash)]
 pub struct MerkleRootHashKind;
@@ -14,11 +13,10 @@ impl HashKind for MerkleRootHashKind {
     const SIZE: usize = 32;
     const PREFIX: &'static str = "MKR";
 
-    // NOTE: using default hash() implementation, based on blake3
+    // not overriding default hash() implementation
 }
 
-/// A 32-byte hash produced by Blake3, serialized as a human-friendly string (e.g., "MKR<hex...>")
-/// via the generic `Hash<K>` implementation.
+/// A 32-byte merkle  hash
 pub type MerkleHash = Hash<MerkleRootHashKind>;
 
 impl MerkleHash {
@@ -54,7 +52,7 @@ impl MerkleTree {
     /// Create a new Merkle tree from a list of leaf data.
     ///
     /// # Arguments
-    /// * `leaves_data` - A slice of byte vectors, each representing a leaf's data.
+    /// `leaves_data` is a slice of byte vectors, each representing a leaf's data.
     ///
     /// # Returns
     /// A `MerkleTree` constructed from the provided leaves.
@@ -70,7 +68,6 @@ impl MerkleTree {
             })
             .collect();
 
-        // Handle edge case: empty tree
         if current_level.is_empty() {
             return MerkleTree { levels, root: None };
         }
@@ -99,13 +96,6 @@ impl MerkleTree {
     }
 
     /// Combines two hashes using Blake3 by concatenating their bytes and hashing the result.
-    ///
-    /// # Arguments
-    /// * `left` - The left hash.
-    /// * `right` - The right hash.
-    ///
-    /// # Returns
-    /// A new `MerkleHash` resulting from combining the two input hashes.
     fn combine_hashes(left: &MerkleHash, right: &MerkleHash) -> MerkleHash {
         let mut hasher = blake3::Hasher::new();
         hasher.update(&left.data);
@@ -123,7 +113,7 @@ impl MerkleTree {
     /// Generate a Merkle proof for the leaf at the given index.
     ///
     /// # Arguments
-    /// * `leaf_index` - Index of the leaf for which to generate a proof.
+    /// `leaf_index` - Index of the leaf for which to generate a proof.
     ///
     /// # Returns
     /// `Some(MerkleProof)` if proof generation is successful, otherwise `None`.
@@ -161,9 +151,8 @@ impl MerkleTree {
 }
 
 /// Compute the Merkle-root for a list of transactions.
-///
-/// * `txs` – slice of transactions already selected for the block.
-/// * Returns `MerkleHash::empty()` if the slice is empty.
+/// `txs` is a slice of transactions already selected for the block.
+/// Returns `MerkleHash::empty()` if the slice is empty.
 pub fn calc_merkle_root(txs: &[Transaction]) -> MerkleHash {
     if txs.is_empty() {
         return MerkleHash::empty();
@@ -179,7 +168,6 @@ pub fn calc_merkle_root(txs: &[Transaction]) -> MerkleHash {
         .collect();
 
     // Build the tree and fetch its root.
-    // `root_hash()` returns `Option<MerkleHash>`, but we know the tree is non-empty.
     MerkleTree::new(&leaves)
         .root_hash()
         .unwrap_or_else(MerkleHash::empty)
@@ -350,7 +338,7 @@ mod tests {
             let tree = MerkleTree::new(&leaves_data);
             let root = tree.root_hash();
 
-            // If the tree is empty, skip to next iteration
+            // If the tree is empty, skip to the next iteration
             if root.is_none() {
                 continue;
             }

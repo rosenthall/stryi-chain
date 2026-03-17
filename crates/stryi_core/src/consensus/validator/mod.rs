@@ -5,16 +5,21 @@ use crate::{
 };
 use tracing::debug;
 
+/// Block-level validation helpers.
 pub mod block;
+
+/// Header-level consensus checks.
 mod header;
+
+/// Per transaction validation helpers
 pub mod tx;
 
 /// Validates a block against the supplied consensus rules.
 ///
 /// The pipeline:
-/// 1. header checks              (`header::validate_header`);
-/// 2. static block structure     (`block::validate_block_structure`);
-/// 3. dynamic, UTXO-dependent    (`block::validate_transactions`).
+/// 1. Header checks (`header::validate_header`);
+/// 2. Static block structure (`block::validate_block_structure`);
+/// 3. Dynamic, UTXO-dependent (`block::validate_transactions`).
 pub struct BlockValidator<ST>
 where
     ST: StorageStats + Send + Sync + 'static,

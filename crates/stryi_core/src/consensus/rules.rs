@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-/// Global static consensus parameters that stored directly in GenesisBlock, covering proof‑of‑work difficulty adjustment and block‑reward emission.
-/// Basically are immutable, once initialized
+/// Global consensus parameters stored in the genesis block.
+/// These parameters affect proof‑of‑work difficulty adjustment and block‑reward emission and remain fixed for the lifetime of the chain.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Eq, PartialEq)]
 pub struct ConsensusConsts {
     /// Number of blocks generated between each difficulty adjustment.
@@ -43,10 +43,10 @@ impl ConsensusConsts {
     /// Creates a new set of global consensus parameters.
     ///
     /// # Parameters
-    /// * `difficulty_adjustment_interval_blocks` – how many blocks between difficulty retargets.
-    /// * `initial_subsidy` – reward for block height 0, expressed in the chain’s base units.  
-    /// * `decay_interval` – number of blocks between linear reward drops (0 => no decay).
-    /// * `decay_step` – amount subtracted from the subsidy each time `decay_interval` is reached.
+    /// * `difficulty_adjustment_interval_blocks` - how many blocks between difficulty recalibrations.
+    /// * `initial_subsidy` - reward for block height 0, expressed in the chain’s base units.
+    /// * `decay_interval` - number of blocks between linear reward drops (0 => no decay).
+    /// * `decay_step` - amount subtracted from the subsidy each time `decay_interval` is reached.
     pub fn new(
         difficulty_adjustment_interval_blocks: u64,
         initial_subsidy: u64,

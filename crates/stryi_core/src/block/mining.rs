@@ -38,8 +38,6 @@ pub fn meets_difficulty(block_hash: &BlockHash, bits: u8) -> bool {
 /// Mines the given block in parallel by generating random 32-bit nonce's.
 /// Note: This function is designed for testing purposes and should not be used in production.
 /// Note: The max_attempts parameter is used to prevent infinite loops during testing.
-///
-/// - `block` is mutable, so if a solution is found, the block's header.nonce is updated.
 /// - `max_attempts` is the maximum number of random trials across all threads.
 /// - Returns `true` if a solution is found (and updates the block's nonce),
 ///   otherwise returns `false`.

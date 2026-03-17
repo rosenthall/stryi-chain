@@ -11,41 +11,40 @@
 ///   Example of BlockHash with 24 leading zero bits : `Bx000000a3f4b2c1d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6`
 mod hash;
 
-/// Definition of StryiError enum.
 mod error;
 pub use error::StryiCoreError;
 
-/// Implementation Block primitive of the blockchain, includes high-level APIs and parallel CPU mining module.
+/// Implementation of the Block primitive for the blockchain.
+/// Includes high-level APIs and parallel CPU mining module.
 pub mod block;
 
-/// Definition of AccountAddress type and some batteries for constructing it from public key.
+/// Account addresses and utilities for deriving them from public keys.
 pub mod address;
 
 /// Simple implementation of the [Merkle Tree](https://en.wikipedia.org/wiki/Merkle_tree)
 /// Provides simple api for constructing trees, generating and checking proofs
 pub mod merkletree;
 
-/// Definition of Transaction, TransactionHash, API for signing and validating, module for checking and performing UTXOs logic.
+/// Definition of [`Transaction`], [`TransactionHash`], utilities for signing and validating the authority, and
+/// module for checking and performing UTXOs logic.
 pub mod transactions;
 
-/// Definitions of traits that we use as abstract layer for storing data. Exports 'UtxoStorage' and BlockStorage so far
+/// Definitions of traits that we use as abstract layer for storing data.
 pub mod storage;
 
-/// Abstraction for consensus model of StryiChain.
+/// The consensus model of StryiChain.
 /// Provides a convenient way for all the nodes to follow the same, strict rules of consensus
 pub mod consensus;
 
-/// Transaction's dependencies handling primitives
-/// dependencies among transactions within a block. It utilizes a Directed
-/// Acyclic Graph [DAG](https://en.wikipedia.org/wiki/Directed_acyclic_graph) to represent and resolve dependencies, ensuring that
-/// transactions are processed in an order that respects their interdependencies.
+/// Primitives for tracking transaction dependencies within a block.
+/// Uses a directed acyclic graph ([DAG](https://en.wikipedia.org/wiki/Directed_acyclic_graph)) to model dependency order.
 mod dependencies;
 
 /// Definitions of BlockUndo and related logic for the reorganization system.
 mod undo;
 pub use undo::BlockUndo;
 
-/// Implementation of the transactions [mempool](https://www.geeksforgeeks.org/what-is-a-memory-pool/).
+/// Implementation of the [Memory Pool](https://learnmeabitcoin.com/technical/mining/memory-pool/)
 pub mod mempool;
 
 // public export of common libraries across the project
@@ -58,7 +57,6 @@ pub mod difficulty;
 mod private_key;
 pub use private_key::*;
 
-// Contains tests for some matter functionality.
-// Some tests are present in the concrete modules, but this module contains larger ones with more complex cases like integration tests
+// Some tests are present in the concrete modules, this module contains larger ones with more complex cases like integration tests
 #[cfg(test)]
 mod tests;

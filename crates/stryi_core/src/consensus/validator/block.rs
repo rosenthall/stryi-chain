@@ -1,8 +1,3 @@
-//! Block-level validation helpers.
-//
-//  * validate_block_structure – duplicates / coinbase-first / input uniqueness.
-//  * validate_transactions    – dependency graph, parallel tx checks, fee + reward.
-
 use crate::{
     block::{Block, BlockData},
     consensus::{ConsensusConsts, validator::tx},

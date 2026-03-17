@@ -32,7 +32,6 @@ impl DependencyTracker {
         }
     }
 
-    /// Removes one transaction and its mempool-only edges.
     pub fn remove_transaction(&mut self, tx_hash: &TransactionHash) {
         let Some(idx) = self.indices.remove(tx_hash) else {
             return;

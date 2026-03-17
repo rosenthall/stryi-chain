@@ -54,11 +54,12 @@ pub enum ConsensusVerdict {
     /// Block is already buffered in a fork tree.
     AlreadyKnownInForkTree,
 
-    /// Block was rejected for any reason like failed validation, etc.
+    /// Block was rejected during validation or chain processing.
     Rejected(StryiCoreError),
 
     /// Block caused reorganization in a local chain.
-    /// It either was included by itself or with some fork it belongs to.
+    /// The reorganization may be triggered by this block alone
+    /// or by the fork branch that includes it.
     CausedReorganization {
         /// map deleted block's hashes keyed to its pre-reorganization height.
         deleted_blocks: HashMap<u64, BlockHash>,

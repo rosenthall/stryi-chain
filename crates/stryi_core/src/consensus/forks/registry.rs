@@ -24,20 +24,16 @@ pub struct ForkEntry {
     pub blocks: Vec<Block>,
 }
 
+#[allow(dead_code)]
 pub trait ForksRead {
-    /// existence check
     fn has(&self, hash: &BlockHash) -> bool;
 
-    /// immutable lookup
     fn get(&self, hash: &BlockHash) -> Option<ForkEntry>;
 
-    /// Best fork by cumulative work
     fn best_fork(&self) -> Option<ForkEntry>;
 
-    /// mutable guarded access
     fn get_mut(&self, hash: &BlockHash) -> Option<RefMut<'_, BlockHash, ForkEntry>>;
 
-    /// Check if a block hash exists anywhere in any fork (not just as a tip/key)
     fn has_block(&self, hash: &BlockHash) -> bool;
 
     /// Iterate over all forks (read-only snapshot)
@@ -119,6 +115,6 @@ impl ForksWrite for ForkRegistry {
         self.inner.remove(tip);
     }
 
-    /// IMPLEMENTATION DETAIL: Not implemented
+    // TODO: Implement a real implementation of maintenance for the forks registry
     fn maintenance(&self) {}
 }

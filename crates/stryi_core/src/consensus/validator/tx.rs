@@ -1,8 +1,3 @@
-//! Per-transaction consensus rules.
-//
-//  validate_transaction – async routine used by block-level code
-//  calculate_total_fees – helper to sum fees for the whole block
-
 use crate::{
     address::AccountAddress,
     error::StryiCoreError,
@@ -10,11 +5,26 @@ use crate::{
 };
 use dashmap::{DashMap, DashSet};
 
+/// Look up a UTXO in `in_block` first, then fall back to `managed`.
+fn resolve_utxo<'a>(
+    outpoint: &OutPoint,
+    in_block: &'a DashMap<OutPoint, UTXO>,
+    managed: &'a DashMap<OutPoint, UTXO>,
+) -> Result<dashmap::mapref::one::Ref<'a, OutPoint, UTXO>, StryiCoreError> {
+    in_block
+        .get(outpoint)
+        .or_else(|| managed.get(outpoint))
+        .ok_or(StryiCoreError::TxMissingUtxo {
+            txid: outpoint.txid,
+            vout: outpoint.vout,
+        })
+}
+
 /// Validates **one** transaction within the context of a block.
 ///
-/// * `managed`   – UTXOs from previous blocks;  
-/// * `in_block`  – UTXOs created earlier in this block;  
-/// * `spent`     – thread-safe reservation set to close the double-spend window.
+/// `managed` are UTXOs from previous blocks;
+/// `in_block` are UTXOs created earlier in this block;
+/// `spent` is a thread-safe reservation set to close the double-spend window.
 pub async fn validate_transaction(
     tx: &Transaction,
     managed: &DashMap<OutPoint, UTXO>,
@@ -54,7 +64,7 @@ fn validate_coinbase_tx(tx: &Transaction) -> Result<(), StryiCoreError> {
 ///
 /// Steps  
 /// 1. Recover author key + verify signature;  
-/// 2. Iterate inputs – reserve, check ownership, accumulate sum(inputs);  
+/// 2. Iterate inputs - reserve, check ownership, accumulate sum(inputs);
 /// 3. Accumulate sum(outputs);  
 /// 4. Require sum(inputs) >= sum(outputs).
 async fn validate_payment_tx(
@@ -63,7 +73,7 @@ async fn validate_payment_tx(
     in_block: &DashMap<OutPoint, UTXO>,
     spent: &DashSet<OutPoint>,
 ) -> Result<(), StryiCoreError> {
-    // Signature & author
+    // recover signature & author
     let pk = tx
         .recover_public_key()
         .map_err(|_| StryiCoreError::ConsensusValidationFailed {
@@ -75,7 +85,6 @@ async fn validate_payment_tx(
         })?;
     let author = AccountAddress::from_public_key(&pk);
 
-    // Inputs
     let mut in_sum = 0u64;
     for inp in &tx.data.inputs {
         if !spent.insert(inp.previous_output) {
@@ -85,13 +94,7 @@ async fn validate_payment_tx(
             });
         }
 
-        let utxo = in_block
-            .get(&inp.previous_output)
-            .or_else(|| managed.get(&inp.previous_output))
-            .ok_or(StryiCoreError::TxMissingUtxo {
-                txid: inp.previous_output.txid,
-                vout: inp.previous_output.vout,
-            })?;
+        let utxo = resolve_utxo(&inp.previous_output, in_block, managed)?;
 
         if utxo.owner != author {
             return Err(StryiCoreError::TxWrongOwner {
@@ -108,7 +111,6 @@ async fn validate_payment_tx(
                 })?;
     }
 
-    // Outputs
     let out_sum = tx
         .data
         .outputs
@@ -144,13 +146,7 @@ pub fn calculate_total_fees(
         // sum(inputs)
         let mut inputs = 0u64;
         for inp in &tx.data.inputs {
-            let u = in_block
-                .get(&inp.previous_output)
-                .or_else(|| managed.get(&inp.previous_output))
-                .ok_or(StryiCoreError::TxMissingUtxo {
-                    txid: inp.previous_output.txid,
-                    vout: inp.previous_output.vout,
-                })?;
+            let u = resolve_utxo(&inp.previous_output, in_block, managed)?;
             inputs =
                 inputs
                     .checked_add(u.value)

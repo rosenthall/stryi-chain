@@ -42,11 +42,11 @@ pub struct BlockHeader {
     /// Unix timestamp
     pub timestamp: u64,
 
-    /// Nonce (in Bitcoin it's 32 bits so it's enough much for StryiChain)
+    /// Nonce (in Bitcoin it's 32 bits so it's also enough for StryiChain)
     pub nonce: u32,
 
     /// Optional additional data for genesis blocks
-    /// If this is Some(state) - block is genesis, otherwise - not.
+    /// **If it is Some(_) - the block is considered genesis.**
     pub genesis_state: Option<GenesisState>,
 }
 
@@ -80,10 +80,10 @@ pub struct Block {
 
 impl Block {
     /// Creates a new block with a given list of transactions, previous block hash, height, etc.
-    /// This function calculates the Merkle root from the provided transactions.
+    /// Builds Merkle root from the provided transactions.
     ///
-    /// Note: nonce is set to 0 by default, can be changed in mining process.
-    /// Note: this method is only for not genesis blocks. If you want one see the Self::new_genesis method
+    /// Note: nonce is set to 0 by default, can be changed in a mining process.
+    /// Note: this method is for non-genesis blocks. For those you have to use [`Self::new_genesis`] method
     pub fn new(
         transactions: Vec<Transaction>,
         previous_block_hash: BlockHash,
@@ -111,12 +111,10 @@ impl Block {
         Self { header, data }
     }
 
-    /// Creates a new genesis block with a given balances in HashMap in format
-    /// @AccountAddress => 10000
-    /// Function converts TxOuts from this hashmap `balances`
-    /// NOTE: Internally it sorts balances in ascending order
-    ///
-    /// This function calculates the Merkle root from the provided transactions.
+    /// Creates a genesis block from the provided initial balances.
+    /// `wanted_balances` maps each `AccountAddress` to its starting balance.
+    /// The balances are converted into transaction outputs and sorted in descending order.
+    /// The Merkle root is computed from the resulting genesis transaction.
     pub fn new_genesis(
         version: u16,
         wanted_balances: HashMap<AccountAddress, u64>,
@@ -138,7 +136,7 @@ impl Block {
             });
         }
 
-        // Constructs single transaction with all required UTXOs
+        // Constructs a single transaction with all required UTXOs
         let tx_data = TransactionData {
             version,
             kind: TransactionKind::Genesis,
@@ -147,7 +145,7 @@ impl Block {
         };
         let transaction = Transaction {
             data: tx_data,
-            signature: StryiSignature(Box::new([0u8; 65])), // Use an empty bytes as a signature
+            signature: StryiSignature(Box::new([0u8; 65])),
         };
 
         // Compute the Merkle root from the transactions
@@ -177,7 +175,7 @@ impl Block {
         Self { header, data }
     }
 
-    /// Method returns true if the block is genesis (if `header.genesis_state` is Some).
+    /// Returns `true` for the genesis block/header.
     pub fn is_genesis(&self) -> bool {
         self.header.genesis_state.is_some()
     }

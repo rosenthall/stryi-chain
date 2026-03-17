@@ -1,4 +1,4 @@
-/// Definitions of basic primitives of transactions such as UTXO, OutPoint, etc.
+/// basic primitives of transactions such as UTXO, OutPoint, etc.
 mod utxo;
 pub use crate::transactions::utxo::{OutPoint, TransactionIn, TransactionOut, UTXO};
 
@@ -93,11 +93,6 @@ impl TransactionData {
 
     /// Signs this `TransactionData` using secp256k1, producing a `Transaction`
     /// with a **recoverable** ECDSA signature (65 bytes).
-    ///
-    /// Steps:
-    /// 1) Compute the 32-byte message from `self.hash()`.
-    /// 2) Sign that message with `sign_ecdsa_recoverable(...)`.
-    /// 3) Convert to a [1-byte recId | 64-byte (r,s)] array.
     pub fn sign(self, signing_key: &SigningKey) -> Transaction {
         let msg_bytes: [u8; TransactionHasher::SIZE] = self.hash().data;
 
@@ -159,9 +154,9 @@ impl Transaction {
         })
     }
 
-    /// Creates a new unsigned transaction with an empty signature.
-    /// This only meant to be used in cases like genesis or coinbase transactions,
-    /// where no signature is required.
+    /// Creates an unsigned transaction with an empty signature.
+    /// Intended for transaction kinds that do not require a signature,
+    /// such as genesis or coinbase.
     pub fn new_unsigned(data: TransactionData) -> Self {
         Transaction {
             data,
@@ -170,12 +165,11 @@ impl Transaction {
     }
 
     #[cfg(test)]
-    /// Verifies that this transaction's recoverable signature recovers to real public key of this account.
-    /// Since AccountAddress is hashed public key we will check if recovered public key hash is identical with real AccountAddress.
+    /// Test helper that verifies that the signature recovers to `account_address`.
     fn verify_transaction_author(&self, account_address: AccountAddress) -> bool {
         let recovered_key = self.recover_public_key();
 
-        // If we cant recover key consider returning false.
+        // If we can't recover key consider returning false.
         if recovered_key.is_err() {
             return false;
         }

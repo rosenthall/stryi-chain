@@ -81,7 +81,7 @@ impl Default for StryiInMemoryStorageState {
 }
 
 impl StryiInMemoryStorageState {
-    /// Setups new StryiInMemoryStorageStats based on provided genesis block
+    /// Initializes a new StryiInMemoryStorageState based on the provided genesis block
     pub fn new_from_genesis(block: &Block) -> Self {
         assert!(block.header.is_genesis());
         StryiInMemoryStorageState {
@@ -93,7 +93,7 @@ impl StryiInMemoryStorageState {
     }
 }
 
-/// A very simple implementation of Repository (UtxoStorage, BlockStorage, StorageStats traits)
+/// A minimalistic, in-ram implementation of storage (UtxoStorage, BlockStorage, StorageStats traits)
 /// Implementation is backed by std HashMap instances
 ///
 /// **Never use in a real node**
@@ -109,8 +109,8 @@ pub struct StryiInMemoryStorage {
 
 impl StryiInMemoryStorage {
     /// Initialize StryiInMemoryStorage
-    /// Requires providing genesis_block to properly setup state
-    /// Panics if provided block isn't proper genesis (see is_genesis flag)
+    /// Takes genesis_block for proper initial state
+    /// Panics if the provided block isn't a genesis
     pub fn new(genesis_block: Block) -> Self {
         assert!(
             genesis_block.header.is_genesis(),

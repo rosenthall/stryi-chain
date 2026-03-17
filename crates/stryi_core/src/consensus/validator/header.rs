@@ -1,5 +1,3 @@
-//! Header-level consensus checks.
-
 use crate::difficulty::DifficultyCalc;
 use crate::storage::UtxoStorage;
 use crate::{

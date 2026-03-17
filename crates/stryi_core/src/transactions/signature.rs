@@ -5,7 +5,7 @@ use serde::de::{Error as DeError, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
-/// Represents 65 bytes recoverable signature, implements serde's traits so can be easily serialized and deserialized
+/// Represents 65 bytes recoverable signature
 #[derive(Clone, Hash, Eq, PartialEq)]
 pub struct StryiSignature(pub Box<[u8; 65]>);
 
@@ -85,7 +85,7 @@ impl<'de> Deserialize<'de> for StryiSignature {
 
 // custom Debug impl. to avoid printing raw bytes (they're ugly and long)
 // Instead we just print first 20 symbols of base64 representation
-// And also treat StryiSignature::default() specially to indicate it is coinbase/empty signature
+// Render the default signature as a dedicated coinbase/genesis marker.
 impl fmt::Debug for StryiSignature {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // early return for unsigned/coinbase txs
@@ -95,7 +95,6 @@ impl fmt::Debug for StryiSignature {
 
         let encoded = STANDARD.encode(self.0.as_slice());
 
-        // NOTE: encoded should always normally be longer than 20 symbols
         write!(f, "StryiSignature({}...)", &encoded[..20])
     }
 }
