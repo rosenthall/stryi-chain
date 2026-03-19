@@ -5,6 +5,7 @@ use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
 use crate::node::ibd::ingest_ibd_batch;
 use crate::node::remote_peer::RemotePeer;
 use crate::node::{ConnectedNode, SyncedNode};
+use crate::util::extract_tls_verification_host;
 use multiaddr::{Multiaddr, Protocol};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,10 +15,11 @@ use stryi_core::consensus::{
 };
 use stryi_core::difficulty::difficulty_calculator_from_consts;
 use stryi_core::transactions::{OutPoint, UTXO, UtxoProcessor};
-use stryi_network::{NetworkCommand, PeerId, ServiceRecord};
+use stryi_network::{NetworkCommand, PeerId, ServiceRecord, ServiceTransportSecurity};
 use stryi_storage::{StryiStorage, extract_utxos_from_block};
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio::time::sleep;
+use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 use tracing::{debug, info, trace, warn};
 
 const PEER_DISCOVERY_MAX_RETRIES: u32 = 30;
@@ -442,13 +444,10 @@ async fn query_sync_candidates(
 async fn connect_grpc(
     svc: &ServiceRecord,
 ) -> Result<BlockchainSyncClient<tonic::transport::Channel>, StryiNodeError> {
-    let uri = grpc_uri_from_multiaddr(svc.address())
-        .map_err(|e| StryiNodeError::other(format!("gRPC URI error: {e}")))?;
-
-    let channel = tonic::transport::Endpoint::from(uri)
+    let channel = grpc_endpoint_from_service(svc)?
         .connect()
         .await
-        .map_err(|e| StryiNodeError::other(format!("gRPC dial error: {e}")))?;
+        .map_err(|e| StryiNodeError::other(format!("gRPC dial error: {e:?}")))?;
 
     Ok(BlockchainSyncClient::new(channel))
 }
@@ -488,31 +487,63 @@ pub(super) async fn connect_to_peer(
     connect_grpc(svc).await
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GrpcConnectTarget {
+    uri: tonic::transport::Uri,
+    domain_name: String,
+    cert_pem: String,
+}
+
+fn grpc_endpoint_from_service(svc: &ServiceRecord) -> Result<Endpoint, StryiNodeError> {
+    let target = grpc_connect_target(svc)?;
+    let tls_config = ClientTlsConfig::new()
+        .ca_certificate(Certificate::from_pem(target.cert_pem.as_bytes()))
+        .domain_name(target.domain_name);
+
+    Endpoint::from(target.uri)
+        .tls_config(tls_config)
+        .map_err(StryiNodeError::from)
+}
+
+fn grpc_connect_target(svc: &ServiceRecord) -> Result<GrpcConnectTarget, StryiNodeError> {
+    let domain_name = extract_tls_verification_host(svc.address())
+        .map_err(|e| StryiNodeError::other(format!("gRPC TLS host error: {e}")))?;
+    let uri = grpc_uri_from_multiaddr(svc.address(), "https")
+        .map_err(|e| StryiNodeError::other(format!("gRPC URI error: {e}")))?;
+
+    let cert_pem = match svc.transport_security() {
+        ServiceTransportSecurity::TlsServerCert { cert_pem } => cert_pem.clone(),
+        ServiceTransportSecurity::None => {
+            return Err(StryiNodeError::other(
+                "gRPC sync service must advertise TLS metadata",
+            ));
+        }
+    };
+
+    Ok(GrpcConnectTarget {
+        uri,
+        domain_name,
+        cert_pem,
+    })
+}
+
 /// Converts multiaddr to grpc uri
-/// TODO: Make gRPC be tlsed again
-fn grpc_uri_from_multiaddr(addr: &Multiaddr) -> Result<tonic::transport::Uri, String> {
-    let mut host: Option<String> = None;
+fn grpc_uri_from_multiaddr(
+    addr: &Multiaddr,
+    scheme: &str,
+) -> Result<tonic::transport::Uri, String> {
+    let host = extract_tls_verification_host(addr)?;
     let mut port: Option<u16> = None;
 
-    for p in addr.iter() {
-        match p {
-            Protocol::Dns4(h) => {
-                host = Some(h.to_string());
-            }
-            Protocol::Ip4(ip) => {
-                host = Some(ip.to_string());
-            }
-            Protocol::Tcp(p) => {
-                port = Some(p);
-            }
-            _ => {}
+    for proto in addr.iter() {
+        if let Protocol::Tcp(p) = proto {
+            port = Some(p);
         }
     }
 
-    let host = host.ok_or("multiaddr missing host (dns4/ip4)")?;
     let port = port.ok_or("multiaddr missing tcp port")?;
 
-    let uri_str = format!("http://{}:{}", host, port);
+    let uri_str = format!("{scheme}://{host}:{port}");
 
     uri_str
         .parse::<tonic::transport::Uri>()

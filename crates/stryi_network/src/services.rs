@@ -1,4 +1,4 @@
-//! This file defines our RequestResponse-based custom behavior for collecting up-to-date information about the peer's services
+//! RequestResponse-based custom behavior for collecting up-to-date information about the peer's services
 
 use crate::ed25519::PublicKey;
 use crate::{Keypair, Multiaddr, PeerId, StryiEvent, StryiNetworkError};
@@ -19,10 +19,19 @@ pub enum ServicesInfoRequest {
     PushServices { services: Vec<SignedServiceRecord> },
 }
 
-/// Response type: list of services
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServicesResponse {
     pub(crate) services: Vec<SignedServiceRecord>,
+}
+
+/// Transport security metadata advertised for a service endpoint.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ServiceTransportSecurity {
+    /// No transport-level protection.
+    None,
+
+    /// TLS is required and clients should pin the advertised PEM certificate.
+    TlsServerCert { cert_pem: String },
 }
 
 /// ServiceInfo defines information we can gather about service(like gRPC api, json-rpc, etc.) which is running on some node/peer.
@@ -37,18 +46,28 @@ pub struct ServiceRecord {
     /// The kind of service e.g. "grpc-sync", "http", etc
     kind: String,
 
-    /// Version of service to define if service is compatible with this node version.
+    /// Version of service to define if the service is compatible with this node version.
     version: u32,
+
+    /// Transport security configuration for the advertised endpoint.
+    transport_security: ServiceTransportSecurity,
 }
 
 impl ServiceRecord {
     /// Create a new instance of ServiceRecord
-    pub fn new(address: Multiaddr, owner: PeerId, kind: String, version: u32) -> Self {
+    pub fn new(
+        address: Multiaddr,
+        owner: PeerId,
+        kind: String,
+        version: u32,
+        transport_security: ServiceTransportSecurity,
+    ) -> Self {
         Self {
             address,
             owner,
             kind,
             version,
+            transport_security,
         }
     }
 
@@ -71,6 +90,11 @@ impl ServiceRecord {
     /// Returns the version of the service.
     pub fn version(&self) -> u32 {
         self.version
+    }
+
+    /// Returns transport security metadata for the service endpoint.
+    pub fn transport_security(&self) -> &ServiceTransportSecurity {
+        &self.transport_security
     }
 }
 
@@ -254,7 +278,33 @@ mod tests {
             owner,
             "grpc-sync".to_string(),
             1,
+            ServiceTransportSecurity::TlsServerCert {
+                cert_pem: "-----BEGIN CERTIFICATE-----\nmock\n-----END CERTIFICATE-----".into(),
+            },
         )
+    }
+
+    #[test]
+    fn service_record_supports_plaintext_and_tls_variants() {
+        let owner = PeerId::random();
+
+        let plaintext = ServiceRecord::new(
+            "/ip4/127.0.0.1/tcp/7001".parse().unwrap(),
+            owner,
+            "http".to_string(),
+            1,
+            ServiceTransportSecurity::None,
+        );
+        assert_eq!(
+            plaintext.transport_security(),
+            &ServiceTransportSecurity::None
+        );
+
+        let tls = sample_record_for_owner(owner);
+        assert!(matches!(
+            tls.transport_security(),
+            ServiceTransportSecurity::TlsServerCert { cert_pem } if cert_pem.contains("BEGIN CERTIFICATE")
+        ));
     }
 
     #[test]

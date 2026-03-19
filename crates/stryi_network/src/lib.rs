@@ -16,7 +16,7 @@ pub use error::StryiNetworkError;
 pub use libp2p::{Multiaddr, PeerId};
 pub use manager::*;
 
-pub use crate::services::ServiceRecord;
+pub use crate::services::{ServiceRecord, ServiceTransportSecurity};
 use libp2p::identity::PublicKey;
 pub use libp2p::identity::{DecodingError, Keypair, SigningError, ed25519};
 use stryi_core::mempool::MemPoolSyncData;

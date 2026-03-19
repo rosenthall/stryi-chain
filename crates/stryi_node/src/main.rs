@@ -53,7 +53,7 @@ use crate::node::miner_bridge::MinerBridge;
 use crate::node::sync::build_consensus_constants;
 use crate::node::{EventLoopContext, StryiChainNode};
 use crate::tls::cert_and_key_from_peer;
-use crate::util::{resolve_ipv4_advertise, try_genesis_config_from_path};
+use crate::util::{derive_grpc_tls_sans, resolve_ipv4_advertise, try_genesis_config_from_path};
 use colored::Colorize;
 use std::collections::HashMap;
 use std::error::Error;
@@ -72,7 +72,7 @@ use stryi_storage::{StorageStatus, StryiStorage};
 use tokio::sync::broadcast;
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, trace, warn};
+use tracing::{error, info, trace};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -361,17 +361,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     http_service_config.peer_id = peer_id;
     trace!("This node's peer id from keypair: {}", peer_id);
 
-    // Generate TLS identity for node services.
-    let mut sans_vec: Vec<&str> = cfg.tls_sans.iter().map(String::as_str).collect();
-
-    // If the provided SAN list is empty, default to "localhost".
-    if sans_vec.is_empty() {
-        warn!(
-            "A custom SAN list was provided, but it was empty; defaulting to `localhost` and `127.0.0.1`"
-        );
-        sans_vec.push("localhost");
-        sans_vec.push("127.0.0.1");
-    }
+    // Generate TLS identity for node services from the advertised gRPC host plus extra SANs.
+    let tls_sans = derive_grpc_tls_sans(&grpc_advertise, &cfg.tls_sans)
+        .map_err(StryiNodeError::invalid_config_value)?;
+    let sans_vec: Vec<&str> = tls_sans.iter().map(String::as_str).collect();
     let tls_identity = cert_and_key_from_peer(&keypair, &sans_vec)
         .expect("Cannot generate certificate based on this peer's keypair");
 

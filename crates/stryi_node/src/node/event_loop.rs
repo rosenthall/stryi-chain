@@ -19,7 +19,7 @@ use stryi_core::mempool::MemPool;
 use stryi_core::storage::StorageStats;
 use stryi_network::{
     BroadcastBlock, ChainTipAnnouncement, NetworkCommand, NetworkEvent, PeerId, ServiceRecord,
-    StryiNetworkError,
+    ServiceTransportSecurity, StryiNetworkError,
 };
 use stryi_storage::StryiStorage;
 use tokio::join;
@@ -90,6 +90,8 @@ impl EventLoop {
         // clone once per task
         let storage_for_http = Arc::clone(&storage);
         let storage_for_grpc = Arc::clone(&storage);
+        let grpc_cert_pem = tls_identity.cert_pem.clone();
+        let grpc_key_pem = tls_identity.key_pem.clone();
 
         // http server future
         let tx_broadcaster = crate::http::TxBroadcaster::new(net_cmd.clone());
@@ -107,7 +109,6 @@ impl EventLoop {
         };
 
         // gRPC server future
-        // TODO: Make gRPC really use tls based on the provider peer's identity keys
         let grpc_cancel = cancel_token.child_token();
         let grpc_fut = async {
             let service_impl = StryiSyncService {
@@ -116,8 +117,8 @@ impl EventLoop {
             };
 
             let tonic_identity =
-                tonic::transport::Identity::from_pem(&tls_identity.cert_pem, &tls_identity.key_pem);
-            let _tls_config = ServerTlsConfig::new().identity(tonic_identity);
+                tonic::transport::Identity::from_pem(&grpc_cert_pem, &grpc_key_pem);
+            let tls_config = ServerTlsConfig::new().identity(tonic_identity);
 
             let svc = BlockchainSyncServer::new(service_impl);
 
@@ -132,7 +133,7 @@ impl EventLoop {
             );
 
             Server::builder()
-                // .tls_config(tls_config).unwrap()
+                .tls_config(tls_config)?
                 .layer(CompressionLayer::new())
                 .layer(TraceLayer::new_for_grpc())
                 .add_service(svc)
@@ -147,6 +148,9 @@ impl EventLoop {
                 peer_id,
                 GRPC_SERVICE_TAG.to_string(),
                 sync_service_config.protocol_version as u32,
+                ServiceTransportSecurity::TlsServerCert {
+                    cert_pem: tls_identity.cert_pem,
+                },
             );
 
             let http_record = ServiceRecord::new(
@@ -154,6 +158,7 @@ impl EventLoop {
                 peer_id,
                 HTTP_SERVICE_TAG.to_string(),
                 http_service_config.api_version,
+                ServiceTransportSecurity::None,
             );
 
             info!("Successfully signed node's http service with own keypair!");

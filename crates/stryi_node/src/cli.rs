@@ -1,4 +1,4 @@
-//! Command-line overrides for StryiNode.
+//! Command-line configuration overrides for StryiNode.
 //!
 //! Every field is an `Option<T>`.
 //! If a flag is omitted, its value doesn’t overwrite the TOML file.
@@ -122,7 +122,7 @@ pub struct CliArgs {
     /* gRPC sync */
     /// Socket address (`ip:port`) for the gRPC sync service.
     #[arg(long)]
-    pub grpc_sync_address: Option<String>,
+    pub grpc_sync_listen: Option<String>,
 
     /// Human-readable chain name (exposed via sync).
     #[arg(long)]
