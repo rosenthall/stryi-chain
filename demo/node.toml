@@ -1,0 +1,18 @@
+chain_name = "demo"
+chain_id = "demo-local-001"
+
+network_rendezvous_mode = "server"
+network_listen_addr = "/ip4/127.0.0.1/tcp/4051"
+genesis_config_path = "demo/genesis.json"
+start_mode = "bootstrap"
+auto_accept_genesis = true
+
+miner_enabled = true
+miner_tx_threshold = 1
+miner_max_delay_secs = 2
+miner_reward_address = "@182571f04f81a0efb873e96a5f8de592a371a0b3"
+
+storage_path = "/tmp/stryi-demo/chain"
+grpc_sync_listen = "127.0.0.1:5555"
+http_service_listen = "127.0.0.1:5556"
+peer_key_path = "/tmp/stryi-demo/peer.stryi_keys"

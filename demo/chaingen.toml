@@ -1,0 +1,16 @@
+[chain]
+num_blocks = 20
+seed = 20260324
+output_path = "/tmp/stryi-demo/chain"
+genesis_path = "genesis.json"
+persistence_mode = "consensus_engine"
+
+[blocks]
+# This key is bound to the chaingen-funding address from demo/genesis.json.
+funding_key = "e196333a40644223510a65877132b892df217269d442d72b30a66a6547b3e833"
+average_block_time_secs = 10
+miner_address = "@182571f04f81a0efb873e96a5f8de592a371a0b3"
+min_transactions_per_block = 4
+max_transactions_per_block = 8
+active_addresses_count = 12
+need_undo = true

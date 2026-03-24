@@ -1,0 +1,8 @@
+# Demo keys for the README walkthrough.
+# Format: label address private_key
+# Note: chaingen-funding is used only by demo/chaingen.toml and is expected to be drained by the distributor block.
+
+chaingen-funding @fcd779ea9100c872941bbf40fbff6037f43e749e e196333a40644223510a65877132b892df217269d442d72b30a66a6547b3e833
+alice @4c8c01f08adc9162ff3d137389399634a375d6d6 3a7dc55eecb56b8f36874f6920e56a4c4c103ea82b5a168d073d2b49394f3499
+bob @3972d0819c496cadff43cc37f99a9322745aa397 9a95bf6f928f55be8e757917cdc20a3a12d4e2fcfd5b01243d6db6db7005b019
+miner @182571f04f81a0efb873e96a5f8de592a371a0b3 a01120b6fe16ae9373a6074fde8711ab39458085e91d6e04a3a23f9b4cb1df1c

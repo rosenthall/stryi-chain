@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "wanted_balances": {
+    "@fcd779ea9100c872941bbf40fbff6037f43e749e": 100000000,
+    "@4c8c01f08adc9162ff3d137389399634a375d6d6": 500000,
+    "@3972d0819c496cadff43cc37f99a9322745aa397": 50000,
+    "@182571f04f81a0efb873e96a5f8de592a371a0b3": 1
+  },
+  "genesis_state": {
+    "consts": {
+      "difficulty_adjustment_interval_blocks": 3000,
+      "initial_subsidy": 10000,
+      "decay_interval": 1000,
+      "decay_step": 100
+    }
+  }
+}
