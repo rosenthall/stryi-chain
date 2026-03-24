@@ -60,14 +60,6 @@ pub struct CliArgs {
     #[arg(long)]
     pub network_rendezvous_address: Option<String>,
 
-    /// Protocol version advertised via Identify.
-    #[arg(long)]
-    pub network_version: Option<u32>,
-
-    /// Shared namespace string for rendezvous discovery.
-    #[arg(long)]
-    pub network_rendezvous_namespace: Option<String>,
-
     /// Ping interval (seconds).
     #[arg(long)]
     pub network_ping_interval_secs: Option<u64>,

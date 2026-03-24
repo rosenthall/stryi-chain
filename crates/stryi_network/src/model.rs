@@ -15,7 +15,7 @@ pub struct BroadcastBlock {
     /// Number of transactions in the block
     pub transactions_count: usize,
 
-    /// Unix timestamp when this block was started to mine locally
+    /// Unix timestamp when this block was started to mine locally or first seen by this node
     pub first_seen: u64,
 }
 

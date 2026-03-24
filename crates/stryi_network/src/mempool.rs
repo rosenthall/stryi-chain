@@ -14,7 +14,7 @@ pub enum MempoolResponse {
     State(MemPoolSyncData),
 }
 
-/// Our mempool-related NetworkBehaviour relies on https://docs.rs/libp2p/latest/libp2p/request_response/cbor/type.Behaviour.html to perform serialization in binary format
+// CBOR request-response behavior used for mempool sync
 pub type MempoolSyncBehaviour = RequestResponseBehaviour<MempoolRequest, MempoolResponse>;
 
 /// Definition of an inbound request or response for mempool

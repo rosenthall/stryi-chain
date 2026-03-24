@@ -7,13 +7,15 @@ use std::{
 use crate::error::{StryiNetworkError, StryiNetworkError::GossipsubConfigError};
 use crate::mempool::{MempoolEvent, MempoolSyncBehaviour};
 use crate::services::{ServicesEvent, ServicesInfoBehaviour};
+use crate::RendezvousMode;
 use libp2p::identity::Keypair;
 use libp2p::request_response::ProtocolSupport;
 use libp2p::{
     StreamProtocol,
     gossipsub::{
-        Behaviour as Gossipsub, ConfigBuilder as GossipsubConfigBuilder, Event as GossipsubEvent,
-        MessageAuthenticity, MessageId, ValidationMode,
+        Behaviour as Gossipsub, Config as GossipsubConfig,
+        ConfigBuilder as GossipsubConfigBuilder, Event as GossipsubEvent, MessageAuthenticity,
+        MessageId, ValidationMode,
     },
     identify::{Behaviour as Identify, Config as IdentifyConfig, Event as IdentifyEvent},
     ping::{Behaviour as Ping, Config as PingConfig, Event as PingEvent},
@@ -65,12 +67,6 @@ impl From<RzvClientEvent> for StryiEvent {
 /// Configuration for building a `StryiBehaviour`.
 #[derive(Debug, Clone)]
 pub struct StryiBehaviourConfig {
-    /// If true, enable the Rendezvous server sub-behavior.
-    pub enable_rendezvous_server: bool,
-
-    /// If true, enable the Rendezvous client sub-behavior.
-    pub enable_rendezvous_client: bool,
-
     /// Ping interval.
     pub ping_interval: Duration,
 
@@ -84,8 +80,6 @@ pub struct StryiBehaviourConfig {
 impl Default for StryiBehaviourConfig {
     fn default() -> Self {
         Self {
-            enable_rendezvous_server: true, // By default, the node acts as if the network is newly established and assumes the role of a rendezvous server
-            enable_rendezvous_client: false, // The node does not act as a rendezvous client by default
             ping_interval: Duration::from_secs(10),
             ping_timeout: Duration::from_secs(10),
             gossipsub_heartbeat: Duration::from_secs(10),
@@ -114,8 +108,8 @@ impl StryiBehaviour {
     /// Returns an error if building the gossipsub configuration fails.
     pub fn new(
         cfg: StryiBehaviourConfig,
+        rendezvous_mode: RendezvousMode,
         keypair: &Keypair,
-        _protocol_version: &usize,
     ) -> Result<Self, StryiNetworkError> {
         // Build configured Gossipsub
         let gossipsub = Self::build_gossipsub(&cfg, keypair)?;
@@ -147,12 +141,12 @@ impl StryiBehaviour {
         let identify = Self::build_identify(keypair);
 
         // Set up Rendezvous toggles.
-        let rendezvous_server = if cfg.enable_rendezvous_server {
+        let rendezvous_server = if matches!(rendezvous_mode, RendezvousMode::Server) {
             Toggle::from(Some(RzvServer::new(RzvServerConfig::default())))
         } else {
             Toggle::from(None)
         };
-        let rendezvous_client = if cfg.enable_rendezvous_client {
+        let rendezvous_client = if matches!(rendezvous_mode, RendezvousMode::Client) {
             Toggle::from(Some(RzvClient::new(keypair.clone())))
         } else {
             Toggle::from(None)
@@ -172,7 +166,7 @@ impl StryiBehaviour {
     /// Helper to build identify behaviour with automatic listen address updates.
     pub fn build_identify(keypair: &Keypair) -> Identify {
         let cfg = IdentifyConfig::new("stryichain/0.1.0".to_string(), keypair.public())
-            .with_push_listen_addr_updates(true); // Enable automatic updates of listen addresses
+            .with_push_listen_addr_updates(true);
         Identify::new(cfg)
     }
 
@@ -181,18 +175,7 @@ impl StryiBehaviour {
         cfg: &StryiBehaviourConfig,
         keypair: &Keypair,
     ) -> Result<Gossipsub, StryiNetworkError> {
-        let msg_id_fn = |msg: &libp2p::gossipsub::Message| {
-            let mut hasher = DefaultHasher::new();
-            msg.data.hash(&mut hasher);
-            MessageId::from(hasher.finish().to_string())
-        };
-
-        let gossipsub_config = GossipsubConfigBuilder::default()
-            .heartbeat_interval(cfg.gossipsub_heartbeat)
-            .validation_mode(ValidationMode::Strict)
-            .message_id_fn(msg_id_fn)
-            .build()
-            .map_err(GossipsubConfigError)?;
+        let gossipsub_config = Self::build_gossipsub_config(cfg)?;
 
         let gossipsub_behaviour = Gossipsub::new(
             MessageAuthenticity::Signed(keypair.clone()),
@@ -201,5 +184,55 @@ impl StryiBehaviour {
         .unwrap();
 
         Ok(gossipsub_behaviour)
+    }
+
+    fn build_gossipsub_config(cfg: &StryiBehaviourConfig) -> Result<GossipsubConfig, StryiNetworkError> {
+        let msg_id_fn = |msg: &libp2p::gossipsub::Message| {
+            let mut hasher = DefaultHasher::new();
+            msg.data.hash(&mut hasher);
+            MessageId::from(hasher.finish().to_string())
+        };
+
+        GossipsubConfigBuilder::default()
+            .heartbeat_interval(cfg.gossipsub_heartbeat)
+            .validation_mode(ValidationMode::Strict)
+            .message_id_fn(msg_id_fn)
+            .build()
+            .map_err(GossipsubConfigError)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_derives_rendezvous_role_from_mode() {
+        let keypair = Keypair::generate_ed25519();
+        let cfg = StryiBehaviourConfig::default();
+
+        let server = StryiBehaviour::new(cfg.clone(), RendezvousMode::Server, &keypair)
+            .expect("server behaviour");
+        assert!(server.rendezvous_server.is_enabled());
+        assert!(!server.rendezvous_client.is_enabled());
+
+        let client =
+            StryiBehaviour::new(cfg, RendezvousMode::Client, &keypair).expect("client behaviour");
+        assert!(!client.rendezvous_server.is_enabled());
+        assert!(client.rendezvous_client.is_enabled());
+    }
+
+    #[test]
+    fn gossipsub_config_uses_custom_heartbeat() {
+        let cfg = StryiBehaviourConfig {
+            ping_interval: Duration::from_secs(3),
+            ping_timeout: Duration::from_secs(7),
+            gossipsub_heartbeat: Duration::from_secs(42),
+        };
+
+        let gossipsub_cfg =
+            StryiBehaviour::build_gossipsub_config(&cfg).expect("gossipsub config");
+
+        assert_eq!(gossipsub_cfg.heartbeat_interval(), Duration::from_secs(42));
     }
 }

@@ -2,6 +2,7 @@ use stryi_core::address::AccountAddress;
 use stryi_core::block::Block;
 use tokio::sync::mpsc;
 
+// TODO: Make MinerBridge also send some metainfo like "started_mining" to event loop
 /// All the channels and metadata that connect the miner to the node event loop.
 /// Only present when mining is enabled for this node.
 pub(crate) struct MinerBridge {

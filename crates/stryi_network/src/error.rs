@@ -47,7 +47,7 @@ pub enum StryiNetworkError {
     #[error("Error while signing: {0}")]
     SigningError(libp2p::identity::SigningError),
 
-    #[error("Error while doing some dns stuff : {0}")] // improve that xd
+    #[error("Error with dns configuration: {0}")]
     DnsConfigError(std::io::Error),
 
     /// Catch-all fallback.

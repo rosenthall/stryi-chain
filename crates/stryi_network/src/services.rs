@@ -12,7 +12,7 @@ use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
-/// Requests enum for ServicesInfo api
+/// Requests supported by the services-info protocol
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum ServicesInfoRequest {
     ListServices,
@@ -34,7 +34,7 @@ pub enum ServiceTransportSecurity {
     TlsServerCert { cert_pem: String },
 }
 
-/// ServiceInfo defines information we can gather about service(like gRPC api, json-rpc, etc.) which is running on some node/peer.
+/// Metadata describing a service endpoint exposed by a peer.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ServiceRecord {
     /// Address of this service
@@ -71,28 +71,18 @@ impl ServiceRecord {
         }
     }
 
-    /// Returns the address of the service.
     pub fn address(&self) -> &Multiaddr {
         &self.address
     }
-
-    /// Returns PeerId of this record if it can convert string value to true PeerId instance
-    /// Otherwise, returns error
     pub fn owner(&self) -> PeerId {
         self.owner
     }
-
-    /// Returns the kind of the service.
     pub fn kind(&self) -> &str {
         &self.kind
     }
-
-    /// Returns the version of the service.
     pub fn version(&self) -> u32 {
         self.version
     }
-
-    /// Returns transport security metadata for the service endpoint.
     pub fn transport_security(&self) -> &ServiceTransportSecurity {
         &self.transport_security
     }
@@ -133,7 +123,8 @@ impl SignedServiceRecord {
     ///   - signature is valid,
     ///   - domain matches,
     ///   - payload_type matches,
-    ///   - signing key equals the expected peer key.
+    ///   - signing key equals the expected peer key,
+    ///   - record owner matches the expected peer key.
     pub fn verify_and_decode(
         &self,
         expected_pk: &PublicKey,
@@ -249,7 +240,7 @@ impl TryFrom<&[u8]> for SignedServiceRecord {
     }
 }
 
-/// Our ServiceInfo NetworkBehaviour relies on https://docs.rs/libp2p/latest/libp2p/request_response/cbor/type.Behaviour.html to perform serialization in binary format
+/// CBOR request-response behavior used for services protocol
 pub type ServicesInfoBehaviour = RequestResponseBehaviour<ServicesInfoRequest, ServicesResponse>;
 
 /*

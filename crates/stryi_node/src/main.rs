@@ -403,8 +403,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ping_interval: Duration::from_secs(cfg.network_ping_interval_secs),
         ping_timeout: Duration::from_secs(cfg.network_ping_timeout_secs),
         gossipsub_heartbeat: Duration::from_secs(cfg.network_gossipsub_heartbeat_secs),
-        enable_rendezvous_server: matches!(rendezvous_mode, RendezvousMode::Server),
-        enable_rendezvous_client: matches!(rendezvous_mode, RendezvousMode::Client),
     };
 
     let network_manager_config = StryiNetworkManagerConfig {

@@ -5,8 +5,7 @@ use crate::services::{
 };
 use crate::{
     NetworkCommand, NetworkEvent, RendezvousMode, StryiNetworkManagerConfig,
-    behaviour::{StryiBehaviour, StryiBehaviourConfig},
-    error::StryiNetworkError,
+    behaviour::StryiBehaviour, error::StryiNetworkError,
 };
 use bincode::config::standard;
 use futures::StreamExt;
@@ -25,17 +24,13 @@ use libp2p::{
 use rand::prelude::IteratorRandom;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 use stryi_core::mempool::{MemPool, MemPoolSyncData};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-/// StryiNetworkManager sets up the transport, constructs a swarm using our unified StryiBehaviour,
-/// and runs the event loop.
-/// Provides high-level communication layer with network via channels and messaging :
-/// - `command_tx` : Channel for communicating with the entire network, allows performing operations like publish blocks/transactions, dial with specific node, etc.
-/// - `event_tx` : Channel for receiving `NetworkEvents` from StryiNetworkManager
+/// Coordinates the node's libp2p networking state and event loop.
+/// Processes inbound `NetworkCommand`s and broadcasts resulting `NetworkEvent`s.
 pub struct StryiNetworkManager {
     /// Configuration for the entire StryiNetworkManager instance, defines addresses, keypair, rendezvous mode, etc.
     pub(crate) config: StryiNetworkManagerConfig,
@@ -44,7 +39,7 @@ pub struct StryiNetworkManager {
     pub(crate) swarm: Arc<Mutex<Swarm<StryiBehaviour>>>,
     pub(crate) mempool: Arc<RwLock<MemPool>>,
 
-    /// Channel to perform operation in network like sending blocks, transactions, dialing a connections, etc.
+    // Inbound command channel consumed by the event loop.
     pub(crate) command_tx: mpsc::Sender<NetworkCommand>,
 
     /// Receiver side for `command_tx`, used in the run loop.
@@ -55,7 +50,7 @@ pub struct StryiNetworkManager {
 
     /// Thread-safe, mutable registry of this node's active services.
     /// Wrapped in an `RwLock` to allow concurrent reads and real-time updates
-    /// (e.g. when a service starts, stops, or changes its listening port).
+    /// (for instance, when a service starts, stops, or changes its listening port).
     pub(crate) own_services_registry: Arc<RwLock<Vec<SignedServiceRecord>>>,
 
     /// Connected peers tracking
@@ -77,7 +72,6 @@ impl StryiNetworkManager {
         mempool: Arc<RwLock<MemPool>>,
         cancel_token: CancellationToken,
     ) -> Result<Self, StryiNetworkError> {
-        // Use provided key or generate one.
         let key = config.clone().keypair;
         let local_peer_id = PeerId::from(key.public());
         info!("local_peer_id={}", local_peer_id);
@@ -85,15 +79,11 @@ impl StryiNetworkManager {
         // Build the transport (which is basically TCP + Noise + yamux).
         let transport = Self::build_transport(&key)?;
 
-        let behaviour_config = StryiBehaviourConfig {
-            enable_rendezvous_server: matches!(config.rendezvous_mode, RendezvousMode::Server),
-            enable_rendezvous_client: matches!(config.rendezvous_mode, RendezvousMode::Client),
-            ping_interval: Duration::from_secs(10),
-            ping_timeout: Duration::from_secs(10),
-            gossipsub_heartbeat: Duration::from_secs(10),
-        };
-
-        let behaviour = StryiBehaviour::new(behaviour_config, &key, &config.version)?;
+        let behaviour = StryiBehaviour::new(
+            config.stryi_behaviour_config.clone(),
+            config.rendezvous_mode.clone(),
+            &key,
+        )?;
 
         // Create the swarm with default SwarmConfig.
         let swarm_config = SwarmConfig::with_tokio_executor();
@@ -146,12 +136,8 @@ impl StryiNetworkManager {
                 warn!("Client mode but no rendezvous_server_addr configured");
             }
         }
-        // Create channels for commands
         let (command_tx, command_rx) = mpsc::channel::<NetworkCommand>(32);
-        // And for events
         let (event_tx, _) = broadcast::channel::<NetworkEvent>(32);
-
-        // build registry
         let own_services_registry = Arc::new(RwLock::new(Vec::new()));
 
         Ok(Self {
@@ -184,7 +170,7 @@ impl StryiNetworkManager {
     }
 
     /// Returns a random peer that exposes a service of the requested `kind`.
-    /// The helper verifies each signed record (signature / owner / time-to-live) on-the-fly.
+    /// The helper verifies each signed record (signature / owner) on-the-fly.
     /// `None` is returned if no peer currently matches.
     pub async fn random_peer_with_service(&self, kind: &str) -> Option<(PeerId, ServiceRecord)> {
         let peers = self.connected_peers.read().await;
@@ -261,7 +247,7 @@ impl StryiNetworkManager {
             tokio::sync::oneshot::Sender<Result<MemPoolSyncData, StryiNetworkError>>,
         > = HashMap::new();
 
-        // TODO: Handle somehow gossipsub subscription error
+        // TODO:  return an initialization error if any gossipsub topic subscription fails.
         swarm
             .behaviour_mut()
             .gossipsub
@@ -351,10 +337,25 @@ impl StryiNetworkManager {
 
                             match SignedServiceRecord::sign(own_pk_ed, service) {
                                 Ok(signed_service) => {
-                                    self.own_services_registry
-                                        .write()
-                                        .await
-                                        .push(signed_service);
+                                    let own_services = {
+                                        let mut registry = self.own_services_registry.write().await;
+                                        registry.push(signed_service);
+                                        registry.clone()
+                                    };
+                                    let connected_peers = {
+                                        let peers = self.connected_peers.read().await;
+                                        peers.keys().copied().collect::<Vec<_>>()
+                                    };
+
+                                    let pushed = Self::push_services_to_peers(
+                                        swarm.behaviour_mut(),
+                                        connected_peers,
+                                        own_services,
+                                    );
+                                    debug!(
+                                        "Queued service advertisement push for {} peers",
+                                        pushed
+                                    );
 
                                     let _ = respond_to.send(Ok(()));
                                 }
@@ -507,5 +508,25 @@ impl StryiNetworkManager {
         }
 
         info!("StryiNetworkManager run loop terminated gracefully.");
+    }
+}
+
+impl StryiNetworkManager {
+    fn push_services_to_peers(
+        behaviour: &mut StryiBehaviour,
+        peers: Vec<PeerId>,
+        services: Vec<SignedServiceRecord>,
+    ) -> usize {
+        peers
+            .into_iter()
+            .map(|peer| {
+                behaviour.services_info.send_request(
+                    &peer,
+                    ServicesInfoRequest::PushServices {
+                        services: services.clone(),
+                    },
+                );
+            })
+            .count()
     }
 }

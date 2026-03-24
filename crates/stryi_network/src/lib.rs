@@ -27,32 +27,26 @@ use stryi_core::transactions::Transaction;
 pub enum RendezvousMode {
     /// Rendezvous Server
     Server,
-    /// Regular Rendezvous Client (connects to a server, discovers peers)
+    /// Regular Rendezvous Client (connects to a server).
     Client,
 }
 
-/// Global config for a NetworkManager: addresses, keypair, mode, etc.
+/// Global config for the NetworkManager
 #[derive(Debug, Clone)]
 pub struct StryiNetworkManagerConfig {
-    /// Which mode to run rendezvous (Server or Node).
+    /// Which mode to run rendezvous (Server or Client).
     pub rendezvous_mode: RendezvousMode,
 
     /// Multiaddr to listen on, e.g. `/ip4/0.0.0.0/tcp/62649`.
     /// If you specify `/tcp/0` it picks a random port.
     pub listen_addr: String,
 
-    /// If we are in Node mode, we can optionally dial a Rendezvous server,
+    /// If we are in Client mode, we can optionally dial a Rendezvous server,
     /// e.g. `/ip4/127.0.0.1/tcp/62649/p2p/<PEER_ID>`
     pub rendezvous_server_addr: Option<String>,
 
-    /// Rendezvous namespace, e.g. `"stryichain"`.
-    pub rendezvous_namespace: String,
-
     /// Identity Ed25519 key of the node
     pub keypair: Keypair,
-
-    /// Numeric protocol version
-    pub version: usize,
 
     /// Config for the p2p behaviour.
     pub stryi_behaviour_config: StryiBehaviourConfig,
@@ -65,9 +59,7 @@ impl Default for StryiNetworkManagerConfig {
             rendezvous_mode: RendezvousMode::Client,
             listen_addr: "/ip4/127.0.0.1/tcp/0".to_string(),
             rendezvous_server_addr: None,
-            rendezvous_namespace: "stryichain".to_string(),
             keypair: Keypair::generate_ed25519(),
-            version: 1,
             stryi_behaviour_config: Default::default(),
         }
     }
@@ -89,8 +81,8 @@ pub enum NetworkCommand {
         respond_to: tokio::sync::oneshot::Sender<Result<(), StryiNetworkError>>,
     },
 
-    /// Get the current network status, including connected peers and their addresses.
-    /// This returns only service-records that were signed and already validated.
+    /// Return peers that currently advertise the requested service kind.
+    /// This returns only signed service records that were already validated.
     QueryPeersWithService {
         service: String,
         respond_to: tokio::sync::oneshot::Sender<Vec<(PeerId, ServiceRecord)>>,
@@ -102,8 +94,7 @@ pub enum NetworkCommand {
         respond_to: tokio::sync::oneshot::Sender<Option<PublicKey>>,
     },
 
-    /// Signs with an own private key and adds service record to advertise registry
-    /// After that, any peer can query this service record and use it.
+    /// Signs and stores a local service advertisement so peers can discover it via the services' protocol.
     AddService {
         service: ServiceRecord,
         respond_to: tokio::sync::oneshot::Sender<Result<(), StryiNetworkError>>,
@@ -111,7 +102,7 @@ pub enum NetworkCommand {
 
     /// Requests mempool state from a random peer.
     /// Network manager returns `MemPoolSyncData` via oneshot.
-    /// note: *The applying this state on local impl is caller's duty*
+    /// NOTE: the caller is responsible for applying the returned snapshot.
     FetchMempoolState {
         respond_to: tokio::sync::oneshot::Sender<Result<MemPoolSyncData, StryiNetworkError>>,
     },

@@ -27,6 +27,22 @@ fn remote_addr_from_endpoint(endpoint: &ConnectedPoint) -> Multiaddr {
     }
 }
 
+fn last_known_peer_addr(peer: &crate::peer::PeerInfo) -> Option<Multiaddr> {
+    peer.addresses.first().cloned()
+}
+
+fn disconnect_addr_from_endpoint(
+    endpoint: &ConnectedPoint,
+    peer: Option<&crate::peer::PeerInfo>,
+) -> Option<Multiaddr> {
+    let endpoint_addr = remote_addr_from_endpoint(endpoint);
+    if endpoint_addr != Multiaddr::empty() {
+        Some(endpoint_addr)
+    } else {
+        peer.and_then(last_known_peer_addr)
+    }
+}
+
 impl StryiNetworkManager {
     /// Process a single event from the swarm, handling it according to its type.
     /// This function is called by the main event loop of the network manager.
@@ -41,7 +57,6 @@ impl StryiNetworkManager {
             >,
         >,
     ) {
-        // Log the event for debugging purposes
         trace!("Processing event: {:?}", event);
 
         match event {
@@ -51,18 +66,38 @@ impl StryiNetworkManager {
             }
 
             SwarmEvent::ConnectionEstablished {
-                peer_id, endpoint, ..
+                peer_id,
+                endpoint,
+                num_established,
+                ..
             } => {
                 let remote = remote_addr_from_endpoint(&endpoint);
                 {
                     let mut peers = self.connected_peers.write().await;
-                    peers.upsert_connected(peer_id, remote);
+                    peers.upsert_connected(peer_id, remote.clone());
+                }
+                if num_established.get() == 1 {
+                    let _ = self.event_tx.send(NetworkEvent::PeerConnected(remote));
                 }
             }
 
-            SwarmEvent::ConnectionClosed { peer_id, .. } => {
+            SwarmEvent::ConnectionClosed {
+                peer_id,
+                endpoint,
+                num_established,
+                ..
+            } => {
                 info!("Disconnected from {}", peer_id);
-                self.connected_peers.write().await.remove(&peer_id);
+                if num_established == 0 {
+                    let disconnected_addr = {
+                        let peers = self.connected_peers.read().await;
+                        disconnect_addr_from_endpoint(&endpoint, peers.get(&peer_id))
+                    };
+                    if let Some(addr) = disconnected_addr {
+                        let _ = self.event_tx.send(NetworkEvent::PeerDisconnected(addr));
+                    }
+                    self.connected_peers.write().await.remove(&peer_id);
+                }
             }
 
             // -- Stryichain's custom behavior events --
@@ -169,15 +204,15 @@ impl StryiNetworkManager {
                                 message: Message::Response { response, .. },
                                 ..
                             } => {
-                                let ServicesResponse { services } = response; // services = Vec<SignedServiceRecord>
+                                let ServicesResponse { services } = response;
 
-                                // 1. Store the signed list (single source of truth).
+                                // Store the signed list (single source of truth).
                                 {
                                     let mut peers = self.connected_peers.write().await;
                                     peers.set_signed_services(peer, services.clone());
                                 }
 
-                                // 2. verify now only to log the number of valid entries.
+                                // verify now only to log the number of valid entries.
                                 if let Some(pk_generic) = {
                                     let peers = self.connected_peers.read().await;
                                     peers.get(&peer).and_then(|pi| pi.public_key.clone())
@@ -320,12 +355,10 @@ impl StryiNetworkManager {
                 }
             }
 
-            // todo: process other events, such as dialing, gossipsub, rendezvous(server), identify, and ping. For now just log and keep looping
             _ => debug!("Got event: {:?}", event),
         }
     }
 
-    // handles gossipsub requests
     async fn handle_gossipsub_event(
         &self,
         event: gossipsub::Event,
@@ -344,22 +377,18 @@ impl StryiNetworkManager {
                     &message_id.to_string()
                 );
 
-                // Check the topics name and define how to process a message correspondingly
                 match message.topic.as_str() {
-                    // Try to process everything from transactions topic as a transaction
                     manager::TRANSACTIONS_TOPIC_NAME => {
                         let tx: Transaction = decode_from_slice(&message.data, standard())
                             .map_err(StryiNetworkError::DecodeGossipsubMessageError)?
                             .0;
                         debug!("Received transaction {} in gossipsub", &tx.data.hash());
 
-                        // try to generate and send `NewTransaction` event
                         self.event_tx
                             .send(NetworkEvent::NewTransaction(tx))
                             .map_err(StryiNetworkError::CannotSendEvent)?;
                     }
 
-                    // and from blocks topic as a block
                     manager::BLOCKS_TOPIC_NAME => {
                         let broadcast_block: BroadcastBlock =
                             decode_from_slice(&message.data, standard())
@@ -370,13 +399,11 @@ impl StryiNetworkManager {
                             &broadcast_block.block.block_hash()
                         );
 
-                        // Try generate and send `NewBlock` event
                         self.event_tx
                             .send(NetworkEvent::NewBlock(broadcast_block))
                             .map_err(StryiNetworkError::CannotSendEvent)?;
                     }
 
-                    // chain tip announcements
                     manager::TIPS_TOPIC_NAME => {
                         let announcement: ChainTipAnnouncement =
                             decode_from_slice(&message.data, standard())
@@ -395,22 +422,19 @@ impl StryiNetworkManager {
                             .map_err(StryiNetworkError::CannotSendEvent)?;
                     }
 
-                    // We don't care about all other topics
                     _ => {}
                 };
 
                 Ok(())
             }
+
             gossipsub::Event::Subscribed { .. } => Ok(()),
             gossipsub::Event::Unsubscribed { .. } => Ok(()),
-
-            // We don't care about these two I guess
             gossipsub::Event::GossipsubNotSupported { .. } => Ok(()),
             gossipsub::Event::SlowPeer { .. } => Ok(()),
         }
     }
 
-    /// Handles an inbound Services-Info request (we are responder).
     async fn handle_services_info_request(
         &self,
         behaviour: &mut StryiBehaviour,

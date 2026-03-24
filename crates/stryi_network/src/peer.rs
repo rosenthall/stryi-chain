@@ -15,10 +15,10 @@ pub struct PeerInfo {
     pub last_seen: Option<SystemTime>,
 
     /// All known addresses for this peer.  
-    /// TODO: Is storing >1 address for a single peer necessary for design?
+    // NOTE: Is storing >1 address for a single peer necessary for design?
     pub addresses: Vec<Multiaddr>,
 
-    /// Cached answer of `ServicesInfoRequest` for this peer - **signed blobs**,
+    /// Cached signed service advertisements received from this peer
     /// ready for retransmission.
     pub services: Vec<SignedServiceRecord>,
 
@@ -36,7 +36,7 @@ impl PeerInfo {
         Self {
             established_at: Some(SystemTime::now()),
             last_seen: None,
-            addresses: remote.into_iter().collect(), // zero or one
+            addresses: remote.into_iter().collect(),
             public_key: None,
             services: Vec::new(),
             consecutive_ping_failures: 0,
