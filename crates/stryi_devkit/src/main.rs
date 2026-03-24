@@ -1,6 +1,5 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
-#![feature(exact_size_is_empty)]
 
 /// Implementation of ChainGen tool.
 mod chaingen;
@@ -150,9 +149,9 @@ async fn main() -> Result<(), i32> {
     std::process::exit(result_into_code(cmd_result));
 }
 
-/// Maps `Result<(), i32>` into code.
+/// Maps `Result<(), i32>` into code:
 /// `Ok(_)` to EXIT_OK
-/// And `Err(c)` to c.
+/// And `Err(code)` to `code`.
 fn result_into_code(res: Result<(), i32>) -> i32 {
     match res {
         Ok(_) => EXIT_OK,

@@ -1,7 +1,5 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
-#![feature(new_range_api)]
-#![feature(sized_type_properties)]
 
 /// `hash` module contains some higher-level abstractions for typed hashing
 /// There is a lot of stuff that has own hash format in the Stryi-Chain :

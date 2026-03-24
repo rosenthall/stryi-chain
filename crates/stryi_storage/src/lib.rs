@@ -60,7 +60,6 @@
 #![allow(incomplete_features)]
 // This feature was added to avoid a known bug: https://github.com/rust-lang/rust/issues/133199
 #![feature(generic_const_exprs)]
-#![feature(new_range_api)]
 
 mod blocks;
 mod error;

@@ -8,7 +8,7 @@ use fjall::{Slice, UserKey, UserValue};
 use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::convert::TryFrom;
-use std::range::RangeInclusive;
+use std::ops::RangeInclusive;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::storage::BlockStorage;
 
@@ -193,17 +193,18 @@ impl BlockStorage for StryiStorage {
     ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>> {
         let blocks_partition = self.blocks_partition.clone();
         let heights_partition = self.heights_partition.clone();
+        let start = *range.start();
+        let end = *range.end();
 
         Box::pin(async move {
             // Early return if range is invalid
-            StryiStorage::validate_range(range)?;
+            StryiStorage::validate_range(&range)?;
 
             // Setup result map
-            let len = range.into_iter().count();
-            let mut result_map = HashMap::with_capacity(len);
+            let mut result_map = HashMap::with_capacity(end - start + 1);
 
-            // Convert i32 to u64 in range for compatibility with return type
-            for height in range.iter().map(|n| n as u64) {
+            // Convert usize to u64 in range for compatibility with return type
+            for height in (start..=end).map(|n| n as u64) {
                 // Get BlockHash by height
                 let key = StryiStorage::height_to_key(height as usize)?;
                 match heights_partition
@@ -383,7 +384,7 @@ pub(crate) mod tests {
         // assert_eq!(latest.header.height, 5);
 
         // Test 5: Get valid range
-        let range = storage.blocks_range(RangeInclusive::from(2..=4)).await?;
+        let range = storage.blocks_range(2usize..=4usize).await?;
         assert_eq!(range.len(), 3);
 
         assert_eq!(range[&2].header.height, 2);
@@ -407,7 +408,7 @@ pub(crate) mod tests {
         storage.put_block(&create_test_block(5)).await?;
 
         // Test: Range that includes gap
-        let empty_range = storage.blocks_range(RangeInclusive::from(3..=5)).await;
+        let empty_range = storage.blocks_range(3usize..=5usize).await;
         assert!(empty_range.is_err()); // should return error because of a gap
 
         Ok(())

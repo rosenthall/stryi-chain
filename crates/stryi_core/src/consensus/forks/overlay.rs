@@ -8,7 +8,7 @@ use dashmap::{DashMap, DashSet};
 use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::future::ready;
-use std::range::RangeInclusive;
+use std::ops::RangeInclusive;
 
 /// In-memory fork view over canonical storage.
 ///
@@ -356,14 +356,16 @@ where
     ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>> {
         let delta = self.block_delta.clone();
         let base = self.base;
-        let heights: Vec<u64> = range.into_iter().map(|n| n as u64).collect();
+        let start = *range.start();
+        let end = *range.end();
+        let heights: Vec<u64> = (start..=end).map(|n| n as u64).collect();
 
         Box::pin(async move {
             let mut result = HashMap::new();
 
             for blk in delta.iter() {
                 let height = blk.value().header.height;
-                if range.contains(&(height as usize)) {
+                if (start..=end).contains(&(height as usize)) {
                     result.insert(height, blk.value().clone());
                 }
             }

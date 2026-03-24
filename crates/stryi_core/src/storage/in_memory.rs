@@ -15,7 +15,7 @@ use crate::{
 use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::future::ready;
-use std::range::RangeInclusive;
+use std::ops::RangeInclusive;
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -360,11 +360,11 @@ impl BlockStorage for StryiInMemoryStorage {
         // Capture locks so they can be used inside async move
         let heights_lock = &self.blocks_heights;
         let blocks_lock = &self.blocks;
-        let start = range.start;
-        let end = range.last;
+        let start = *range.start();
+        let end = *range.end();
 
         Box::pin(async move {
-            Self::validate_range(range)?;
+            Self::validate_range(&range)?;
 
             // Read both maps under their own RwLock guards
             let heights_map = heights_lock.read().await;
@@ -666,10 +666,7 @@ mod tests {
                 .contains_key(&1)
         );
 
-        let range = RangeInclusive {
-            start: 0usize,
-            last: 1usize,
-        };
+        let range = 0usize..=1usize;
 
         assert_eq!(store.blocks_range(range).await.unwrap().len(), 2);
 

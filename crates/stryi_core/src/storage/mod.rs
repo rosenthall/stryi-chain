@@ -11,7 +11,7 @@ use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
-use std::range::RangeInclusive;
+use std::ops::RangeInclusive;
 
 /// Trait representing a storage backend for UTXOs.
 ///
@@ -175,11 +175,11 @@ pub trait BlockStorage: Send + Sync {
     /// Validates an inclusive range.
     /// Returns an error converted from [`RangeError::InvalidRange`] if `start > end`.
 
-    fn validate_range(range: RangeInclusive<usize>) -> Result<(), Self::StorageError>
+    fn validate_range(range: &RangeInclusive<usize>) -> Result<(), Self::StorageError>
     where
         Self::StorageError: From<RangeError>,
     {
-        let (start, end) = (range.start, range.last);
+        let (start, end) = (*range.start(), *range.end());
 
         if start > end {
             Err(RangeError::InvalidRange { start, end }.into())
