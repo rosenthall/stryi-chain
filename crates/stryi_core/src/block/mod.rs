@@ -155,7 +155,7 @@ impl Block {
         let header = BlockHeader {
             merkle_root_hash: merkle_hash,
 
-            // Use provided values for chain version
+            // Use provided values for the chain version
             version,
             difficulty_bits: 0, // Zero in genesis blocks
 
@@ -188,7 +188,7 @@ impl Block {
 
     /// Computes the Merkle root from a list of transactions using MerkleTree.
     pub fn compute_merkle_root(transactions: &[Transaction]) -> MerkleHash {
-        // Convert each transaction into a byte vector, e.g., by serializing it
+        // Convert each transaction into a byte vector by serializing it via bincode
         let leaves_data: Vec<Vec<u8>> = transactions
             .iter()
             .map(|tx| {
@@ -202,7 +202,7 @@ impl Block {
     }
 
     /// Calculates the block hash.
-    /// Returns hardcoded BlockHash::empty value if the block is genesis
+    /// If genesis, returns `Bx00000000000000000000000000000000000000`
     pub fn block_hash(&self) -> BlockHash {
         if self.is_genesis() {
             return BlockHash::empty();
@@ -215,16 +215,31 @@ impl Block {
         BlockHash::new(&header_bytes)
     }
 
+    /// Returns the miner reward recipient from the coinbase transaction.
+    /// Returns `None` for genesis or structurally invalid non-genesis blocks.
+    pub fn miner_address(&self) -> Option<AccountAddress> {
+        if self.is_genesis() {
+            return None;
+        }
+
+        let first_tx = self.data.transactions.first()?;
+        if first_tx.data.kind != TransactionKind::Coinbase {
+            return None;
+        }
+        debug_assert_eq!(first_tx.data.kind, TransactionKind::Coinbase);
+
+        if first_tx.data.outputs.len() != 1 {
+            return None;
+        }
+        debug_assert_eq!(first_tx.data.outputs.len(), 1);
+
+        first_tx.data.outputs.first().map(|output| output.recipient)
+    }
+
     /// Validates the Proof-of-Work (PoW) for the block.
     ///
-    /// This method computes the hash of the block using the block's header
-    /// and then checks if it meets the difficulty target specified in the header's `bits` field.
-    /// If block kind is genesis - returns `true` immediately.
-    ///
-    /// # Returns
-    ///
-    /// * `true` if the block hash satisfies the required difficulty.
-    /// * `false` otherwise.
+    /// Computes the hash of the block and then checks if it meets the difficulty target specified in the header's `bits` field.
+    /// For genesis blocks return `true`.
     pub fn validate_proof_of_work(&self) -> bool {
         // Genesis blocks can go without PoW checks
         if self.is_genesis() {
@@ -238,13 +253,8 @@ impl Block {
 
     /// Validates the Merkle root of the block.
     ///
-    /// This method recomputes the Merkle root from the block's transactions and compares it
+    /// Recomputes the Merkle root from the block's transactions and compares it
     /// with the `merkle_root_hash` stored in the block header.
-    ///
-    /// # Returns
-    ///
-    /// * `true` if root is valid
-    /// * `false` otherwise.
     pub fn is_merkle_root_valid(&self) -> bool {
         let computed_root = Self::compute_merkle_root(&self.data.transactions);
         computed_root == self.header.merkle_root_hash
@@ -254,6 +264,7 @@ impl Block {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::address::AccountAddress;
     use crate::transactions::{TransactionData, TransactionKind};
     use k256::ecdsa::SigningKey;
     use k256::elliptic_curve::rand_core::OsRng;
@@ -302,5 +313,37 @@ mod tests {
         // Print out the resulting block hashes
         println!("Block hash1: {}", hash1);
         println!("Block hash2: {}", hash2);
+    }
+
+    #[test]
+    fn miner_address_returns_coinbase_recipient() {
+        let miner = AccountAddress::new(&[7u8; 20]);
+        let coinbase = Transaction::new_unsigned(TransactionData {
+            version: 1,
+            kind: TransactionKind::Coinbase,
+            inputs: vec![],
+            outputs: vec![TransactionOut {
+                value: 50,
+                recipient: miner,
+            }],
+        });
+
+        let block = Block::new(vec![coinbase], BlockHash::empty(), 1, 8, 1_700_000_000, 1);
+
+        assert_eq!(block.miner_address(), Some(miner));
+    }
+
+    #[test]
+    fn miner_address_returns_none_for_non_coinbase_first_transaction() {
+        let tx = Transaction::new_unsigned(TransactionData {
+            version: 1,
+            kind: TransactionKind::Payment,
+            inputs: vec![],
+            outputs: vec![],
+        });
+
+        let block = Block::new(vec![tx], BlockHash::empty(), 1, 8, 1_700_000_000, 1);
+
+        assert_eq!(block.miner_address(), None);
     }
 }

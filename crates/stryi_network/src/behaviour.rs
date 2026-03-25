@@ -4,18 +4,17 @@ use std::{
     time::Duration,
 };
 
+use crate::RendezvousMode;
 use crate::error::{StryiNetworkError, StryiNetworkError::GossipsubConfigError};
 use crate::mempool::{MempoolEvent, MempoolSyncBehaviour};
 use crate::services::{ServicesEvent, ServicesInfoBehaviour};
-use crate::RendezvousMode;
 use libp2p::identity::Keypair;
 use libp2p::request_response::ProtocolSupport;
 use libp2p::{
     StreamProtocol,
     gossipsub::{
-        Behaviour as Gossipsub, Config as GossipsubConfig,
-        ConfigBuilder as GossipsubConfigBuilder, Event as GossipsubEvent, MessageAuthenticity,
-        MessageId, ValidationMode,
+        Behaviour as Gossipsub, Config as GossipsubConfig, ConfigBuilder as GossipsubConfigBuilder,
+        Event as GossipsubEvent, MessageAuthenticity, MessageId, ValidationMode,
     },
     identify::{Behaviour as Identify, Config as IdentifyConfig, Event as IdentifyEvent},
     ping::{Behaviour as Ping, Config as PingConfig, Event as PingEvent},
@@ -186,7 +185,9 @@ impl StryiBehaviour {
         Ok(gossipsub_behaviour)
     }
 
-    fn build_gossipsub_config(cfg: &StryiBehaviourConfig) -> Result<GossipsubConfig, StryiNetworkError> {
+    fn build_gossipsub_config(
+        cfg: &StryiBehaviourConfig,
+    ) -> Result<GossipsubConfig, StryiNetworkError> {
         let msg_id_fn = |msg: &libp2p::gossipsub::Message| {
             let mut hasher = DefaultHasher::new();
             msg.data.hash(&mut hasher);
@@ -230,8 +231,7 @@ mod tests {
             gossipsub_heartbeat: Duration::from_secs(42),
         };
 
-        let gossipsub_cfg =
-            StryiBehaviour::build_gossipsub_config(&cfg).expect("gossipsub config");
+        let gossipsub_cfg = StryiBehaviour::build_gossipsub_config(&cfg).expect("gossipsub config");
 
         assert_eq!(gossipsub_cfg.heartbeat_interval(), Duration::from_secs(42));
     }

@@ -12,7 +12,7 @@ use crate::node::sync::{connect_to_peer, query_sync_peers};
 use crate::tls::NodeTlsIdentity;
 use multiaddr::Multiaddr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::consensus::{ConsensusEngine, ConsensusVerdict, StryiConsensusEngine};
 use stryi_core::mempool::MemPool;
@@ -82,10 +82,7 @@ impl EventLoop {
         let peer_id = http_service_config.peer_id;
 
         // unpack miner bridge
-        let (mut mined_blocks_receiver, miner_address) = match miner_bridge {
-            Some(mb) => (Some(mb.mined_blocks_receiver), Some(mb.miner_address)),
-            None => (None, None),
-        };
+        let mut mined_blocks_receiver = miner_bridge.map(|mb| mb.mined_blocks_receiver);
 
         // clone once per task
         let storage_for_http = Arc::clone(&storage);
@@ -165,7 +162,7 @@ impl EventLoop {
 
             let register = async |service: ServiceRecord| -> Result<(), StryiNodeError> {
                 let (respond_to, receive_here) =
-                    tokio::sync::oneshot::channel::<Result<(), StryiNetworkError>>();
+                    oneshot::channel::<Result<(), StryiNetworkError>>();
 
                 // call NetworkCommand::AddService
                 net_cmd
@@ -255,9 +252,14 @@ impl EventLoop {
 
                     // --- local miner produced a block ---
                     Some(mined_block) = recv_mined_block(&mut mined_blocks_receiver) => {
+                        let mined_block_miner = mined_block
+                            .miner_address()
+                            .expect("Locally mined blocks must contain a valid coinbase");
+
                         info!("=========================================");
                         info!("LOCAL MINER HAS MINED A BLOCK: ");
                         info!("Hash: {}", mined_block.block_hash());
+                        info!("Miner: {}", mined_block_miner);
                         info!("Merkle Root: {}", mined_block.header.merkle_root_hash);
                         info!("Transactions: {}", mined_block.data.transactions.len());
                         info!("=========================================");
@@ -293,13 +295,8 @@ impl EventLoop {
                                     pool.update_on_block(mined_block.data.clone());
                                     drop(pool);
 
-                                    let first_seen = SystemTime::now()
-                                    .duration_since(SystemTime::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs();
-
                                     // wrap it to BroadCastBlock
-                                    let wrapped = BroadcastBlock::new(mined_block, miner_address.expect("Miner's address has to be set"), first_seen);
+                                    let wrapped = BroadcastBlock::new(mined_block, peer_id);
                                     let (respond_to, rx) = oneshot::channel();
                                     let _ = net_cmd.send(NetworkCommand::PublishBlock { block: wrapped, respond_to }).await;
                                     if let Ok(Err(e)) = rx.await {
@@ -307,13 +304,7 @@ impl EventLoop {
                                     }
 
                                     if let Some(ann) = tip_ann {
-                                        info!("Reorg: announcing new tip height={}, work={}", ann.height, ann.cumulative_work);
-                                        last_announced_tip = Some(ann.tip_hash);
-                                        let (respond_to, rx) = oneshot::channel();
-                                        let _ = net_cmd.send(NetworkCommand::PublishChainTip { announcement: ann, respond_to }).await;
-                                        if let Ok(Err(e)) = rx.await {
-                                            warn!("Failed to publish reorg chain tip: {e}");
-                                        }
+                                        publish_reorg_tip_announcement(&net_cmd, &mut last_announced_tip, ann).await;
                                     }
 
 
@@ -331,14 +322,24 @@ impl EventLoop {
 
                             // -- got new block from the chain --
                             Ok(NetworkEvent::NewBlock(broadcast_block)) => {
-                                info!(
-                                    "Received block #{} ({}) from network",
-                                    broadcast_block.block.header.height,
-                                    broadcast_block.block.block_hash()
-                                );
+                                if let Some(miner_address) = broadcast_block.block.miner_address() {
+                                    info!(
+                                        "Received block #{} ({}) from network, origin peer {}, miner {}",
+                                        broadcast_block.block.header.height,
+                                        broadcast_block.block.block_hash(),
+                                        broadcast_block.origin_peer_id,
+                                        miner_address
+                                    );
+                                } else {
+                                    info!(
+                                        "Received block #{} ({}) from network, origin peer {}",
+                                        broadcast_block.block.header.height,
+                                        broadcast_block.block.block_hash(),
+                                        broadcast_block.origin_peer_id
+                                    );
+                                }
 
-                                let orig_miner_address = broadcast_block.miner_address;
-                                let orig_first_seen = broadcast_block.first_seen;
+                                let orig_origin_peer_id = broadcast_block.origin_peer_id;
                                 let block = broadcast_block.block;
 
                                 let mut engine = consensus_engine.lock().await;
@@ -374,13 +375,7 @@ impl EventLoop {
                                             drop(pool);
 
                                             if let Some(ann) = tip_ann {
-                                                info!("Reorg: announcing new tip height={}, work={}", ann.height, ann.cumulative_work);
-                                                last_announced_tip = Some(ann.tip_hash);
-                                                let (respond_to, rx) = oneshot::channel();
-                                                let _ = net_cmd.send(NetworkCommand::PublishChainTip { announcement: ann, respond_to }).await;
-                                                if let Ok(Err(e)) = rx.await {
-                                                    warn!("Failed to publish reorg chain tip: {e}");
-                                                }
+                                                publish_reorg_tip_announcement(&net_cmd, &mut last_announced_tip, ann).await;
                                             }
                                         } else {
                                             drop(engine);
@@ -393,8 +388,7 @@ impl EventLoop {
                                         if should_relay {
                                             let wrapped = BroadcastBlock::new(
                                                 block,
-                                                orig_miner_address,
-                                                orig_first_seen,
+                                                orig_origin_peer_id,
                                             );
                                             let (respond_to, rx) = oneshot::channel();
                                             let _ = net_cmd.send(NetworkCommand::PublishBlock { block: wrapped, respond_to }).await;
@@ -500,6 +494,30 @@ async fn recv_mined_block(rx: &mut Option<mpsc::Receiver<Block>>) -> Option<Bloc
     match rx {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
+    }
+}
+
+async fn publish_reorg_tip_announcement(
+    net_cmd: &mpsc::Sender<NetworkCommand>,
+    last_announced_tip: &mut Option<BlockHash>,
+    ann: ChainTipAnnouncement,
+) {
+    info!(
+        "Reorg: announcing new tip height={}, work={}",
+        ann.height, ann.cumulative_work
+    );
+    let tip_hash = ann.tip_hash;
+    *last_announced_tip = Some(tip_hash);
+
+    let (respond_to, rx) = oneshot::channel();
+    let _ = net_cmd
+        .send(NetworkCommand::PublishChainTip {
+            announcement: ann,
+            respond_to,
+        })
+        .await;
+    if let Ok(Err(e)) = rx.await {
+        warn!("Failed to publish reorg chain tip: {e}");
     }
 }
 

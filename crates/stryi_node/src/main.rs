@@ -487,9 +487,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // Optionally build the miner bridge
-    let miner_bridge = miner_config.as_ref().map(|mc| MinerBridge {
+    let miner_bridge = miner_config.as_ref().map(|_mc| MinerBridge {
         mined_blocks_receiver,
-        miner_address: mc.reward_address(),
     });
 
     // Build the node

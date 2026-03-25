@@ -51,10 +51,6 @@ impl StryiMinerConfig {
             reward_address,
         }
     }
-
-    pub(crate) fn reward_address(&self) -> AccountAddress {
-        self.reward_address
-    }
 }
 
 /// Miner is responsible for creating new blocks by collecting transactions from the mempool,
@@ -245,15 +241,17 @@ impl StryiMiner {
 
         // Check if there is at least one transaction in the mempool in case if `ignore_threshold` is true
         if ignore_threshold && txs_count == 0 {
-            info!("No transactions in the mempool, not starting a new mining round.");
+            trace!("Skipping mining round: mempool is empty.");
             return;
         }
 
         if ignore_threshold {
-            info!("Starting a new mining round, ignoring tx threshold. 'Can't wait any longer!'");
+            info!(
+                "Starting a new mining round after max delay with {txs_count} pending transaction(s)."
+            );
         } else {
             info!(
-                "Starting a new mining round, tx threshold reached: {}",
+                "Starting a new mining round with {txs_count} pending transaction(s); threshold {} reached.",
                 self.cfg.tx_threshold
             );
         }
@@ -281,7 +279,6 @@ impl StryiMiner {
         let cancel = CancellationToken::new();
         let task_cancel = cancel.clone();
         let mut block_for_task = block_base.clone();
-
         let local_blocks_tx = self.local_blocks_tx.clone();
 
         let handle: JoinHandle<()> = tokio::task::spawn_blocking(move || {
@@ -293,9 +290,12 @@ impl StryiMiner {
                 };
 
                 rt.block_on(async move {
+                    let miner_address = block_for_task
+                        .miner_address()
+                        .expect("Locally mined blocks must contain a valid coinbase");
                     info!(
-                        "Mined block #{}, sending to node for validation...",
-                        block_for_task.header.height
+                        "Mined block #{} by {}, sending to node for validation...",
+                        block_for_task.header.height, miner_address
                     );
                     let _ = local_blocks_tx.send(block_for_task).await;
                 });
