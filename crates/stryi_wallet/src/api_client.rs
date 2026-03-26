@@ -82,7 +82,7 @@ pub struct TransactionResponse {
     pub signature: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionQueryResponse {
     pub status: TransactionQueryStatus,
     pub tx_hash: TransactionHash,

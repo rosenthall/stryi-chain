@@ -1,10 +1,11 @@
 use crate::QueryId;
-use crate::api_client::{NodeClient, TransactionQueryStatus};
+use crate::api_client::{AddressBalanceResponse, NodeClient, TransactionQueryStatus};
 use crate::keys::{
     WalletFile, find_key_by_address, generate_keypair, import_key, load_wallet, require_wallet,
     save_wallet,
 };
 use crate::tx_builder::{SpendableUtxo, build_payment, serialize_for_submission};
+use crate::tx_wait::wait_for_tx_confirmation;
 use anyhow::Context;
 use colored::Colorize;
 use std::path::Path;
@@ -158,21 +159,34 @@ pub(crate) fn cmd_rename(
     Ok(())
 }
 
-pub(crate) async fn cmd_balance(node_url: &str, address: &AccountAddress) -> anyhow::Result<()> {
-    let client = NodeClient::new(node_url);
-    let addr_str = address.to_string();
-    let resp = client.get_balance(&addr_str).await?;
+pub(crate) async fn cmd_balance_many(node_url: &str, addresses: &[String]) -> anyhow::Result<()> {
+    let mut client = None;
+    let mut errors = Vec::new();
 
-    println!("Address: {}", resp.address.cyan());
-    println!("Balance: {}", resp.balance.to_string().green().bold());
+    for (i, raw) in addresses.iter().enumerate() {
+        print_batch_separator(i);
 
-    if !resp.utxos.is_empty() {
-        println!("\n{}:", format!("UTXOs ({})", resp.utxos.len()).bold());
-        for utxo in &resp.utxos {
-            println!("  {}:{} - value {}", utxo.txid, utxo.vout, utxo.value);
+        let address = match AccountAddress::from_hash_string(raw).context("invalid address") {
+            Ok(address) => address,
+            Err(e) => {
+                eprintln!("balance {}: {e}", raw.cyan());
+                errors.push(format!("{raw}: {e}"));
+                continue;
+            }
+        };
+
+        let client = client.get_or_insert_with(|| NodeClient::new(node_url));
+        if let Err(e) = cmd_balance_with_client(client, &address).await {
+            eprintln!("balance {}: {e}", raw.cyan());
+            errors.push(format!("{raw}: {e}"));
         }
     }
-    Ok(())
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("one or more balance queries failed: {}", errors.join(" | "));
+    }
 }
 
 pub(crate) async fn cmd_balance_all(wallet_path: &Path, node_url: &str) -> anyhow::Result<()> {
@@ -219,6 +233,7 @@ pub(crate) async fn cmd_send(
     from: &AccountAddress,
     to: &AccountAddress,
     amount: u64,
+    wait: bool,
 ) -> anyhow::Result<()> {
     let from_str = from.to_string();
     let to_str = to.to_string();
@@ -281,6 +296,11 @@ pub(crate) async fn cmd_send(
         "OK".green().bold(),
         format!("Transaction submitted (node: {})", resp).green()
     );
+
+    if wait {
+        confirm_transaction_and_print_balances(&client, &tx_hash, from, to).await?;
+    }
+
     Ok(())
 }
 
@@ -318,14 +338,82 @@ pub(crate) async fn cmd_nodestate(node_url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) async fn cmd_block(node_url: &str, identifier: &str) -> anyhow::Result<()> {
+pub(crate) async fn cmd_block_many(node_url: &str, identifiers: &[String]) -> anyhow::Result<()> {
+    let mut client = None;
+    let mut errors = Vec::new();
+
+    for (i, identifier) in identifiers.iter().enumerate() {
+        print_batch_separator(i);
+
+        let query = match block_query_from_identifier(identifier) {
+            Ok(query) => query,
+            Err(e) => {
+                eprintln!("block {}: {e}", identifier.cyan());
+                errors.push(format!("{identifier}: {e}"));
+                continue;
+            }
+        };
+
+        let client = client.get_or_insert_with(|| NodeClient::new(node_url));
+        if let Err(e) = cmd_block_with_client(client, &query).await {
+            eprintln!("block {}: {e}", identifier.cyan());
+            errors.push(format!("{identifier}: {e}"));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("one or more block queries failed: {}", errors.join(" | "));
+    }
+}
+
+pub(crate) async fn cmd_tx_many(node_url: &str, identifiers: &[String]) -> anyhow::Result<()> {
+    let mut client = None;
+    let mut errors = Vec::new();
+
+    for (i, identifier) in identifiers.iter().enumerate() {
+        print_batch_separator(i);
+
+        let tx_hash = match TransactionHash::from_hash_string(identifier)
+            .context("invalid transaction hash")
+        {
+            Ok(tx_hash) => tx_hash,
+            Err(e) => {
+                eprintln!("tx {}: {e}", identifier.cyan());
+                errors.push(format!("{identifier}: {e}"));
+                continue;
+            }
+        };
+
+        let client = client.get_or_insert_with(|| NodeClient::new(node_url));
+        if let Err(e) = cmd_tx_with_client(client, &tx_hash).await {
+            eprintln!("tx {}: {e}", identifier.cyan());
+            errors.push(format!("{identifier}: {e}"));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("one or more tx queries failed: {}", errors.join(" | "));
+    }
+}
+
+async fn cmd_balance_with_client(
+    client: &NodeClient,
+    address: &AccountAddress,
+) -> anyhow::Result<()> {
+    let addr_str = address.to_string();
+    let resp = client.get_balance(&addr_str).await?;
+    print_balance_detail(&resp);
+    Ok(())
+}
+
+fn block_query_from_identifier(identifier: &str) -> anyhow::Result<String> {
     let query = match crate::classify_identifier(identifier) {
         QueryId::TxHash(h) => {
-            anyhow::bail!(
-                "'{}' is a transaction hash. Use `tx --id {}` instead.",
-                h,
-                h
-            );
+            anyhow::bail!("'{}' is a transaction hash. Use `tx {}` instead.", h, h);
         }
         QueryId::Unknown(s) => {
             anyhow::bail!(
@@ -340,8 +428,11 @@ pub(crate) async fn cmd_block(node_url: &str, identifier: &str) -> anyhow::Resul
         }
     };
 
-    let client = NodeClient::new(node_url);
-    let resp = client.get_block(&query).await?;
+    Ok(query)
+}
+
+async fn cmd_block_with_client(client: &NodeClient, query: &str) -> anyhow::Result<()> {
+    let resp = client.get_block(query).await?;
 
     let block: Block =
         serde_json::from_value(resp.block).context("failed to deserialize block data")?;
@@ -350,20 +441,16 @@ pub(crate) async fn cmd_block(node_url: &str, identifier: &str) -> anyhow::Resul
     Ok(())
 }
 
-pub(crate) async fn cmd_tx(node_url: &str, identifier: &str) -> anyhow::Result<()> {
-    let tx_hash =
-        TransactionHash::from_hash_string(identifier).context("invalid transaction hash")?;
-
-    let client = NodeClient::new(node_url);
+async fn cmd_tx_with_client(client: &NodeClient, tx_hash: &TransactionHash) -> anyhow::Result<()> {
     let resp = client.get_transaction(&tx_hash.to_string()).await?;
 
     let rule = "-".repeat(40);
     println!();
-    println!("  {}", "Transaction Query".bold());
+    println!("  {}", "Transaction Known By Node".bold());
     println!("  {}", rule.cyan());
     println!(
         "  {:<20} {}",
-        "Status:".bold(),
+        "Known as:".bold(),
         format_tx_status(&resp.status)
     );
     println!(
@@ -372,24 +459,129 @@ pub(crate) async fn cmd_tx(node_url: &str, identifier: &str) -> anyhow::Result<(
         resp.tx_hash.to_string().cyan()
     );
 
-    if resp.status == TransactionQueryStatus::Confirmed {
-        if let Some(block_hash) = &resp.block_hash {
-            println!("  {:<20} {}", "Block:".bold(), block_hash);
+    match resp.status {
+        TransactionQueryStatus::Pending => {
+            println!("  {:<20} {}", "Location:".bold(), "mempool".yellow());
         }
-        if let Some(block_height) = resp.block_height {
-            println!(
-                "  {:<20} {}",
-                "Block height:".bold(),
-                block_height.to_string().cyan()
-            );
-        }
-        if let Some(tx_index) = resp.tx_index {
-            println!("  {:<20} {}", "Tx index:".bold(), tx_index);
+        TransactionQueryStatus::Confirmed => {
+            println!("  {:<20} {}", "Location:".bold(), "chain".green());
+
+            if let Some(block_hash) = &resp.block_hash {
+                println!("  {:<20} {}", "Block:".bold(), block_hash);
+            }
+            if let Some(block_height) = resp.block_height {
+                println!(
+                    "  {:<20} {}",
+                    "Block height:".bold(),
+                    block_height.to_string().cyan()
+                );
+            }
+            if let Some(tx_index) = resp.tx_index {
+                println!("  {:<20} {}", "Tx index:".bold(), tx_index);
+            }
         }
     }
 
     println!("  {}", rule.cyan());
     crate::print_transaction_response_detail(&resp.tx_hash.to_string(), &resp.transaction);
+    Ok(())
+}
+
+fn print_balance_detail(resp: &AddressBalanceResponse) {
+    let rule = "-".repeat(40);
+
+    println!();
+    println!("  {}", "Balance Reported By Node".bold());
+    println!("  {}", rule.cyan());
+    println!("  {:<20} {}", "Address:".bold(), resp.address.cyan());
+    println!(
+        "  {:<20} {}",
+        "Balance:".bold(),
+        resp.balance.to_string().green().bold()
+    );
+    println!(
+        "  {:<20} {}",
+        "UTXOs:".bold(),
+        resp.utxos.len().to_string().cyan()
+    );
+
+    if !resp.utxos.is_empty() {
+        println!("  {}", rule.cyan());
+        for utxo in &resp.utxos {
+            println!(
+                "  {} {}:{} - {}",
+                "utxo:".dimmed(),
+                utxo.txid,
+                utxo.vout,
+                utxo.value.to_string().green()
+            );
+        }
+    }
+
+    println!("  {}", rule.cyan());
+}
+
+fn print_balance_summary(resp: &AddressBalanceResponse) {
+    println!(
+        "  {} {}",
+        resp.address.cyan(),
+        resp.balance.to_string().green().bold()
+    );
+}
+
+fn print_batch_separator(index: usize) {
+    if index > 0 {
+        println!();
+        println!("  {}", "=".repeat(68).dimmed());
+        println!();
+    }
+}
+
+async fn confirm_transaction_and_print_balances(
+    client: &NodeClient,
+    tx_hash: &TransactionHash,
+    from: &AccountAddress,
+    to: &AccountAddress,
+) -> anyhow::Result<()> {
+    println!("Waiting for transaction {} to be confirmed...", tx_hash);
+    let confirmed = wait_for_tx_confirmation(client, tx_hash).await?;
+
+    println!(
+        "  {} {}",
+        "OK".green().bold(),
+        format!("Transaction confirmed: {}", confirmed.tx_hash).green()
+    );
+
+    if let Some(block_height) = confirmed.block_height {
+        println!(
+            "  {:<20} {}",
+            "Block height:".bold(),
+            block_height.to_string().cyan()
+        );
+    }
+
+    println!();
+    println!("{}", "Balances currently reported by node:".bold());
+
+    let mut balance_failed = false;
+    for address in [from, to] {
+        let addr_str = address.to_string();
+        match client.get_balance(&addr_str).await {
+            Ok(resp) => print_balance_summary(&resp),
+            Err(e) => {
+                eprintln!("balance {}: {e}", addr_str.cyan());
+                balance_failed = true;
+            }
+        }
+    }
+
+    if balance_failed {
+        anyhow::bail!(
+            "transaction {} was confirmed, but one or more balance queries failed",
+            tx_hash
+        );
+    }
+
     Ok(())
 }
 

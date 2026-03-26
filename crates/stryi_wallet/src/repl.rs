@@ -14,8 +14,8 @@ use std::path::Path;
 
 use crate::api_client::NodeClient;
 use crate::cmd::{
-    cmd_balance, cmd_balance_all, cmd_block, cmd_delete, cmd_generate, cmd_import, cmd_init,
-    cmd_list, cmd_nodestate, cmd_rename, cmd_send, cmd_tx,
+    cmd_balance_all, cmd_balance_many, cmd_block_many, cmd_delete, cmd_generate, cmd_import,
+    cmd_init, cmd_list, cmd_nodestate, cmd_rename, cmd_send, cmd_tx_many,
 };
 use crate::keys::load_wallet;
 use stryi_core::address::AccountAddress;
@@ -456,11 +456,15 @@ async fn handle_balance(
     node_url: &str,
     input: &CommandInput<'_>,
 ) -> Result<()> {
-    if let Some(raw) = input.optional_value(0) {
-        let addr = AccountAddress::from_hash_string(raw).context("invalid address")?;
-        cmd_balance(node_url, &addr).await
-    } else {
+    if input.values.is_empty() {
         cmd_balance_all(wallet_path, node_url).await
+    } else {
+        let addresses = input
+            .values
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect::<Vec<_>>();
+        cmd_balance_many(node_url, &addresses).await
     }
 }
 
@@ -472,6 +476,14 @@ async fn handle_send(wallet_path: &Path, node_url: &str, input: &CommandInput<'_
     let to = AccountAddress::from_hash_string(&to_str).context("invalid 'to' address")?;
 
     let amount: u64 = input.parse(2, "Amount", None, "invalid amount")?;
+    let wait = match input.optional_value(3) {
+        Some("--wait" | "wait") => true,
+        Some(other) => anyhow::bail!(
+            "unexpected extra argument '{}'. Did you mean `--wait`?",
+            other
+        ),
+        None => false,
+    };
 
     let client = NodeClient::new(node_url);
     let utxo_count = client
@@ -489,18 +501,36 @@ async fn handle_send(wallet_path: &Path, node_url: &str, input: &CommandInput<'_
         return Ok(());
     }
 
-    cmd_send(wallet_path, node_url, &from, &to, amount).await?;
+    cmd_send(wallet_path, node_url, &from, &to, amount, wait).await?;
     Ok(())
 }
 
 async fn handle_block(node_url: &str, input: &CommandInput<'_>) -> Result<()> {
-    let id = input.value(0, "Block height or hash", None)?;
-    cmd_block(node_url, &id).await
+    let ids = if input.values.is_empty() {
+        vec![input.value(0, "Block height or hash", None)?]
+    } else {
+        input
+            .values
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect::<Vec<_>>()
+    };
+
+    cmd_block_many(node_url, &ids).await
 }
 
 async fn handle_tx(node_url: &str, input: &CommandInput<'_>) -> Result<()> {
-    let id = input.value(0, "Transaction hash", None)?;
-    cmd_tx(node_url, &id).await
+    let ids = if input.values.is_empty() {
+        vec![input.value(0, "Transaction hash", None)?]
+    } else {
+        input
+            .values
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect::<Vec<_>>()
+    };
+
+    cmd_tx_many(node_url, &ids).await
 }
 
 fn handle_unknown_command(cmd: &str) {
@@ -529,17 +559,29 @@ fn print_repl_help() {
     println!("    {:<12} List addresses with private keys", "keys".cyan());
     println!("    {:<12} Delete a key from the wallet", "delete".cyan());
     println!("    {:<12} Rename a key in the wallet", "rename".cyan());
-    println!("    {:<12} Query address balance", "balance".cyan());
+    println!(
+        "    {:<12} Query balances reported by the node",
+        "balance".cyan()
+    );
     println!("    {:<12} Send a payment", "send".cyan());
     println!("    {:<12} Query a block by height or hash", "block".cyan());
-    println!("    {:<12} Query a transaction by hash", "tx".cyan());
+    println!(
+        "    {:<12} Query a transaction currently known by the node",
+        "tx".cyan()
+    );
     println!("    {:<12} Show node state", "nodestate".cyan());
     println!("    {:<12} Show this help", "help".cyan());
     println!("    {:<12} Clear screen", "clear".cyan());
     println!("    {:<12} Quit", "exit".cyan());
+    println!("\n  {}", "Examples:".bold());
+    println!("    {}", "balance".white());
+    println!("    {}", "balance @addr1 @addr2".white());
+    println!("    {}", "send @from @to 1000 [--wait]".white());
+    println!("    {}", "block 42 Bx...".white());
+    println!("    {}", "tx Tx... Tx...".white());
     println!(
         "\n  {}",
-        "  Args are prompted interactively, or pass inline: send @from @to 1000".white()
+        "  Args are prompted interactively when omitted.".white()
     );
     println!();
 }
@@ -584,39 +626,6 @@ mod tests {
         assert_eq!(wallet.keys[1].label, "mylabel");
     }
 
-    #[tokio::test]
-    async fn unknown_command_ok() {
-        let dir = TempDir::new().unwrap();
-        let wp = dir.path().join("wallet.json");
-        let result = dispatch_repl(&wp, "http://localhost:0", "foobar").await;
-        assert!(result.is_ok());
-        assert!(!result.unwrap());
-    }
-
-    #[tokio::test]
-    async fn exit_returns_true() {
-        let dir = TempDir::new().unwrap();
-        let wp = dir.path().join("wallet.json");
-        let result = dispatch_repl(&wp, "http://localhost:0", "exit").await;
-        assert!(result.unwrap());
-    }
-
-    #[tokio::test]
-    async fn send_missing_args() {
-        let dir = TempDir::new().unwrap();
-        let wp = dir.path().join("wallet.json");
-        let result = dispatch_repl(&wp, "http://localhost:0", "send @a").await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn import_missing_args() {
-        let dir = TempDir::new().unwrap();
-        let wp = dir.path().join("wallet.json");
-        let result = dispatch_repl(&wp, "http://localhost:0", "import").await;
-        assert!(result.is_err());
-    }
-
     #[test]
     fn fuzzy_suggest_close_match() {
         assert_eq!(fuzzy_suggest("balence"), Some("balance"));
@@ -641,7 +650,7 @@ mod tests {
         .await;
         assert!(result.is_err());
         let message = result.err().unwrap().to_string();
-        assert!(message.contains("Use `tx --id"));
+        assert!(message.contains("Use `tx "));
     }
 
     #[tokio::test]

@@ -6,6 +6,7 @@ mod cmd;
 mod keys;
 mod repl;
 mod tx_builder;
+mod tx_wait;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -60,10 +61,11 @@ enum Command {
         show_keys: bool,
     },
 
-    /// Query the balance for an address from the node.
+    /// Query balances for wallet addresses or explicit addresses from the node.
     Balance {
-        #[arg(long)]
-        address: String,
+        /// Zero or more addresses. If omitted, query all addresses in the wallet.
+        #[arg(value_name = "ADDRESS")]
+        addresses: Vec<String>,
     },
 
     /// Build, sign, and submit a payment transaction.
@@ -76,6 +78,9 @@ enum Command {
 
         #[arg(long)]
         amount: u64,
+
+        #[arg(long)]
+        wait: bool,
     },
 
     /// Delete a key from the wallet.
@@ -93,18 +98,18 @@ enum Command {
         label: String,
     },
 
-    /// Query a block by height or hash.
+    /// Query one or more blocks by height or hash.
     Block {
-        /// Block height (u64) or block hash (Bx...).
-        #[arg(long)]
-        id: String,
+        /// One or more block heights (u64) or block hashes (Bx...).
+        #[arg(value_name = "ID", required = true, num_args = 1..)]
+        ids: Vec<String>,
     },
 
-    /// Query a transaction by hash.
+    /// Query one or more transactions currently known by the node.
     Tx {
-        /// Transaction hash (Tx...).
-        #[arg(long)]
-        id: String,
+        /// One or more transaction hashes (Tx...).
+        #[arg(value_name = "HASH", required = true, num_args = 1..)]
+        ids: Vec<String>,
     },
 
     /// Query and display the connected node's state.
@@ -139,9 +144,12 @@ async fn main() -> Result<()> {
         Command::Generate { label } => cmd::cmd_generate(&wallet_path, &label)?,
         Command::Import { key, label } => cmd::cmd_import(&wallet_path, &key, &label)?,
         Command::List { show_keys } => cmd::cmd_list(&wallet_path, show_keys)?,
-        Command::Balance { address } => {
-            let addr = AccountAddress::from_hash_string(&address).context("invalid address")?;
-            cmd::cmd_balance(&cli.node, &addr).await?
+        Command::Balance { addresses } => {
+            if addresses.is_empty() {
+                cmd::cmd_balance_all(&wallet_path, &cli.node).await?
+            } else {
+                cmd::cmd_balance_many(&cli.node, &addresses).await?
+            }
         }
         Command::Delete { address } => {
             let addr = AccountAddress::from_hash_string(&address).context("invalid address")?;
@@ -151,13 +159,18 @@ async fn main() -> Result<()> {
             let addr = AccountAddress::from_hash_string(&address).context("invalid address")?;
             cmd::cmd_rename(&wallet_path, &addr, &label)?
         }
-        Command::Block { id } => cmd::cmd_block(&cli.node, &id).await?,
-        Command::Tx { id } => cmd::cmd_tx(&cli.node, &id).await?,
-        Command::Send { from, to, amount } => {
+        Command::Block { ids } => cmd::cmd_block_many(&cli.node, &ids).await?,
+        Command::Tx { ids } => cmd::cmd_tx_many(&cli.node, &ids).await?,
+        Command::Send {
+            from,
+            to,
+            amount,
+            wait,
+        } => {
             let from_addr =
                 AccountAddress::from_hash_string(&from).context("invalid 'from' address")?;
             let to_addr = AccountAddress::from_hash_string(&to).context("invalid 'to' address")?;
-            cmd::cmd_send(&wallet_path, &cli.node, &from_addr, &to_addr, amount).await?
+            cmd::cmd_send(&wallet_path, &cli.node, &from_addr, &to_addr, amount, wait).await?
         }
         Command::NodeState => cmd::cmd_nodestate(&cli.node).await?,
     }
