@@ -1,5 +1,6 @@
 use crate::{NetworkCommand, NetworkEvent};
 use bincode::error::DecodeError;
+use libp2p::gossipsub::PublishError;
 use libp2p::request_response::InboundRequestId;
 use stryi_core::mempool::MemPoolError;
 use thiserror::Error;
@@ -26,6 +27,9 @@ pub enum StryiNetworkError {
 
     #[error("Cannot construct gossipsub config, error: {0}")]
     GossipsubConfigError(libp2p::gossipsub::ConfigBuilderError),
+
+    #[error("Gossipsub publish error: {0}")]
+    GossipsubPublish(#[from] PublishError),
 
     /// Wrapper around tokio::sync::mpsc::error for our NetworkManager
     #[error("Cannot send NetworkCommand to NetworkManager: {0}")]
@@ -58,5 +62,12 @@ pub enum StryiNetworkError {
 impl StryiNetworkError {
     pub fn other(msg: impl ToString) -> Self {
         StryiNetworkError::Other(msg.to_string())
+    }
+
+    pub fn is_gossipsub_insufficient_peers(&self) -> bool {
+        matches!(
+            self,
+            StryiNetworkError::GossipsubPublish(PublishError::InsufficientPeers)
+        )
     }
 }

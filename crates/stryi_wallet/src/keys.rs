@@ -1,5 +1,3 @@
-//! Wallet key management.
-
 use anyhow::{Context, Result};
 use k256::ecdsa::SigningKey;
 use k256::elliptic_curve::rand_core::OsRng;
@@ -57,7 +55,7 @@ pub fn require_wallet(path: &Path) -> Result<WalletFile> {
     load_wallet(path).context("no wallet found — run `stryi-wallet init` first")
 }
 
-/// Creates parent dirs if needed.
+/// Saves wallet in json file. Creates parent dirs if needed.
 pub fn save_wallet(path: &Path, wallet: &WalletFile) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)

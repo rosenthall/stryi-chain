@@ -58,10 +58,10 @@ pub fn generate_distributing_transaction(
     info!(
         funder = %funder_address,
         total_balance = total_balance,
-        accounts = account_num,
-        utxo_count = num_inputs,
         "Starting fund distribution"
     );
+
+    debug!(accounts = account_num, utxo_count = num_inputs,);
 
     // Calculate fees
     let fee_policy = FeePolicy::default();

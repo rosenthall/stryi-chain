@@ -18,6 +18,7 @@ use crate::cmd::{
     cmd_init, cmd_list, cmd_nodestate, cmd_rename, cmd_send, cmd_tx_many,
 };
 use crate::keys::load_wallet;
+use crate::output::shorten_middle;
 use stryi_core::address::AccountAddress;
 use stryi_core::transactions::FeePolicy;
 
@@ -175,11 +176,7 @@ fn prompt_select_address(wallet_path: &Path, label: &str) -> Result<String> {
         }
         println!();
         let input = prompt_line(&format!("{} (# or address)", label), None)?;
-        if let Ok(idx) = input.parse::<usize>()
-            && idx >= 1
-            && idx <= wallet.keys.len()
-        {
-            let addr = wallet.keys[idx - 1].address.to_string();
+        if let Some(addr) = wallet_address_from_selection(wallet_path, &input) {
             println!("    -> {}", addr.cyan());
             return Ok(addr);
         }
@@ -188,25 +185,83 @@ fn prompt_select_address(wallet_path: &Path, label: &str) -> Result<String> {
     prompt_line(label, None)
 }
 
+fn wallet_address_from_selection(wallet_path: &Path, input: &str) -> Option<String> {
+    let wallet = load_wallet(wallet_path).ok()?;
+    let idx = input.parse::<usize>().ok()?;
+    let offset = idx.checked_sub(1)?;
+
+    wallet
+        .keys
+        .get(offset)
+        .map(|entry| entry.address.to_string())
+}
+
 /// Prints a bordered summary box before the user confirms a send.
-fn print_tx_summary(from: &str, to: &str, amount: u64, fee_est: u64) {
-    let rule = "-".repeat(52);
+fn print_tx_summary(
+    wallet_path: &Path,
+    from: &str,
+    to: &str,
+    amount: u64,
+    fee_est: u64,
+    wait_for_confirmation: bool,
+) {
+    let rule = "_".repeat(44);
+    let wallet = load_wallet(wallet_path).ok();
+    let label_for = |address: &str| {
+        wallet
+            .as_ref()
+            .into_iter()
+            .flat_map(|wallet| wallet.keys.iter())
+            .find(|entry| entry.address == address)
+            .map(|entry| entry.label.as_str())
+    };
+    let from_label = label_for(from);
+    let to_label = label_for(to);
+
     println!();
+    println!("  {}", "Transfer Preview".cyan().bold());
     println!("  {}", rule.cyan());
-    println!("  {}", "  Send Transaction".cyan().bold());
-    println!("  {}", rule.cyan());
-    println!("    {:<12} {}", "From:".bold(), from.cyan());
-    println!("    {:<12} {}", "To:".bold(), to.cyan());
+    println!("  {}", "From".bold());
+    if let Some(label) = from_label {
+        println!("    {:<8} {}", "Label".dimmed(), label.white().bold());
+    }
     println!(
-        "    {:<12} {}",
-        "Amount:".bold(),
-        amount.to_string().green()
+        "    {:<8} {}",
+        "Address".dimmed(),
+        shorten_middle(from).cyan()
     );
-    println!("    {:<12} ~{}", "Est. fee:".bold(), fee_est);
+    println!("  {}", "To".bold());
+    if let Some(label) = to_label {
+        println!("    {:<8} {}", "Label".dimmed(), label.white().bold());
+    }
     println!(
-        "    {:<12} {}",
-        "Total:".bold(),
-        format_args!("~{}", amount + fee_est).to_string().yellow()
+        "    {:<8} {}",
+        "Address".dimmed(),
+        shorten_middle(to).cyan()
+    );
+    println!(
+        "    {:<8} {}",
+        "Amount".dimmed(),
+        amount.to_string().green().bold()
+    );
+    println!(
+        "    {:<8} {}",
+        "Fee".dimmed(),
+        format!("~{}", fee_est).yellow()
+    );
+    println!(
+        "    {:<8} {}",
+        "Total".dimmed(),
+        format!("~{}", amount + fee_est).yellow().bold()
+    );
+    println!(
+        "    {:<8} {}",
+        "After".dimmed(),
+        if wait_for_confirmation {
+            "Wait for confirmation".yellow().bold()
+        } else {
+            "Return after submission".cyan().bold()
+        }
     );
     println!("  {}", rule.cyan());
     println!();
@@ -226,10 +281,6 @@ impl<'a> CommandInput<'a> {
             Some(value) => Ok((*value).to_string()),
             None => prompt_line(prompt, default),
         }
-    }
-
-    fn optional_value(&self, index: usize) -> Option<&'a str> {
-        self.values.get(index).copied()
     }
 
     fn parse<T>(
@@ -256,7 +307,8 @@ impl<'a> CommandInput<'a> {
         invalid_msg: &'static str,
     ) -> Result<(String, AccountAddress)> {
         let raw = match self.values.get(index) {
-            Some(value) => (*value).to_string(),
+            Some(value) => wallet_address_from_selection(wallet_path, value)
+                .unwrap_or_else(|| (*value).to_string()),
             None => prompt_select_address(wallet_path, prompt)?,
         };
         let address = AccountAddress::from_hash_string(&raw).context(invalid_msg)?;
@@ -274,28 +326,27 @@ pub(crate) async fn run_interactive(wallet_path: &Path, node_url: &str) -> Resul
         let _ = rl.load_history(p);
     }
 
-    let title = "stryi-wallet  interactive mode";
-    let wallet_info = if let Ok(w) = load_wallet(wallet_path) {
-        format!("{} ({} keys)", wallet_path.display(), w.keys.len())
+    let title = "stryi-wallet interactive mode";
+    let wallet_path_label = if let Some(home) = dirs::home_dir() {
+        if let Ok(relative) = wallet_path.strip_prefix(&home) {
+            format!("~/{}", relative.display())
+        } else {
+            wallet_path.display().to_string()
+        }
     } else {
-        format!("{} (no wallet)", wallet_path.display())
+        wallet_path.display().to_string()
     };
-    let wallet_line = format!("Wallet:  {}", wallet_info);
-    let node_line = format!("Node:    {}", node_url);
-    let inner = *[title.len(), wallet_line.len(), node_line.len()]
-        .iter()
-        .max()
-        .unwrap()
-        + 4;
-    let bar = "─".repeat(inner);
+    let wallet_info = if let Ok(w) = load_wallet(wallet_path) {
+        format!("{} ({} keys)", wallet_path_label, w.keys.len())
+    } else {
+        format!("{} (no wallet)", wallet_path_label)
+    };
 
     println!();
-    println!("  ┌{}┐", bar);
-    println!("  │  {:<width$}│", title, width = inner - 2);
-    println!("  ├{}┤", bar);
-    println!("  │  {:<width$}│", wallet_line, width = inner - 2);
-    println!("  │  {:<width$}│", node_line, width = inner - 2);
-    println!("  └{}┘", bar);
+    println!("  {}", title.bold());
+    println!("  {}", "-".repeat(title.len()).cyan());
+    println!("  {:<8} {}", "Wallet".cyan().bold(), wallet_info.white());
+    println!("  {:<8} {}", "Node".cyan().bold(), node_url.white());
     println!(
         "\n  Type {} for commands, {} to quit.\n",
         "help".cyan(),
@@ -468,22 +519,52 @@ async fn handle_balance(
     }
 }
 
+fn parse_send_args<'a>(values: &'a [&'a str]) -> Result<(Vec<&'a str>, bool)> {
+    let mut positionals = Vec::new();
+    let mut wait_override = None;
+
+    for value in values {
+        match *value {
+            "wait" | "--wait" | "--wait-for-confirmation" => {
+                if wait_override == Some(false) {
+                    anyhow::bail!(
+                        "conflicting confirmation flags. Use only one of `--wait` or `--no-wait`."
+                    );
+                }
+                wait_override = Some(true);
+            }
+            "no-wait" | "--no-wait" | "--no-wait-for-confirmation" => {
+                if wait_override == Some(true) {
+                    anyhow::bail!(
+                        "conflicting confirmation flags. Use only one of `--wait` or `--no-wait`."
+                    );
+                }
+                wait_override = Some(false);
+            }
+            other => positionals.push(other),
+        }
+    }
+
+    if positionals.len() > 3 {
+        anyhow::bail!(
+            "unexpected extra argument '{}'. Usage: send [from] [to] [amount]",
+            positionals[3]
+        );
+    }
+
+    Ok((positionals, wait_override.unwrap_or(true)))
+}
+
 async fn handle_send(wallet_path: &Path, node_url: &str, input: &CommandInput<'_>) -> Result<()> {
+    let (positionals, wait_for_confirmation) = parse_send_args(input.values)?;
+    let send_input = CommandInput::new(&positionals);
+
     let (from_str, from) =
-        input.wallet_address(0, wallet_path, "From", "invalid 'from' address")?;
+        send_input.wallet_address(0, wallet_path, "From", "invalid 'from' address")?;
 
-    let to_str = input.value(1, "To address", None)?;
-    let to = AccountAddress::from_hash_string(&to_str).context("invalid 'to' address")?;
+    let (to_str, to) = send_input.wallet_address(1, wallet_path, "To", "invalid 'to' address")?;
 
-    let amount: u64 = input.parse(2, "Amount", None, "invalid amount")?;
-    let wait = match input.optional_value(3) {
-        Some("--wait" | "wait") => true,
-        Some(other) => anyhow::bail!(
-            "unexpected extra argument '{}'. Did you mean `--wait`?",
-            other
-        ),
-        None => false,
-    };
+    let amount: u64 = send_input.parse(2, "Amount", None, "invalid amount")?;
 
     let client = NodeClient::new(node_url);
     let utxo_count = client
@@ -494,14 +575,29 @@ async fn handle_send(wallet_path: &Path, node_url: &str, input: &CommandInput<'_
         .max(1);
 
     let fee_est = FeePolicy::default().estimate_fee(utxo_count, 2);
-    print_tx_summary(&from_str, &to_str, amount, fee_est);
+    print_tx_summary(
+        wallet_path,
+        &from_str,
+        &to_str,
+        amount,
+        fee_est,
+        wait_for_confirmation,
+    );
 
     if !prompt_confirm("Confirm send?")? {
         println!("  {}", "Cancelled.".yellow());
         return Ok(());
     }
 
-    cmd_send(wallet_path, node_url, &from, &to, amount, wait).await?;
+    cmd_send(
+        wallet_path,
+        node_url,
+        &from,
+        &to,
+        amount,
+        wait_for_confirmation,
+    )
+    .await?;
     Ok(())
 }
 
@@ -576,12 +672,15 @@ fn print_repl_help() {
     println!("\n  {}", "Examples:".bold());
     println!("    {}", "balance".white());
     println!("    {}", "balance @addr1 @addr2".white());
-    println!("    {}", "send @from @to 1000 [--wait]".white());
+    println!("    {}", "send @from @to 1000".white());
+    println!("    {}", "send @from @to 1000 --no-wait".white());
+    println!("    {}", "send".white());
     println!("    {}", "block 42 Bx...".white());
-    println!("    {}", "tx Tx... Tx...".white());
+    println!("    {}", "tx Tx...".white());
     println!(
         "\n  {}",
-        "  Args are prompted interactively when omitted.".white()
+        "  `send` waits for confirmation by default. Add `--no-wait` to return after submission."
+            .white()
     );
     println!();
 }
@@ -636,6 +735,61 @@ mod tests {
     #[test]
     fn fuzzy_suggest_no_match() {
         assert_eq!(fuzzy_suggest("xyzxyzxyz"), None);
+    }
+
+    #[test]
+    fn wallet_address_from_selection_maps_indexes() {
+        let dir = TempDir::new().unwrap();
+        let wp = dir.path().join("wallet.json");
+        let wallet = crate::keys::WalletFile {
+            keys: vec![
+                crate::keys::generate_keypair("first"),
+                crate::keys::generate_keypair("second"),
+            ],
+        };
+        crate::keys::save_wallet(&wp, &wallet).unwrap();
+
+        assert_eq!(
+            wallet_address_from_selection(&wp, "1"),
+            Some(wallet.keys[0].address.clone())
+        );
+        assert_eq!(
+            wallet_address_from_selection(&wp, "2"),
+            Some(wallet.keys[1].address.clone())
+        );
+    }
+
+    #[test]
+    fn wallet_address_from_selection_ignores_non_indexes() {
+        let dir = TempDir::new().unwrap();
+        let wp = dir.path().join("wallet.json");
+        let wallet = crate::keys::WalletFile {
+            keys: vec![crate::keys::generate_keypair("first")],
+        };
+        crate::keys::save_wallet(&wp, &wallet).unwrap();
+
+        let raw = wallet.keys[0].address.clone();
+        assert_eq!(wallet_address_from_selection(&wp, &raw), None);
+        assert_eq!(wallet_address_from_selection(&wp, "@deadbeef"), None);
+        assert_eq!(wallet_address_from_selection(&wp, "0"), None);
+    }
+
+    #[test]
+    fn parse_send_args_cases() {
+        for (args, expected_positionals, expected_wait) in [
+            (&["1"][..], vec!["1"], true),
+            (&["wait", "1"][..], vec!["1"], true),
+            (&["--wait-for-confirmation", "1"][..], vec!["1"], true),
+            (&["--no-wait", "1"][..], vec!["1"], false),
+        ] {
+            let (positionals, wait_for_confirmation) = parse_send_args(args).unwrap();
+            assert_eq!(positionals, expected_positionals);
+            assert_eq!(wait_for_confirmation, expected_wait);
+        }
+
+        for args in [&["--wait", "--no-wait", "1"][..], &["1", "2", "3", "4"][..]] {
+            assert!(parse_send_args(args).is_err());
+        }
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@ use crate::keys::{
     WalletFile, find_key_by_address, generate_keypair, import_key, load_wallet, require_wallet,
     save_wallet,
 };
+use crate::output::{print_block_detail, print_transaction_response_detail, shorten_middle};
 use crate::tx_builder::{SpendableUtxo, build_payment, serialize_for_submission};
 use crate::tx_wait::wait_for_tx_confirmation;
 use anyhow::Context;
@@ -12,6 +13,7 @@ use std::path::Path;
 use stryi_core::address::AccountAddress;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::transactions::{FeePolicy, OutPoint, TransactionHash};
+use tokio::time::{Duration, sleep};
 
 pub(crate) fn cmd_init(wallet_path: &Path) -> anyhow::Result<()> {
     if wallet_path.exists() {
@@ -200,25 +202,35 @@ pub(crate) async fn cmd_balance_all(wallet_path: &Path, node_url: &str) -> anyho
     let client = NodeClient::new(node_url);
 
     println!();
+    println!(
+        "  {:<5} {:<10} {:<44} {}",
+        "#".bold(),
+        "Label".bold(),
+        "Address".bold(),
+        "Balance".bold(),
+    );
+    println!("  {}", "-".repeat(76));
     for (i, key) in wallet.keys.iter().enumerate() {
         let addr = key.address.to_string();
         match client.get_balance(&addr).await {
             Ok(resp) => {
+                let balance = format!("{:>12}", resp.balance);
                 println!(
-                    "  {} {} ({}) -- {}",
+                    "  {:<5} {:<10} {:<44} {}",
                     format!("[{}]", i + 1).cyan().bold(),
-                    addr.cyan(),
                     key.label,
-                    resp.balance.to_string().green().bold()
+                    addr.cyan(),
+                    balance.green().bold()
                 );
             }
             Err(e) => {
+                let error = format!("error: {e}");
                 println!(
-                    "  {} {} ({}) -- {}",
+                    "  {:<5} {:<10} {:<44} {}",
                     format!("[{}]", i + 1).cyan().bold(),
-                    addr.cyan(),
                     key.label,
-                    format!("error: {e}").red()
+                    addr.cyan(),
+                    error.red()
                 );
             }
         }
@@ -236,25 +248,17 @@ pub(crate) async fn cmd_send(
     wait: bool,
 ) -> anyhow::Result<()> {
     let from_str = from.to_string();
-    let to_str = to.to_string();
 
     let wallet = require_wallet(wallet_path)?;
     let key_entry = find_key_by_address(&wallet, &from_str)?;
 
     let client = NodeClient::new(node_url);
 
-    println!("Fetching UTXOs for {}...", from_str);
     let balance_resp = client.get_balance(&from_str).await?;
 
     if balance_resp.utxos.is_empty() {
         anyhow::bail!("no UTXOs available for address {}", from_str);
     }
-
-    println!(
-        "Available balance: {} ({} UTXOs)",
-        balance_resp.balance,
-        balance_resp.utxos.len()
-    );
 
     let spendable: Vec<SpendableUtxo> = balance_resp
         .utxos
@@ -269,33 +273,52 @@ pub(crate) async fn cmd_send(
         .collect();
 
     let fee_policy = FeePolicy::default();
-
-    println!(
-        "Building transaction: {} -> {} (amount: {})...",
-        from_str, to_str, amount
-    );
     let tx = build_payment(&key_entry.private_key, &spendable, to, amount, &fee_policy)?;
 
     let num_inputs = tx.data.inputs.len();
     let num_outputs = tx.data.outputs.len();
     let tx_hash = tx.data.hash();
+    let tx_hash_str = tx_hash.to_string();
 
     let encoded = serialize_for_submission(&tx)?;
+    println!();
+    println!("  {}", "Transaction".green().bold());
+    println!("  {}", "_".repeat(44).cyan());
     println!(
-        "{} {} ({} inputs, {} outputs)",
-        "Transaction built:".green(),
-        tx_hash,
-        num_inputs,
-        num_outputs
+        "  {:<12} {}",
+        "Hash".bold(),
+        shorten_middle(&tx_hash_str).cyan()
     );
+    println!("  {:<12} {}", "Full hash".bold(), tx_hash_str.cyan());
+    println!(
+        "  {:<12} {}",
+        "Inputs".bold(),
+        num_inputs.to_string().cyan()
+    );
+    println!(
+        "  {:<12} {}",
+        "Outputs".bold(),
+        num_outputs.to_string().cyan()
+    );
+    println!(
+        "  {:<12} {}",
+        "Balance".bold(),
+        balance_resp.balance.to_string().green().bold()
+    );
+    println!(
+        "  {:<12} {}",
+        "UTXOs".bold(),
+        balance_resp.utxos.len().to_string().cyan()
+    );
+    println!("  {}", "_".repeat(44).cyan());
 
-    println!("Submitting to node...");
     let resp = client.send_transaction(&encoded).await?;
     println!(
-        "  {} {}",
-        "OK".green().bold(),
-        format!("Transaction submitted (node: {})", resp).green()
+        "  {:<12} {}",
+        "Status".bold(),
+        "Accepted by node".green().bold()
     );
+    println!("  {:<12} {}", "Node".bold(), resp.to_string().green());
 
     if wait {
         confirm_transaction_and_print_balances(&client, &tx_hash, from, to).await?;
@@ -437,7 +460,7 @@ async fn cmd_block_with_client(client: &NodeClient, query: &str) -> anyhow::Resu
     let block: Block =
         serde_json::from_value(resp.block).context("failed to deserialize block data")?;
 
-    crate::print_block_detail(&resp.hash, &block);
+    print_block_detail(&resp.hash, &block);
     Ok(())
 }
 
@@ -483,7 +506,7 @@ async fn cmd_tx_with_client(client: &NodeClient, tx_hash: &TransactionHash) -> a
     }
 
     println!("  {}", rule.cyan());
-    crate::print_transaction_response_detail(&resp.tx_hash.to_string(), &resp.transaction);
+    print_transaction_response_detail(&resp.tx_hash.to_string(), &resp.transaction);
     Ok(())
 }
 
@@ -543,22 +566,33 @@ async fn confirm_transaction_and_print_balances(
     from: &AccountAddress,
     to: &AccountAddress,
 ) -> anyhow::Result<()> {
-    println!("Waiting for transaction {} to be confirmed...", tx_hash);
+    println!();
+    println!("  {}", "Confirmation".yellow().bold());
+    println!("  {}", "_".repeat(44).cyan());
     let confirmed = wait_for_tx_confirmation(client, tx_hash).await?;
-
+    println!("  {}", "Full confirmation info from the node:".dimmed());
     println!(
-        "  {} {}",
-        "OK".green().bold(),
-        format!("Transaction confirmed: {}", confirmed.tx_hash).green()
+        "  {:<12} {}",
+        "Tx hash".bold(),
+        confirmed.tx_hash.to_string().bright_cyan().bold()
     );
-
-    if let Some(block_height) = confirmed.block_height {
+    if let Some(block_hash) = &confirmed.block_hash {
         println!(
-            "  {:<20} {}",
-            "Block height:".bold(),
-            block_height.to_string().cyan()
+            "  {:<12} {}",
+            "Block hash".bold(),
+            block_hash.bright_yellow().bold()
         );
     }
+    if let Some(block_height) = confirmed.block_height {
+        println!(
+            "  {:<12} {}",
+            "Height".bold(),
+            block_height.to_string().cyan().bold()
+        );
+    }
+    sleep(Duration::from_millis(500)).await;
+    println!("  {}", "Getting updated balances...".cyan().bold());
+    sleep(Duration::from_secs(1)).await;
 
     println!();
     println!("{}", "Balances currently reported by node:".bold());

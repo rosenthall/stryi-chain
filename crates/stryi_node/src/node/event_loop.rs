@@ -212,7 +212,13 @@ impl EventLoop {
                     })
                     .await;
                 if let Ok(Err(e)) = rx.await {
-                    warn!("Failed to publish initial chain tip: {e}");
+                    if e.is_gossipsub_insufficient_peers() {
+                        info!(
+                            "Skipping initial chain tip publish: no gossipsub peers connected yet"
+                        );
+                    } else {
+                        warn!("Failed to publish initial chain tip: {e}");
+                    }
                 }
                 Some(hash)
             } else {
@@ -245,7 +251,11 @@ impl EventLoop {
                             let (respond_to, rx) = oneshot::channel();
                             let _ = net_cmd.send(NetworkCommand::PublishChainTip { announcement: ann, respond_to }).await;
                             if let Ok(Err(e)) = rx.await {
-                                warn!("Failed to publish chain tip heartbeat: {e}");
+                                if e.is_gossipsub_insufficient_peers() {
+                                    info!("Skipping chain tip heartbeat publish: no gossipsub peers connected yet");
+                                } else {
+                                    warn!("Failed to publish chain tip heartbeat: {e}");
+                                }
                             }
                         }
                     }
@@ -517,7 +527,11 @@ async fn publish_reorg_tip_announcement(
         })
         .await;
     if let Ok(Err(e)) = rx.await {
-        warn!("Failed to publish reorg chain tip: {e}");
+        if e.is_gossipsub_insufficient_peers() {
+            info!("Skipping reorg chain tip publish: no gossipsub peers connected yet");
+        } else {
+            warn!("Failed to publish reorg chain tip: {e}");
+        }
     }
 }
 

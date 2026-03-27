@@ -10,7 +10,7 @@ use crate::{
 use bincode::config::standard;
 use futures::StreamExt;
 use libp2p::core::transport::Boxed;
-use libp2p::gossipsub::IdentTopic;
+use libp2p::gossipsub::{IdentTopic, PublishError};
 use libp2p::request_response::OutboundRequestId;
 use libp2p::{
     Multiaddr, PeerId, Transport,
@@ -389,7 +389,7 @@ impl StryiNetworkManager {
                                     let topic = IdentTopic::new(BLOCKS_TOPIC_NAME);
                                     if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
                                         warn!("Failed to publish block to gossipsub: {e:?}");
-                                        Err(StryiNetworkError::other(format!("gossipsub publish: {e:?}")))
+                                        Err(e.into())
                                     } else {
                                         Ok(())
                                     }
@@ -410,7 +410,7 @@ impl StryiNetworkManager {
                                     let topic = IdentTopic::new(TRANSACTIONS_TOPIC_NAME);
                                     if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
                                         warn!("Failed to publish transaction to gossipsub: {e:?}");
-                                        Err(StryiNetworkError::other(format!("gossipsub publish: {e:?}")))
+                                        Err(e.into())
                                     } else {
                                         Ok(())
                                     }
@@ -430,8 +430,13 @@ impl StryiNetworkManager {
                                 Ok(encoded) => {
                                     let topic = IdentTopic::new(TIPS_TOPIC_NAME);
                                     if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
-                                        warn!("Failed to publish chain tip to gossipsub: {e:?}");
-                                        Err(StryiNetworkError::other(format!("gossipsub publish: {e:?}")))
+                                        match &e {
+                                            PublishError::InsufficientPeers => {
+                                                debug!("Skipping chain tip publish: no gossipsub peers connected yet (we are bootstrapping!");
+                                            }
+                                            _ => warn!("Failed to publish chain tip to gossipsub: {e:?}"),
+                                        }
+                                        Err(e.into())
                                     } else {
                                         Ok(())
                                     }
