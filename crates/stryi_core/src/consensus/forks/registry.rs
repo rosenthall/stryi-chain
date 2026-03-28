@@ -1,6 +1,6 @@
 use crate::block::{Block, BlockHash};
 use dashmap::{DashMap, mapref::one::RefMut};
-use std::time::Instant;
+use tracing::debug;
 
 /// Metadata for a competing fork tip.
 /// Represents the head of an alternative branch that diverges from the
@@ -16,9 +16,6 @@ pub struct ForkEntry {
 
     /// Lowest common ancestor with the canonical chain
     pub common_ancestor: BlockHash,
-
-    /// Time when fork was observed
-    pub timestamp: Instant,
 
     /// All blocks in this fork branch, ordered by height
     pub blocks: Vec<Block>,
@@ -64,14 +61,9 @@ impl ForkRegistry {
             inner: DashMap::new(),
         }
     }
-
     /// Number of tracked forks
     pub fn len(&self) -> usize {
         self.inner.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
     }
 }
 
@@ -115,6 +107,12 @@ impl ForksWrite for ForkRegistry {
         self.inner.remove(tip);
     }
 
-    // TODO: Implement a real implementation of maintenance for the forks registry
-    fn maintenance(&self) {}
+    // TODO: Implement a real maintenance for the forks registry
+    fn maintenance(&self) {
+        let tracked_forks = self.len();
+        debug!(
+            "Fork registry maintenance was called. Currently tracking {} forks.",
+            tracked_forks
+        );
+    }
 }

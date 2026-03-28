@@ -1,5 +1,6 @@
-use crate::block::Block;
 use crate::block::block_hash::BlockHash;
+#[cfg(test)]
+use crate::block::Block;
 
 /// Checks if the provided block hash meets the given difficulty (bits) requirement.
 ///
@@ -41,6 +42,7 @@ pub fn meets_difficulty(block_hash: &BlockHash, bits: u8) -> bool {
 /// - `max_attempts` is the maximum number of random trials across all threads.
 /// - Returns `true` if a solution is found (and updates the block's nonce),
 ///   otherwise returns `false`.
+#[cfg(test)]
 pub(crate) fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bool {
     use rand::Rng;
     use rand::rng;
@@ -102,11 +104,11 @@ mod tests {
     fn test_parallel_mining_small_bits() {
         // We'll create a block with very low difficulty so we can find a solution quickly in a test.
 
-        // 1) Generate random data for the input reference (dummy)
+        // Generate random data for the input reference (dummy)
         let random_tx_hash = TransactionHash::new(random::<[u8; 32]>().as_slice());
         let random_account_address = AccountAddress::new(random::<[u8; 20]>().as_slice());
 
-        // 2) Build a dummy TransactionData
+        // Build a dummy TransactionData
         let tx_data = TransactionData {
             version: 1,
             kind: TransactionKind::Payment,
@@ -126,7 +128,7 @@ mod tests {
         let signing_key = SigningKey::random(&mut OsRng);
         let signed_tx = tx_data.sign(&signing_key);
 
-        // 4) Create a Block with a very low difficulty (bits = 4)
+        // Create a Block with a very low difficulty (bits = 4)
         let mut block = {
             let mut b = Block::new(
                 vec![signed_tx],
@@ -141,14 +143,14 @@ mod tests {
             b
         };
 
-        // 5) Attempt parallel mining
+        // Attempt parallel mining
         let found = mine_block_in_parallel(&mut block, 500_000);
         println!("Found solution: {}", found);
 
         if found {
             println!("Final nonce = {}", block.header.nonce);
 
-            // 6) Verify difficulty on the final block
+            // Verify difficulty on the final block
             let header_bytes =
                 bincode::serde::encode_to_vec(block.header, bincode::config::standard()).unwrap();
 

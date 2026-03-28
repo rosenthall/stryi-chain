@@ -107,28 +107,6 @@ impl ChainIndex {
         self.tip.as_ref().map(|t| (t.height, t.hash, t.work))
     }
 
-    /// Lowest common ancestor of two blocks *within* the active chain.
-    pub fn lca(&self, mut a: BlockHash, mut b: BlockHash) -> Option<BlockHash> {
-        let mut ha = self.height(&a)?;
-        let mut hb = self.height(&b)?;
-
-        // align heights
-        while ha > hb {
-            a = self.parent(&a)?;
-            ha -= 1;
-        }
-        while hb > ha {
-            b = self.parent(&b)?;
-            hb -= 1;
-        }
-        // walk in lock‑step
-        while a != b {
-            a = self.parent(&a)?;
-            b = self.parent(&b)?;
-        }
-        Some(a)
-    }
-
     // internal helper
     fn recompute_tip(&mut self) {
         if self.entries.is_empty() {
@@ -188,30 +166,5 @@ mod tests {
         // remove tip (a) → tip should fall back to genesis
         idx.remove(&a.block_hash());
         assert_eq!(idx.tip().unwrap(), (0, g.block_hash(), w_g));
-    }
-
-    #[test]
-    fn chain_index_lca_basic() {
-        // build two branches sharing genesis
-        let mut idx = ChainIndex::new();
-        let g = make_block(BlockHash::empty(), 0, 4);
-        idx.insert(&g, 1u128 << 4);
-
-        let a1 = make_block(g.block_hash(), 1, 5);
-        let w_a1 = (1u128 << 4) + (1u128 << 5);
-        idx.insert(&a1, w_a1);
-        let a2 = make_block(a1.block_hash(), 2, 5);
-        idx.insert(&a2, w_a1 + (1u128 << 5));
-
-        let b1 = make_block(g.block_hash(), 1, 6);
-        let w_b1 = (1u128 << 4) + (1u128 << 6);
-        idx.insert(&b1, w_b1);
-        let b2 = make_block(b1.block_hash(), 2, 6);
-        idx.insert(&b2, w_b1 + (1u128 << 6));
-        let b3 = make_block(b2.block_hash(), 3, 6);
-        idx.insert(&b3, w_b1 + (1u128 << 6) + (1u128 << 6));
-
-        let lca = idx.lca(a2.block_hash(), b3.block_hash()).unwrap();
-        assert_eq!(lca, g.block_hash());
     }
 }

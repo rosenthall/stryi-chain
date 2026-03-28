@@ -15,7 +15,6 @@ use comfy_table::{Table, presets::ASCII_FULL};
 use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::RwLock;
 use tracing::{debug, info, trace, warn};
 
@@ -367,7 +366,6 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
                 tip: hash,
                 cumulative_work: fork_work,
                 common_ancestor: lca,
-                timestamp: Instant::now(),
                 blocks: vec![block],
             });
             Ok(ConsensusVerdict::Buffered)
@@ -442,7 +440,6 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
                 tip: hash,
                 cumulative_work: fork_work,
                 common_ancestor: lca,
-                timestamp: Instant::now(),
                 blocks: fork_blocks,
             });
             Ok(ConsensusVerdict::Buffered)
@@ -566,6 +563,8 @@ impl<DB: FullNodeStorage> ConsensusEngine for StryiConsensusEngine<DB> {
     type Error = StryiCoreError;
 
     fn on_block(&mut self, block: Block) -> BoxFuture<'_, Result<ConsensusVerdict, Self::Error>> {
+        self.forks.maintenance();
+
         let block = block.clone();
 
         debug!(
