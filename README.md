@@ -1,22 +1,23 @@
 # StryiChain
 
-StryiChain is a Rust blockchain prototype built for experiments and
-learning.
+StryiChain is a Rust blockchain prototype built for experiments and learning.
 
 It combines a CPU-oriented Proof-of-Work based on Tor's `HashX` and
 `BLAKE3`, `libp2p` networking, `gRPC` sync, and a CLI wallet for local
 testing.
 
-The project is named after the Stryi River in Ukraine.
+The project is named after the [Stryi River](https://en.wikipedia.org/wiki/Stryi_(river)) in Ukraine.
 
 ## Crates
 
-- `stryi_core`: core blockchain logic and shared domain types
-- `stryi_storage`: storage layer for blocks, UTXOs, and mempool data
+- `stryi_core`: core blockchain logic and shared domain types (`Block`, `Transaction`, `AccountAddress`, and more) + tx
+  mempool implementation
+- `stryi_node`: the node binary, grpc and http servers, config engine, miner, main event loop,
+- `stryi_storage`: storage layer for blocks, UTXOs, transactions. Powered by the [fjall](https://crates.io/crates/fjall)
+  db
 - `stryi_network`: p2p networking and higher-level protocol glue
-- `stryi_node`: the node binary
-- `stryi_devkit`: local development utilities such as chain generation
-- `stryi_wallet`: the CLI wallet, including interactive mode
+- `stryi_devkit`: local development utilities, currently - just a powerful chain generator CLI tool
+- `stryi_wallet`: the CLI wallet
 
 ## Build
 
@@ -109,6 +110,19 @@ at `http://localhost:5556` by default. It does not start the node itself.
 
 ![Interactive `stryi-wallet` session against a running local node](demo/stryi-demo.gif)
 
+## What is NOT (yet?) implemented
+
+- Bitcoin-style transaction scripts - proper scripting support for things like coin locking and other non-trivial
+  spending conditions
+- A better implementation wallet that will allow to create transactions with multiple outputs.
+- Multisig (or threshold signatures) support
+- An ENS-like username system, but native and baked into the core architecture
+    - The idea: social-networks-inspired username format like @trinity, @neo, @007 as first-class AccountAddress values
+    - Would probably need new `TransactionKind` variants to handle renting, buying, and transferring names
+    - Probably needs a decentralized storage layer for name resolution (via Kademlia DHT?)
+- A minimalistic block explorer (something like etherscan) using htmx and ssr
+- stryi_devkit's loadgen tool
+
 ## Testing
 
 ### Unit Tests
@@ -138,3 +152,12 @@ Two manual GitHub Actions workflows to test different layers:
 - `E2E`
   Runs multi-container system scenarios. The available scenarios are described in [e2e/README.md](e2e/README.md).
   The `reorg` E2E scenario also publishes benchmark artifacts and a Bencher report.
+
+Links:
+
+- HashX
+  https://tpo.pages.torproject.net/core/doc/tor/md_ext_2equix_2hashx_2README.html
+  https://gitlab.torproject.org/tpo/core/arti/-/issues/889
+
+- Others
+  https://btcinformation.org/en/developer-reference

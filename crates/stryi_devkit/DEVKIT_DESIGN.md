@@ -4,7 +4,7 @@ This subcrate provides CLI tools and utilities for development and testing of St
 It includes:
 
 - chain generation tool
-- http load generator for node testing
+- http load generator for node testing (**CURRENTLY NOT IMPLEMENTED**)
 
 Both tools live in the same binary: `stryi-devkit`.
 So you run them as:
