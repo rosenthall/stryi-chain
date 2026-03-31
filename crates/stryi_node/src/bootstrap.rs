@@ -201,7 +201,7 @@ impl GenesisBootstrap {
         // ===== Body: allocation table =====
         println!(
             "{}",
-            "==================== BLOCK BODY ===================="
+            "===================== BLOCK BODY ====================="
                 .blue()
                 .bold()
         );

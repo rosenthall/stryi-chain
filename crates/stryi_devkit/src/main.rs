@@ -15,6 +15,8 @@ use clap::{Parser, Subcommand};
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
+use std::process::ExitCode;
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -109,10 +111,11 @@ async fn run_chaingen(config_path: PathBuf) -> Result<(), i32> {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), i32> {
+async fn main() -> ExitCode {
     // Set the default log level to info if RUST_LOG is not set
-    let env_layer = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"))
+    let env_layer = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy()
         .add_directive("fjall=error".parse().unwrap())
         .add_directive("lsm_tree=error".parse().unwrap());
 
@@ -145,17 +148,16 @@ async fn main() -> Result<(), i32> {
         }
     };
 
-    // Map the result to an exit code and exit with it.
-    std::process::exit(result_into_code(cmd_result));
+    result_into_exit_code(cmd_result)
 }
 
 /// Maps `Result<(), i32>` into code:
 /// `Ok(_)` to EXIT_OK
 /// And `Err(code)` to `code`.
-fn result_into_code(res: Result<(), i32>) -> i32 {
+fn result_into_exit_code(res: Result<(), i32>) -> ExitCode {
     match res {
-        Ok(_) => EXIT_OK,
-        Err(code) => code,
+        Ok(_) => ExitCode::from(EXIT_OK as u8),
+        Err(code) => ExitCode::from(code as u8),
     }
 }
 

@@ -8,6 +8,13 @@ testing.
 
 The project is named after the [Stryi River](https://en.wikipedia.org/wiki/Stryi_(river)) in Ukraine.
 
+## Quickstart
+
+Generate a 20-block demo chain, start a local node, inspect `nodestate`, send a transaction, and watch chain lenght
+grow.
+
+![Quickstart demo: generate a chain, start the node, inspect nodestate, send a transaction, and watch the next block land](demo/stryi-quickstart.gif)
+
 ## Crates
 
 - `stryi_core`: core blockchain logic and shared domain types (`Block`, `Transaction`, `AccountAddress`, and more) + tx
@@ -52,48 +59,43 @@ local node, and sends a transaction between two demo accounts.
 Demo assets live in [`demo/`](demo). The labeled keys used below are
 recorded in [`demo/genesis-keys.txt`](demo/genesis-keys.txt).
 
-All commands below run from the `target/release` dir:
-
-```bash
-cd target/release
-```
+All commands below run from the repository root:
 
 ### 1. Generate the chain and start the node
 
 ```bash
 # generate a 20-block chain into /tmp/stryi-demo/chain
-rm -rf /tmp/stryi-demo && ./stryi-devkit chaingen --config-path ../../demo/chaingen.toml
+rm -rf /tmp/stryi-demo && ./target/release/stryi-devkit chaingen --config-path demo/chaingen.toml
 
 # start the node, serving HTTP on http://localhost:5556
-./stryi_node --config-path ../../demo/node.toml --genesis-config-path ../../demo/genesis.json
+./target/release/stryi_node --config-path demo/node.toml --genesis-config-path demo/genesis.json
 ```
 
-Leave the node running. Open a second terminal and run `cd target/release`
-there before continuing.
+Leave the node running. Open a second terminal in the repository root before continuing.
 
 ### 2. Explore the chain and import the demo accounts
 
 ```bash
 # inspect the generated chain
-./stryi-wallet nodestate
-./stryi-wallet block 20
+./target/release/stryi-wallet nodestate
+./target/release/stryi-wallet block 20
 
 # import the demo accounts
-./stryi-wallet --wallet-path /tmp/stryi-demo/wallet.json import --key 3a7dc55eecb56b8f36874f6920e56a4c4c103ea82b5a168d073d2b49394f3499 --label alice
-./stryi-wallet --wallet-path /tmp/stryi-demo/wallet.json import --key 9a95bf6f928f55be8e757917cdc20a3a12d4e2fcfd5b01243d6db6db7005b019 --label bob
+./target/release/stryi-wallet --wallet-path /tmp/stryi-demo/wallet.json import --key 3a7dc55eecb56b8f36874f6920e56a4c4c103ea82b5a168d073d2b49394f3499 --label alice
+./target/release/stryi-wallet --wallet-path /tmp/stryi-demo/wallet.json import --key 9a95bf6f928f55be8e757917cdc20a3a12d4e2fcfd5b01243d6db6db7005b019 --label bob
 
 # verify wallet contents and balances
-./stryi-wallet --wallet-path /tmp/stryi-demo/wallet.json list
+./target/release/stryi-wallet --wallet-path /tmp/stryi-demo/wallet.json list
 
 # no --wallet-path needed; querying addresses directly
-./stryi-wallet balance @4c8c01f08adc9162ff3d137389399634a375d6d6 @3972d0819c496cadff43cc37f99a9322745aa397
+./target/release/stryi-wallet balance @4c8c01f08adc9162ff3d137389399634a375d6d6 @3972d0819c496cadff43cc37f99a9322745aa397
 ```
 
 ### 3. Send a transaction
 
 ```bash
 # send from alice to bob and wait for confirmation
-./stryi-wallet --wallet-path /tmp/stryi-demo/wallet.json send --from @4c8c01f08adc9162ff3d137389399634a375d6d6 --to @3972d0819c496cadff43cc37f99a9322745aa397 --amount 2500 --wait
+./target/release/stryi-wallet --wallet-path /tmp/stryi-demo/wallet.json send --from @4c8c01f08adc9162ff3d137389399634a375d6d6 --to @3972d0819c496cadff43cc37f99a9322745aa397 --amount 25000 --wait
 ```
 
 ## Wallet Interactive Mode
@@ -102,19 +104,19 @@ If you want to use the wallet as a REPL instead of one-shot commands, start
 it after the node from step 1 is already running.
 
 ```bash
-./stryi-wallet --wallet-path /tmp/stryi-demo/wallet.json -i
+./target/release/stryi-wallet --wallet-path /tmp/stryi-demo/wallet.json -i
 ```
 
 This is the session shown in the GIF below. The wallet connects to the node
 at `http://localhost:5556` by default. It does not start the node itself.
 
-![Interactive `stryi-wallet` session against a running local node](demo/stryi-demo.gif)
+![Interactive `stryi-wallet` session against a running local node](demo/stryi-wallet-interactive-mode.gif)
 
 ## What is NOT (yet?) implemented
 
-- Bitcoin-style transaction scripts - proper scripting support for things like coin locking and other non-trivial
+- Bitcoin-style transaction scripts. Scripting support for things like coin locking and other non-trivial
   spending conditions
-- A better implementation wallet that will allow to create transactions with multiple outputs.
+- A more capable wallet implementation that can create transactions with multiple outputs.
 - Multisig (or threshold signatures) support
 - An ENS-like username system, but native and baked into the core architecture
     - The idea: social-networks-inspired username format like @trinity, @neo, @007 as first-class AccountAddress values

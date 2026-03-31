@@ -387,11 +387,25 @@ impl StryiNetworkManager {
                             let result = match bincode::serde::encode_to_vec(&broadcast_block, standard()) {
                                 Ok(encoded) => {
                                     let topic = IdentTopic::new(BLOCKS_TOPIC_NAME);
-                                    if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
-                                        warn!("Failed to publish block to gossipsub: {e:?}");
-                                        Err(e.into())
-                                    } else {
-                                        Ok(())
+                                    match swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
+                                        Ok(_) => Ok(()),
+                                        Err(PublishError::InsufficientPeers) => {
+                                            let connected_peers = self.connected_peers.read().await.len();
+                                            if connected_peers == 0 {
+                                                debug!("Skipping block publish: no gossipsub peers connected yet");
+                                                Ok(())
+                                            } else {
+                                                warn!(
+                                                    "Failed to publish block to gossipsub with InsufficientPeers despite {} connected peer(s)",
+                                                    connected_peers
+                                                );
+                                                Err(PublishError::InsufficientPeers.into())
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("Failed to publish block to gossipsub: {e:?}");
+                                            Err(e.into())
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -408,11 +422,25 @@ impl StryiNetworkManager {
                             let result = match bincode::serde::encode_to_vec(&tx, standard()) {
                                 Ok(encoded) => {
                                     let topic = IdentTopic::new(TRANSACTIONS_TOPIC_NAME);
-                                    if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
-                                        warn!("Failed to publish transaction to gossipsub: {e:?}");
-                                        Err(e.into())
-                                    } else {
-                                        Ok(())
+                                    match swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
+                                        Ok(_) => Ok(()),
+                                        Err(PublishError::InsufficientPeers) => {
+                                            let connected_peers = self.connected_peers.read().await.len();
+                                            if connected_peers == 0 {
+                                                debug!("Skipping transaction publish: no gossipsub peers connected yet");
+                                                Ok(())
+                                            } else {
+                                                warn!(
+                                                    "Failed to publish transaction to gossipsub with InsufficientPeers despite {} connected peer(s)",
+                                                    connected_peers
+                                                );
+                                                Err(PublishError::InsufficientPeers.into())
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!("Failed to publish transaction to gossipsub: {e:?}");
+                                            Err(e.into())
+                                        }
                                     }
                                 }
                                 Err(e) => {

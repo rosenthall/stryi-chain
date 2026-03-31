@@ -302,7 +302,7 @@ impl ChainGenerator {
 
             if blocks_done.is_multiple_of(10) || height == end_height {
                 info!(
-                    "|->  persisted {}/{} blocks (seed {}). total transactions : {}, per block(avg) : {:.2}",
+                    "|->  persisted {}/{} blocks (seed {}). Total transactions: {}, avg. per block: {:.2}",
                     blocks_done,
                     // total_to_generate includes distributor, so subtract 1 here to show number of normal blocks
                     total_to_generate.saturating_sub(1),

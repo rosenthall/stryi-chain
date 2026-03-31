@@ -1,4 +1,4 @@
-Output demo/stryi-demo.gif
+Output demo/stryi-wallet-interactive-mode.gif
 
 Set Shell bash
 Set Theme "Builtin Tango Dark"
