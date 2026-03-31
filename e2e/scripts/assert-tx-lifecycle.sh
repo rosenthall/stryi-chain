@@ -230,7 +230,7 @@ if [ "$recipient_gain" -lt "$AMOUNT" ]; then
   exit 1
 fi
 
-stryi-wallet --wallet-path "$WALLET_PATH" --node "$NODE_URL" tx --id "$tx_hash" >/tmp/tx-wallet-query.log 2>&1
+stryi-wallet --wallet-path "$WALLET_PATH" --node "$NODE_URL" tx "$tx_hash" >/tmp/tx-wallet-query.log 2>&1
 cat /tmp/tx-wallet-query.log
 
 echo "[assert-tx] SUCCESS: transaction moved from pending to confirmed"

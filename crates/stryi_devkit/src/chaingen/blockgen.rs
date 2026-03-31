@@ -84,7 +84,7 @@ impl ChainGenerator {
             .map_err(|e| format!("Failed to generate distributing transaction: {}", e))?;
 
         info!(
-            "Distribution transaction created with {} inputs and {} outputs"
+            "Distribution transaction created with {} inputs and {} outputs",
             dist_tx.data.inputs.len(),
             dist_tx.data.outputs.len(),
         );

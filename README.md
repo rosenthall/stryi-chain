@@ -17,11 +17,9 @@ grow.
 
 ## Crates
 
-- `stryi_core`: core blockchain logic and shared domain types (`Block`, `Transaction`, `AccountAddress`, and more) + tx
-  mempool implementation
+- `stryi_core`: core blockchain logic and shared domain types (`Block`, `Transaction`, `AccountAddress`, and more) + tx mempool implementation
 - `stryi_node`: the node binary, grpc and http servers, config engine, miner, main event loop,
-- `stryi_storage`: storage layer for blocks, UTXOs, transactions. Powered by the [fjall](https://crates.io/crates/fjall)
-  db
+- `stryi_storage`: storage layer for blocks, UTXOs, transactions. Powered by the [fjall](https://crates.io/crates/fjall) db
 - `stryi_network`: p2p networking and higher-level protocol glue
 - `stryi_devkit`: local development utilities, currently - just a powerful chain generator CLI tool
 - `stryi_wallet`: the CLI wallet
@@ -68,7 +66,7 @@ All commands below run from the repository root:
 rm -rf /tmp/stryi-demo && ./target/release/stryi-devkit chaingen --config-path demo/chaingen.toml
 
 # start the node, serving HTTP on http://localhost:5556
-./target/release/stryi_node --config-path demo/node.toml --genesis-config-path demo/genesis.json
+./target/release/stryi-node --config-path demo/node.toml --genesis-config-path demo/genesis.json
 ```
 
 Leave the node running. Open a second terminal in the repository root before continuing.
@@ -155,11 +153,12 @@ Two manual GitHub Actions workflows to test different layers:
   Runs multi-container system scenarios. The available scenarios are described in [e2e/README.md](e2e/README.md).
   The `reorg` E2E scenario also publishes benchmark artifacts and a Bencher report.
 
-Links:
 
-- HashX
-  https://tpo.pages.torproject.net/core/doc/tor/md_ext_2equix_2hashx_2README.html
-  https://gitlab.torproject.org/tpo/core/arti/-/issues/889
 
-- Others
+# Usefull Links
+- HashX:
+  - https://tpo.pages.torproject.net/core/doc/tor/md_ext_2equix_2hashx_2README.html
+  - https://gitlab.torproject.org/tpo/core/arti/-/issues/889
+
+- Others:
   https://btcinformation.org/en/developer-reference

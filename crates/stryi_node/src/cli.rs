@@ -38,7 +38,7 @@ impl FromStr for NodeStartMode {
 #[skip_serializing_none]
 #[derive(Parser, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
-#[command(author, version, about = "StryiChain node")]
+#[command(name = "stryi-node", author, version, about = "StryiChain node")]
 pub struct CliArgs {
     /// Path to the TOML configuration file.
     /// Only respected as a CLI flag; the key is ignored inside the file.

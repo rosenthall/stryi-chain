@@ -28,7 +28,7 @@ COPY --from=planner /build/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
-RUN cargo build --release --bin stryi_node
+RUN cargo build --release --bin stryi-node
 
 FROM debian:bullseye-slim
 
@@ -40,6 +40,6 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-COPY --from=builder /build/target/release/stryi_node /usr/local/bin/stryi_node
+COPY --from=builder /build/target/release/stryi-node /usr/local/bin/stryi-node
 
-ENTRYPOINT ["stryi_node"]
+ENTRYPOINT ["stryi-node"]

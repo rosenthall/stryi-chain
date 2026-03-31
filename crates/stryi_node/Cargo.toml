@@ -6,7 +6,7 @@ description = "An implementation of the node for the Stryi Chain!"
 authors = ["Rosenthall <rosenthall@riseup.net>"]
 license = "BSD-3-Clause"
 build = "build.rs"
-default-run = "stryi_node"
+default-run = "stryi-node"
 
 
 [features]
@@ -14,11 +14,11 @@ telemetry = ["dep:console-subscriber"]
 default = []
 
 [[bin]]
-name = "stryi_node"
+name = "stryi-node"
 path = "src/main.rs"
 
 [[bin]]
-name = "stryi_node_telemetry"
+name = "stryi-node-telemetry"
 path = "src/main.rs"
 required-features = ["telemetry"]
 

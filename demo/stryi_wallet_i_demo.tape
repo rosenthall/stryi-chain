@@ -50,7 +50,7 @@ Type "./stryi-wallet import --key 9a95bf6f928f55be8e757917cdc20a3a12d4e2fcfd5b01
 Enter
 Sleep 700ms
 
-Type "./stryi_node --config-path ../../demo/node.toml --genesis-config-path ../../demo/genesis.json > /tmp/stryi-demo/node.log 2>&1 &"
+Type "./stryi-node --config-path ../../demo/node.toml --genesis-config-path ../../demo/genesis.json > /tmp/stryi-demo/node.log 2>&1 &"
 Enter
 Sleep 1200ms
 
@@ -120,6 +120,6 @@ Enter
 Sleep 600ms
 
 Hide
-Type "pkill -f stryi_node || true"
+Type "pkill -f stryi-node || true"
 Enter
 Sleep 300ms

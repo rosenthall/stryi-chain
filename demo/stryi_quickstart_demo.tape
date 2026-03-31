@@ -91,7 +91,7 @@ Sleep 250ms
 Show
 Sleep 350ms
 
-Type "./target/release/stryi_node --config-path demo/node.toml --genesis-config-path demo/genesis.json"
+Type "./target/release/stryi-node --config-path demo/node.toml --genesis-config-path demo/genesis.json"
 Enter
 Wait+Screen /HTTP API listening on 127\.0\.0\.1:5556/
 Sleep 3500ms
