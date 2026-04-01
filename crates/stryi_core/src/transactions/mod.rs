@@ -1,13 +1,11 @@
-/// basic primitives of transactions such as UTXO, OutPoint, etc.
+/// Basic primitives of transactions such as UTXO, OutPoint, etc.
 mod utxo;
 pub use crate::transactions::utxo::{OutPoint, TransactionIn, TransactionOut, UTXO};
 
-/// Definition of custom hash format for transactions based on Blake3.
-/// Note: Each transaction hash start with Tx... and contains 32 hex bytes.
+/// Custom hash format for transactions
 mod hash;
 pub use crate::transactions::hash::{TransactionHash, TransactionHasher};
 
-/// Implementation of UtxoProcessor
 mod utxo_processor;
 pub use crate::transactions::utxo_processor::UtxoProcessor;
 
@@ -15,7 +13,7 @@ pub use crate::transactions::utxo_processor::UtxoProcessor;
 mod signature;
 pub use crate::transactions::signature::StryiSignature;
 
-/// Definition of FeePolicy and FeeCalculator for estimating required fee for any transaction.
+/// FeePolicy and FeeCalculator for estimating the required fee for any transaction
 mod fee_policy;
 
 /// Provides logic for estimating and computing the actual size of transactions,  
@@ -35,64 +33,53 @@ use crate::transactions::TransactionKind::{Coinbase, Genesis};
 use bincode::{self, config::standard};
 use k256::ecdsa::{SigningKey, VerifyingKey, signature::hazmat::PrehashVerifier};
 
-/// `TransactionKind` enum represents the exact kind of transaction.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Hash)]
 #[repr(u8)]
 pub enum TransactionKind {
     /// Coinbase is a type of transaction that is used to reward the miner of the last block.
-    /// Coinbase transactions are always the very first in each block except for `Genesis`.
-    /// This kind also forbids any TxIns in the transaction and must contain exactly one TxOut.
+    /// Coinbase transactions are always the very first in each block except for the Genesis block.
+    /// It also forbids any inputs in the transaction and must contain exactly one output.
     Coinbase,
 
     /// Genesis transaction is a unique transaction that happens only in the Genesis Block.
     /// It is used to define initial account balances.
     Genesis,
 
-    /// Payment transaction represents a standard token transfer between parties.
+    /// Payment transaction represents a standard token transfer
     Payment,
 }
 
-/// `TransactionData` holds the *unsigned* transaction fields: version, inputs, outputs.
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, Hash, PartialEq)]
 pub struct TransactionData {
-    /// Transaction version (arbitrary field for potential future upgrades)
+    /// Version byte for future transaction format changes.
     pub version: u16,
-
-    /// Transaction kind represents HOW the transaction should be processed.
+    /// Processing rules for this transaction.
     pub kind: TransactionKind,
-
-    /// Transaction inputs (what UTXOs we're spending)
+    /// Inputs spending previous outputs.
     pub inputs: Vec<TransactionIn>,
-
-    /// Transaction outputs (where the new coins are going, and how many)
+    /// New outputs created by this transaction.
     pub outputs: Vec<TransactionOut>,
 }
 
-/// `Transaction` is the fully signed transaction.
-/// It wraps `TransactionData` plus a single ECDSA recoverable signature
-/// (65 bytes) for the entire transaction.
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, Hash, PartialEq)]
 pub struct Transaction {
-    /// The actual transaction data (version, inputs, outputs)
+    /// Unsigned transaction payload.
     pub data: TransactionData,
 
-    /// The single signature over the hash of `TransactionData`.
+    /// Signature.
+    /// First byte stores the recovery id so the signature stays recoverable.
     pub(crate) signature: StryiSignature,
 }
 
 impl TransactionData {
-    /// Computes a 32-byte Blake3-based hash of `TransactionData`.
-    /// (We do NOT include any signature here, since it's the unsigned data.)
-    ///
-    /// This hash is used as the message to sign/verify in ECDSA.
+    /// We hash only unsigned data so signing and tx identity use the same preimage.
     pub fn hash(&self) -> TransactionHash {
         let encoded = bincode::serde::encode_to_vec(self, standard())
             .expect("Failed to serialize TransactionData for hashing");
+
         TransactionHash::new(&encoded)
     }
 
-    /// Signs this `TransactionData` using secp256k1, producing a `Transaction`
-    /// with a **recoverable** ECDSA signature (65 bytes).
     pub fn sign(self, signing_key: &SigningKey) -> Transaction {
         let msg_bytes: [u8; TransactionHasher::SIZE] = self.hash().data;
 
@@ -100,7 +87,7 @@ impl TransactionData {
             .sign_prehash_recoverable(&msg_bytes)
             .expect("ECDSA signing failed for TransactionData");
 
-        // Assemble the 65-byte representation
+        // Keep the recovery id beside the signature bytes.
         let mut signature_bytes = [0u8; 65];
         signature_bytes[0] = recid.to_byte();
         signature_bytes[1..].copy_from_slice(&signature.to_bytes());
@@ -113,26 +100,21 @@ impl TransactionData {
 }
 
 impl Transaction {
-    /// Getter for the `signature` field.
     pub fn signature(&self) -> StryiSignature {
         self.signature.to_owned()
     }
 
-    /// Verifies the transaction's signature using the provided `VerifyingKey`.
-    /// Returns `Ok(())` if the transaction has [`Genesis`] or [`Coinbase`] kind, because these two do not require such checking
-    /// Returns `Ok(())` if the signature is valid, otherwise returns an error.
+    /// Genesis and coinbase are carried unsigned, so signature checks skip them.
+    /// For payment-txs it may return (`StryiCoreError::InvalidSignature`)
     pub fn verify_signature(&self, verifying_key: &VerifyingKey) -> Result<(), StryiCoreError> {
-        // If transaction kind is not payment - early return Ok(())
         if self.data.kind == Genesis || self.data.kind == Coinbase {
             return Ok(());
         }
 
-        // Recompute the message hash from transaction data
         let msg_bytes = self.data.hash().data;
 
         let (_recovery_id, signature) = self.signature.extract_signature_parts()?;
 
-        // Use the verifying key to check the signature against the message hash
         verifying_key
             .verify_prehash(&msg_bytes, &signature)
             .map_err(|e| StryiCoreError::InvalidSignature {
@@ -140,9 +122,6 @@ impl Transaction {
             })
     }
 
-    /// Recovers the public key from the **recoverable** signature stored in `self.signature`.
-    ///
-    /// If the signature is invalid or the format is wrong, returns `InvalidSignature`.
     pub fn recover_public_key(&self) -> Result<VerifyingKey, StryiCoreError> {
         let msg_bytes = self.data.hash().data;
         let (recovery_id, signature) = self.signature.extract_signature_parts()?;
@@ -155,8 +134,7 @@ impl Transaction {
     }
 
     /// Creates an unsigned transaction with an empty signature.
-    /// Intended for transaction kinds that do not require a signature,
-    /// such as genesis or coinbase.
+    /// Intended for genesis or coinbase transaction kinds.
     pub fn new_unsigned(data: TransactionData) -> Self {
         Transaction {
             data,
@@ -165,11 +143,9 @@ impl Transaction {
     }
 
     #[cfg(test)]
-    /// Test helper that verifies that the signature recovers to `account_address`.
     fn verify_transaction_author(&self, account_address: AccountAddress) -> bool {
         let recovered_key = self.recover_public_key();
 
-        // If we can't recover key consider returning false.
         if recovered_key.is_err() {
             return false;
         }
@@ -188,7 +164,6 @@ mod tests {
     use k256::ecdsa::SigningKey;
     use k256::elliptic_curve::rand_core::OsRng;
 
-    /// Helper function to create a dummy TransactionData with sample inputs/outputs.
     fn create_dummy_transaction_data() -> TransactionData {
         TransactionData {
             version: 1,
@@ -209,28 +184,23 @@ mod tests {
 
     #[test]
     fn test_sign_and_verify_transaction_author() {
-        // Generate a random signing key
         let signing_key = SigningKey::random(&mut OsRng);
         let verify_key = signing_key.verifying_key();
 
-        // Create AccountAddress based on the verifying key
         let account_address = AccountAddress::new(&verify_key.to_sec1_bytes());
 
-        // Create dummy transaction data and sign it
         let tx_data = create_dummy_transaction_data();
         let transaction = tx_data.sign(&signing_key);
 
-        // Verify that the transaction's author matches the account address
         let is_verified = transaction.verify_transaction_author(account_address);
         assert!(
             is_verified,
-            "The transaction should be verified successfully."
+            "signature should recover to the signer address"
         );
     }
 
     #[test]
     fn test_verify_transaction_author_wrong_key() {
-        // Generate two different key pairs
         let signing_key_sender = SigningKey::random(&mut OsRng);
         let verify_key_sender = signing_key_sender.verifying_key();
 
@@ -240,74 +210,62 @@ mod tests {
         let account_address_sender = AccountAddress::new(&verify_key_sender.to_sec1_bytes());
         let account_address_other = AccountAddress::new(&verify_key_other.to_sec1_bytes());
 
-        // Create and sign transaction with sender's key
         let tx_data = create_dummy_transaction_data();
         let transaction = tx_data.sign(&signing_key_sender);
 
-        // Verify with real author address (sender)
         assert!(
             transaction.verify_transaction_author(account_address_sender),
-            "Verification with the correct address should be ok"
+            "correct address should match the recovered signer"
         );
 
-        // Try verifying against a different address
         assert!(
             !transaction.verify_transaction_author(account_address_other),
-            "Verification should fail with a wrong account address"
+            "wrong address must not match the recovered signer"
         );
     }
 
     #[test]
     fn test_recover_and_compare_public_key() {
-        // Generate a key pair
         let signing_key = SigningKey::random(&mut OsRng);
         let verify_key = signing_key.verifying_key();
 
-        // Create dummy transaction data and sign it
         let tx_data = create_dummy_transaction_data();
         let transaction = tx_data.sign(&signing_key);
 
-        // Attempt to recover the public key from the signature
-        // (no argument needed now)
         let recovered_key_result = transaction.recover_public_key();
         assert!(
             recovered_key_result.is_ok(),
-            "Public key recovery should succeed"
+            "public key recovery should succeed"
         );
 
         let recovered_key = recovered_key_result.unwrap();
 
-        // Compare recovered key with the original verifying key
         assert_eq!(
             recovered_key.to_sec1_bytes(),
             verify_key.to_sec1_bytes(),
-            "Recovered public key should match the original verifying key."
+            "recovered key should match the signer"
         );
     }
 
     #[test]
     fn test_verify_signature() {
-        // Generate a random signing key and corresponding verifying key
         let signing_key = SigningKey::random(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
 
         let another_signing_key = SigningKey::random(&mut OsRng);
         let another_verifying_key = another_signing_key.verifying_key();
 
-        // Create dummy transaction data and sign it
         let tx_data = create_dummy_transaction_data();
         let transaction = tx_data.sign(&signing_key);
 
-        // Verify the signature using the matching verifying key
         assert!(
             transaction.verify_signature(verifying_key).is_ok(),
-            "Signature should verify with the correct key"
+            "matching key should verify the signature"
         );
 
-        // Should fail with a different key
         assert!(
             transaction.verify_signature(another_verifying_key).is_err(),
-            "Signature should fail to verify with an incorrect key"
+            "different key must fail signature verification"
         );
     }
 }

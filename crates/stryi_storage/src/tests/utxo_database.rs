@@ -13,14 +13,12 @@ use stryi_core::{
 
 use crate::{GenesisInitConfig, StryiStorage, StryiStorageError};
 
-/// Generates a random 32-byte TransactionHash.
 fn random_txhash(rng: &mut impl Rng) -> TransactionHash {
     let mut bytes = [0u8; 32];
     rng.fill(&mut bytes);
     TransactionHash::new(&bytes)
 }
 
-/// Creates a random OutPoint, with a random txid and random vout in [0..10_000).
 fn random_outpoint(rng: &mut impl Rng) -> OutPoint {
     OutPoint {
         txid: random_txhash(rng),
@@ -28,8 +26,6 @@ fn random_outpoint(rng: &mut impl Rng) -> OutPoint {
     }
 }
 
-/// Produces a random UTXO for the given owner and outpoint,
-/// assigning a random value in [1_000..1_000_000).
 fn random_utxo(owner: AccountAddress, op: &OutPoint, rng: &mut impl Rng) -> UTXO {
     UTXO {
         txid: op.txid,
@@ -39,7 +35,6 @@ fn random_utxo(owner: AccountAddress, op: &OutPoint, rng: &mut impl Rng) -> UTXO
     }
 }
 
-/// Fisher-Yates shuffle for slices (in-place).
 fn shuffle<T>(slice: &mut [T], rng: &mut StdRng) {
     for i in (1..slice.len()).rev() {
         let j = rng.random_range(0..=i);
@@ -47,22 +42,13 @@ fn shuffle<T>(slice: &mut [T], rng: &mut StdRng) {
     }
 }
 
-/// Comprehensive test that inserts and removes random UTXOs,
-/// checks deep equality, and confirms address partition correctness.
 #[test]
 async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError> {
-    println!("=== test_utxo_database_random_integration ===");
-
-    // 1) Create a temp directory and initialize StryiStorage with default genesis config
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let genesis_config = GenesisInitConfig::new_test();
     let mut storage =
         StryiStorage::initialize_in_path(temp_dir.path().to_owned(), Some(genesis_config)).await?;
-    println!("Initialized StryiStorage at: {:?}", temp_dir.path());
 
-    println!("Storage initialized at: {:?}", temp_dir.path());
-
-    // 2) Define several addresses
     let addresses = vec![
         AccountAddress::new(&[0xAA; 20]),
         AccountAddress::new(&[0xBB; 20]),
@@ -71,7 +57,6 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
         AccountAddress::new(&[0xEE; 20]),
     ];
 
-    // 3) Generate random data
     let total = 100;
     let seed = 1337u64;
     let mut rng = StdRng::seed_from_u64(seed);
@@ -84,9 +69,8 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
         all_pairs.push((op, ut));
     }
 
-    let mut truth_map = HashMap::new(); // local ground truth
+    let mut truth_map = HashMap::new(); // Expected storage state after each mutation.
 
-    // 4) Insert half singly, half by batch
     let half = total / 2;
     let (singles, batch_group) = all_pairs.split_at(half);
 
@@ -101,7 +85,6 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
         truth_map.insert(*op, *ut);
     }
 
-    // 5) Verify all outpoints are present, deep equality
     for (op, local) in &truth_map {
         let db = storage.get_utxo(*op).await?.unwrap();
         assert_eq!(db.txid.data, local.txid.data);
@@ -110,7 +93,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
         assert_eq!(db.owner, local.owner);
     }
 
-    // 5b) Check addresses partition
+    // The address index should agree with the primary UTXO view.
     let mut addr_map: HashMap<AccountAddress, Vec<OutPoint>> = HashMap::new();
     for (op, ut) in &truth_map {
         addr_map.entry(ut.owner).or_default().push(*op);
@@ -122,7 +105,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
         assert_eq!(
             from_db.len(),
             local_ops.len(),
-            "Address mismatch: {:?}",
+            "address index count drifted for {:?}",
             addr
         );
 
@@ -140,7 +123,6 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
         }
     }
 
-    // 6) Remove random subsets: single & batch
     let mut all_ops: Vec<_> = truth_map.keys().cloned().collect();
     shuffle(&mut all_ops, &mut rng);
 
@@ -166,13 +148,11 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
         }
     }
 
-    // 7) Check removed outpoints
     for op in removed1.iter().chain(removed2.iter()) {
         let check = storage.get_utxo(*op).await;
-        assert!(check.is_err(), "Should be gone");
+        assert!(check.is_err(), "removed outpoint should stay absent");
     }
 
-    // 8) Final address partition check
     let mut final_addrs = HashMap::new();
     for (op, ut) in &truth_map {
         final_addrs
@@ -187,7 +167,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
         assert_eq!(
             from_db.len(),
             local_list.len(),
-            "Mismatch at final: {:?}",
+            "final address index count drifted for {:?}",
             addr
         );
 
@@ -205,30 +185,27 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
         }
     }
 
-    // 9) Additional negative tests: duplicates, empty batches, nonexistent
     if let Some((some_op, some_ut)) = truth_map.iter().next() {
-        // Duplicate
         let res = storage.put_utxo(*some_op, *some_ut).await;
-        assert!(res.is_ok(), "duplicate insert should succeed or overwrite");
+        assert!(res.is_ok(), "duplicate put should not fail");
         let check = storage.get_utxo(*some_op).await?.unwrap();
-        assert_eq!(check.value, some_ut.value, "value match after duplicate");
+        assert_eq!(
+            check.value, some_ut.value,
+            "duplicate put should keep the stored value"
+        );
     }
 
-    // Empty batch put
     let empty_put: Vec<(OutPoint, UTXO)> = Vec::new();
     let ep = storage.batch_put_utxos(empty_put).await;
-    assert!(ep.is_ok(), "empty batch put is ok");
+    assert!(ep.is_ok(), "empty batch put should be a no-op");
 
-    // Empty batch remove
     let empty_rem: Vec<OutPoint> = Vec::new();
     let er = storage.batch_remove_utxos(empty_rem).await;
-    assert!(er.is_ok(), "empty batch remove is ok");
+    assert!(er.is_ok(), "empty batch remove should be a no-op");
 
-    // Nonexistent outpoint
     let fake = random_outpoint(&mut rng);
     let rem = storage.remove_utxo(fake).await;
-    assert!(rem.is_err(), "nonexistent outpoint remove must fail");
+    assert!(rem.is_err(), "missing outpoint remove should fail");
 
-    println!("=== test_utxo_database_random_integration: All checks passed ===");
     Ok(())
 }

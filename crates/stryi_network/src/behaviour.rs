@@ -63,15 +63,12 @@ impl From<RzvClientEvent> for StryiEvent {
     }
 }
 
-/// Configuration for building a `StryiBehaviour`.
 #[derive(Debug, Clone)]
 pub struct StryiBehaviourConfig {
     /// Ping interval.
     pub ping_interval: Duration,
-
     /// Ping timeout.
     pub ping_timeout: Duration,
-
     /// Gossipsub heartbeat interval.
     pub gossipsub_heartbeat: Duration,
 }
@@ -86,8 +83,6 @@ impl Default for StryiBehaviourConfig {
     }
 }
 
-/// A single `NetworkBehaviour` that includes Gossipsub, Ping, Identify, ServicesInfo
-/// and a Toggle-wrapped (optional) Rendezvous server or client
 #[derive(NetworkBehaviour)]
 #[behaviour(to_swarm = "StryiEvent")]
 pub struct StryiBehaviour {
@@ -110,10 +105,8 @@ impl StryiBehaviour {
         rendezvous_mode: RendezvousMode,
         keypair: &Keypair,
     ) -> Result<Self, StryiNetworkError> {
-        // Build configured Gossipsub
         let gossipsub = Self::build_gossipsub(&cfg, keypair)?;
 
-        // Build Ping with the specified interval and timeout.
         let ping_cfg = PingConfig::new()
             .with_interval(cfg.ping_interval)
             .with_timeout(cfg.ping_timeout);
@@ -136,7 +129,6 @@ impl StryiBehaviour {
             libp2p::request_response::Config::default(),
         );
 
-        // Build Identify with a fixed protocol version.
         let identify = Self::build_identify(keypair);
 
         // Set up Rendezvous toggles.
@@ -162,14 +154,13 @@ impl StryiBehaviour {
         })
     }
 
-    /// Helper to build identify behaviour with automatic listen address updates.
+    /// Push listen-address updates so peers can refresh dial targets.
     pub fn build_identify(keypair: &Keypair) -> Identify {
         let cfg = IdentifyConfig::new("stryichain/0.1.0".to_string(), keypair.public())
             .with_push_listen_addr_updates(true);
         Identify::new(cfg)
     }
 
-    /// Helper to build a custom gossipsub behaviour instance using the provided `StryiBehaviourConfig` and a `keypair`.
     fn build_gossipsub(
         cfg: &StryiBehaviourConfig,
         keypair: &Keypair,

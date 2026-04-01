@@ -10,16 +10,18 @@ The project is named after the [Stryi River](https://en.wikipedia.org/wiki/Stryi
 
 ## Quickstart
 
-Generate a 20-block demo chain, start a local node, inspect `nodestate`, send a transaction, and watch chain lenght
+Generate a 20-block demo chain, start a local node, inspect `nodestate`, send a transaction, and watch the chain length
 grow.
 
 ![Quickstart demo: generate a chain, start the node, inspect nodestate, send a transaction, and watch the next block land](demo/stryi-quickstart.gif)
 
 ## Crates
 
-- `stryi_core`: core blockchain logic and shared domain types (`Block`, `Transaction`, `AccountAddress`, and more) + tx mempool implementation
-- `stryi_node`: the node binary, grpc and http servers, config engine, miner, main event loop,
-- `stryi_storage`: storage layer for blocks, UTXOs, transactions. Powered by the [fjall](https://crates.io/crates/fjall) db
+- `stryi_core`: core blockchain logic and shared domain types (`Block`, `Transaction`, `AccountAddress`, and more) + tx
+  mempool implementation
+- `stryi_node`: the node binary implementation, grpc and http servers, config engine, miner, main event loop,
+- `stryi_storage`: storage layer for blocks, UTXOs, transactions. Powered by the [fjall](https://crates.io/crates/fjall)
+  db
 - `stryi_network`: p2p networking and higher-level protocol glue
 - `stryi_devkit`: local development utilities, currently - just a powerful chain generator CLI tool
 - `stryi_wallet`: the CLI wallet
@@ -153,12 +155,11 @@ Two manual GitHub Actions workflows to test different layers:
   Runs multi-container system scenarios. The available scenarios are described in [e2e/README.md](e2e/README.md).
   The `reorg` E2E scenario also publishes benchmark artifacts and a Bencher report.
 
+# Helpful Links
 
-
-# Usefull Links
 - HashX:
-  - https://tpo.pages.torproject.net/core/doc/tor/md_ext_2equix_2hashx_2README.html
-  - https://gitlab.torproject.org/tpo/core/arti/-/issues/889
+    - https://tpo.pages.torproject.net/core/doc/tor/md_ext_2equix_2hashx_2README.html
+    - https://gitlab.torproject.org/tpo/core/arti/-/issues/889
 
 - Others:
   https://btcinformation.org/en/developer-reference

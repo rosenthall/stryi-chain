@@ -1,4 +1,4 @@
-//! RequestResponse-based custom behavior for collecting up-to-date information about the peer's services
+//! Signed service advertisements exchanged over request-response.
 
 use crate::ed25519::PublicKey;
 use crate::{Keypair, Multiaddr, PeerId, StryiEvent, StryiNetworkError};
@@ -24,14 +24,14 @@ pub struct ServicesResponse {
     pub(crate) services: Vec<SignedServiceRecord>,
 }
 
-/// Transport security metadata advertised for a service endpoint.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ServiceTransportSecurity {
-    /// No transport-level protection.
     None,
 
-    /// TLS is required and clients should pin the advertised PEM certificate.
-    TlsServerCert { cert_pem: String },
+    /// Clients should pin the advertised PEM certificate.
+    TlsServerCert {
+        cert_pem: String,
+    },
 }
 
 /// Metadata describing a service endpoint exposed by a peer.
@@ -54,7 +54,6 @@ pub struct ServiceRecord {
 }
 
 impl ServiceRecord {
-    /// Create a new instance of ServiceRecord
     pub fn new(
         address: Multiaddr,
         owner: PeerId,
@@ -88,17 +87,17 @@ impl ServiceRecord {
     }
 }
 
+// Domain separation keeps service advertisements distinct from other signed payloads.
 const SIGNED_SERVICE_RECORD_DOMAIN: &str = "stryichain.service";
 const SIGNED_SERVICE_PAYLOAD_TYPE: &[u8] = b"\x71stryichain/service";
 
-/// Signed transport payload for exchanging service records between peers.
+/// Carries a signed service record plus the peer identity that owns it.
 #[derive(Clone, Debug)]
 pub struct SignedServiceRecord {
     inner: SignedEnvelope,
 }
 
 impl SignedServiceRecord {
-    /// Sign `ServiceRecord` with the node's ed25519 key.
     pub fn sign(
         peer_keypair: identity::ed25519::Keypair,
         service_record: ServiceRecord,
@@ -119,12 +118,7 @@ impl SignedServiceRecord {
         Ok(SignedServiceRecord { inner: envelope })
     }
 
-    /// Returns `ServiceRecord` if:
-    ///   - signature is valid,
-    ///   - domain matches,
-    ///   - payload_type matches,
-    ///   - signing key equals the expected peer key,
-    ///   - record owner matches the expected peer key.
+    /// Rejects records unless the envelope and embedded owner both match `expected_pk`.
     pub fn verify_and_decode(
         &self,
         expected_pk: &PublicKey,
@@ -155,8 +149,7 @@ impl SignedServiceRecord {
     }
 }
 
-/// Verify every `SignedServiceRecord` with `peer_pk` and return the
-/// `ServiceRecord`s that passed. Invalid items are logged and skipped.
+/// Bad records are logged and dropped instead of poisoning the whole response.
 pub(crate) fn filter_verified_records(
     signed: Vec<SignedServiceRecord>,
     peer_pk: &PublicKey,
@@ -173,7 +166,6 @@ pub(crate) fn filter_verified_records(
         .collect()
 }
 
-// Serialize -> just dump protobuf-encoded bytes
 impl Serialize for SignedServiceRecord {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -240,15 +232,7 @@ impl TryFrom<&[u8]> for SignedServiceRecord {
     }
 }
 
-/// CBOR request-response behavior used for services protocol
 pub type ServicesInfoBehaviour = RequestResponseBehaviour<ServicesInfoRequest, ServicesResponse>;
-
-/*
-/// Definition of an inbound request or response for service-protocol
-pub(crate) type ServicesInfoMessage = Message<ServicesInfoRequest, ServicesResponse>;
-*/
-
-/// Type alias for ServicesInfo protocol events
 pub type ServicesEvent = ReqRespEvent<ServicesInfoRequest, ServicesResponse>;
 
 impl From<ServicesEvent> for StryiEvent {
@@ -262,7 +246,6 @@ mod tests {
     use super::*;
     use libp2p::identity::ed25519;
 
-    // Helper: build a ServiceRecord bound to a specific owner PeerId
     fn sample_record_for_owner(owner: PeerId) -> ServiceRecord {
         ServiceRecord::new(
             "/ip4/0.0.0.0/tcp/6001".parse().unwrap(),
@@ -305,13 +288,11 @@ mod tests {
         let rec = sample_record_for_owner(owner);
         let signed = SignedServiceRecord::sign(kp, rec).expect("sign");
 
-        // bincode round-trip via bincode::serde
         let vec = bincode::serde::encode_to_vec(&signed, standard()).unwrap();
         let de: SignedServiceRecord = bincode::serde::decode_from_slice(&vec, standard())
             .unwrap()
             .0;
 
-        // protobuf bytes must match
         assert_eq!(Vec::<u8>::from(signed.clone()), Vec::<u8>::from(de));
     }
 

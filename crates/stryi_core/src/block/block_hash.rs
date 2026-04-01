@@ -32,7 +32,7 @@ impl HashKind for BlockHashKind {
     ///    chunk-hashes into BLAKE3 (streaming).
     /// 4. Finalize BLAKE3 to get 32 bytes (`blake3_output`) and return it
     ///
-    /// # Panics
+    /// # Panic
     /// Panics on unexpected [`HashX::new`] errors other than [`Error::ProgramConstraints`].
     fn hash(data: &[u8]) -> [u8; Self::SIZE] {
         // (1) Compute an initial seed from BLAKE3(data)
@@ -48,7 +48,7 @@ impl HashKind for BlockHashKind {
                     seed = blake3::hash(&seed).as_bytes().to_vec();
                 }
 
-                Err(_) => panic!("Unexpected error while creating HashX."),
+                Err(_) => unreachable!("hashx compiler error"),
             }
         };
 
