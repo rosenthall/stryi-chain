@@ -145,6 +145,16 @@ cargo nextest run --workspace
 
 See the [Local Usage section](e2e/README.md#local-usage) in the E2E README.
 
+## Telemetry (tokio-console)
+
+`stryi-node` can expose Tokio runtime telemetry for `tokio-console`:
+
+```bash
+cargo install --locked tokio-console
+cargo run -p stryi_node --bin stryi-node --features telemetry
+tokio-console
+```
+
 ### CI
 
 Two manual GitHub Actions workflows to test different layers:
@@ -157,9 +167,20 @@ Two manual GitHub Actions workflows to test different layers:
 
 # Helpful Links
 
-- HashX:
+- HashX
     - https://tpo.pages.torproject.net/core/doc/tor/md_ext_2equix_2hashx_2README.html
     - https://gitlab.torproject.org/tpo/core/arti/-/issues/889
 
-- Others:
-  https://btcinformation.org/en/developer-reference
+- Blockchain's general concepts
+    - https://btcinformation.org/en/developer-reference
+    - https://developer.bitcoin.org/devguide/block_chain.html
+    - https://developer.bitcoin.org/devguide/p2p_network.html
+
+- Networking
+    - https://github.com/libp2p/specs
+    - https://docs.rs/libp2p/latest/libp2p/rendezvous/
+    - https://docs.rs/libp2p/latest/libp2p/gossipsub/
+
+- Others
+    - https://github.com/tokio-rs/console
+    - https://protobuf.dev/overview/

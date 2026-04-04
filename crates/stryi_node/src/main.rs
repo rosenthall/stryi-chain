@@ -73,13 +73,16 @@ use tokio::sync::broadcast;
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace};
-use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::layer::{Layer, SubscriberExt};
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
 
 pub(crate) mod grpc_services {
     tonic::include_proto!("stryi.sync");
 }
+
+#[cfg(all(feature = "telemetry", not(tokio_unstable)))]
+compile_error!("stryi-node's `telemetry` feature requires RUSTFLAGS=\"--cfg tokio_unstable\"");
 
 fn print_essentials() {
     println!("{}", "Welcome to the StryiChain Node CLI !".bright_yellow());
@@ -131,25 +134,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // With telemetry enabled: include the console layer
     #[cfg(feature = "telemetry")]
     {
-        let console_layer = console_subscriber::spawn();
-
         if use_json_logs() {
             tracing_subscriber::registry()
-                .with(filter_layer)
                 .with(
                     fmt::layer()
                         .json()
                         .with_target(true)
                         .with_level(true)
-                        .flatten_event(true),
+                        .flatten_event(true)
+                        .with_filter(filter_layer.clone()),
                 )
-                .with(console_layer)
+                .with(console_subscriber::spawn())
                 .init();
         } else {
             tracing_subscriber::registry()
-                .with(filter_layer)
-                .with(fmt::layer().with_target(true).with_level(true))
-                .with(console_layer)
+                .with(
+                    fmt::layer()
+                        .with_target(true)
+                        .with_level(true)
+                        .with_filter(filter_layer.clone()),
+                )
+                .with(console_subscriber::spawn())
                 .init();
         }
     }
@@ -159,19 +164,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     {
         if use_json_logs() {
             tracing_subscriber::registry()
-                .with(filter_layer)
                 .with(
                     fmt::layer()
                         .json()
                         .with_target(true)
                         .with_level(true)
-                        .flatten_event(true),
+                        .flatten_event(true)
+                        .with_filter(filter_layer.clone()),
                 )
                 .init();
         } else {
             tracing_subscriber::registry()
-                .with(filter_layer)
-                .with(fmt::layer().with_target(true).with_level(true))
+                .with(
+                    fmt::layer()
+                        .with_target(true)
+                        .with_level(true)
+                        .with_filter(filter_layer),
+                )
                 .init();
         }
     }
@@ -411,7 +420,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         rendezvous_server_addr: cfg.network_rendezvous_address.clone(),
         keypair: keypair.clone(),
         stryi_behaviour_config: behaviour_config,
-        ..Default::default()
     };
 
     // build a channel for tip updates.
@@ -492,7 +500,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     });
 
     // Build the node
-
     let node = StryiChainNode::new(
         storage.clone(),
         mempool.clone(),
@@ -544,20 +551,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Spawn a signal listener that cancels the master token on SIGINT/SIGTERM.
     {
         let cancel = master_cancel_token.clone();
-        tokio::spawn(async move {
-            use tokio::signal::unix::{SignalKind, signal};
-            let mut sigterm =
-                signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
-                    info!("Received SIGINT, initiating graceful shutdown...");
+        tokio::task::Builder::new()
+            .name("signal-listener")
+            .spawn(async move {
+                use tokio::signal::unix::{SignalKind, signal};
+                let mut sigterm =
+                    signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        info!("Received SIGINT, initiating graceful shutdown...");
+                    }
+                    _ = sigterm.recv() => {
+                        info!("Received SIGTERM, initiating graceful shutdown...");
+                    }
                 }
-                _ = sigterm.recv() => {
-                    info!("Received SIGTERM, initiating graceful shutdown...");
-                }
-            }
-            cancel.cancel();
-        });
+                cancel.cancel();
+            })
+            .expect("failed to spawn signal-listener task");
     }
 
     // Build the event loop context

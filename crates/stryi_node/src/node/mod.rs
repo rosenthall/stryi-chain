@@ -113,7 +113,10 @@ impl StryiChainNode {
         let cmd = mgr.command_sender();
         let events = mgr.subscribe_events();
 
-        tokio::spawn(async move { mgr.run_loop().await });
+        tokio::task::Builder::new()
+            .name("network-manager")
+            .spawn(async move { mgr.run_loop().await })
+            .expect("failed to spawn network-manager task");
 
         Ok(ConnectedNode {
             storage: self.storage,

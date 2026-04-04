@@ -456,13 +456,16 @@ impl EventLoop {
                                     let tip_sender = tip_updates_sender.clone();
                                     let sync_config = sync_config_for_events.clone();
 
-                                    tokio::spawn(async move {
-                                        match sync_from_peer(engine_for_sync, storage_for_sync, net_cmd_for_sync, tip_sender, sync_config, source).await {
-                                            Ok(()) => info!("Peer sync completed"),
-                                            Err(e) => warn!("Peer sync failed: {e:?}"),
-                                        }
-                                        drop(permit);
-                                    });
+                                    tokio::task::Builder::new()
+                                        .name("peer-sync")
+                                        .spawn(async move {
+                                            match sync_from_peer(engine_for_sync, storage_for_sync, net_cmd_for_sync, tip_sender, sync_config, source).await {
+                                                Ok(()) => info!("Peer sync completed"),
+                                                Err(e) => warn!("Peer sync failed: {e:?}"),
+                                            }
+                                            drop(permit);
+                                        })
+                                        .expect("failed to spawn peer-sync task");
                                 }
                             }
 

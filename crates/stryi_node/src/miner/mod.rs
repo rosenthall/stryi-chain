@@ -102,9 +102,12 @@ impl StryiMiner {
     }
 
     pub fn spawn(mut self) {
-        tokio::spawn(async move {
-            self.event_loop().await;
-        });
+        tokio::task::Builder::new()
+            .name("miner-event-loop")
+            .spawn(async move {
+                self.event_loop().await;
+            })
+            .expect("failed to spawn miner-event-loop task");
     }
 
     /// the main event loop, reacts to timer ticks an tip changes.
