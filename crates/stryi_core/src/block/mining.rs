@@ -1,6 +1,6 @@
-use crate::block::block_hash::BlockHash;
 #[cfg(test)]
 use crate::block::Block;
+use crate::block::block_hash::BlockHash;
 
 /// Checks if the provided block hash meets the given difficulty (bits) requirement.
 ///

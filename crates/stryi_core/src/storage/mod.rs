@@ -174,7 +174,6 @@ pub trait BlockStorage: Send + Sync {
 
     /// Validates an inclusive range.
     /// Returns an error converted from [`RangeError::InvalidRange`] if `start > end`.
-
     fn validate_range(range: &RangeInclusive<usize>) -> Result<(), Self::StorageError>
     where
         Self::StorageError: From<RangeError>,

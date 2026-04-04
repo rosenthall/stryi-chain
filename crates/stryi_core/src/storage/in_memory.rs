@@ -494,7 +494,7 @@ mod tests {
         Block {
             header: BlockHeader {
                 version: 1,
-                merkle_root_hash: Block::compute_merkle_root(&[genesis_tx.clone()]),
+                merkle_root_hash: Block::compute_merkle_root(std::slice::from_ref(&genesis_tx)),
                 previous_block_hash: BlockHash::empty(),
                 height: 0,
                 difficulty_bits: 1,
@@ -636,7 +636,7 @@ mod tests {
         let block1 = Block {
             header: BlockHeader {
                 version: 1,
-                merkle_root_hash: Block::compute_merkle_root(&[coinbase_tx.clone()]),
+                merkle_root_hash: Block::compute_merkle_root(std::slice::from_ref(&coinbase_tx)),
                 previous_block_hash: BlockHash::empty(),
                 height: 1,
                 difficulty_bits: 1,

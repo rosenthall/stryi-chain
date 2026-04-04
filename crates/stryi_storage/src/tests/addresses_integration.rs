@@ -13,8 +13,9 @@ use crate::{GenesisInitConfig, StryiStorage, StryiStorageError};
 fn make_test_outpoint(txid_first_byte: u8, vout: u32) -> OutPoint {
     let mut txid_arr = [0u8; 32];
     txid_arr[0] = txid_first_byte;
-    for i in 1..32 {
-        txid_arr[i] = txid_first_byte.wrapping_add(i as u8);
+
+    for (i, byte) in txid_arr.iter_mut().enumerate() {
+        *byte = txid_first_byte.wrapping_add(i as u8);
     }
     let txid = TransactionHash::new(&txid_arr);
     OutPoint { txid, vout }

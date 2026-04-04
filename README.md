@@ -147,7 +147,7 @@ See the [Local Usage section](e2e/README.md#local-usage) in the E2E README.
 
 ## Telemetry (tokio-console)
 
-`stryi-node` can expose Tokio runtime telemetry for `tokio-console`:
+`stryi-node` can expose tokio runtime telemetry for `tokio-console`:
 
 ```bash
 cargo install --locked tokio-console

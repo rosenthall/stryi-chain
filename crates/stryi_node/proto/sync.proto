@@ -89,14 +89,6 @@ message SerializedBlockBody {
 }
 
 //---------------------------------------------
-// Bincode-serialized transaction.
-// Pretty the same thing as in SerializedBlockBody, storing as bytes.
-//---------------------------------------------
-message SerializedTransaction {
-  bytes data = 1;
-}
-
-//---------------------------------------------
 // gRPC service for chain synchronization
 //---------------------------------------------
 service BlockchainSync {

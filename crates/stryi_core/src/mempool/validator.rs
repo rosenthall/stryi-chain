@@ -74,10 +74,10 @@ impl MempoolTxValidator {
         for (i, input) in tx.data.inputs.iter().enumerate() {
             let outpoint = &input.previous_output;
 
-            if let Some(spending_tx_hash) = storage.get_spending_tx(outpoint) {
-                if spending_tx_hash != &tx.data.hash() {
-                    potential_rbf = true;
-                }
+            if let Some(spending_tx_hash) = storage.get_spending_tx(outpoint)
+                && spending_tx_hash != &tx.data.hash()
+            {
+                potential_rbf = true;
             }
 
             let utxo = if let Some(tx_hash) = storage.get_creating_tx(outpoint) {
