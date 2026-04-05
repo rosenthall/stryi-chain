@@ -3,7 +3,7 @@ chain_id = "demo-local-001"
 
 network_rendezvous_mode = "server"
 network_listen_addr = "/ip4/127.0.0.1/tcp/4051"
-genesis_config_path = "demo/genesis.json"
+genesis_config_path = "genesis.json"
 start_mode = "bootstrap"
 auto_accept_genesis = true
 

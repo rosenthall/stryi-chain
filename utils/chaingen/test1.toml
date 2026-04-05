@@ -1,5 +1,5 @@
 [chain]
-num_blocks = 100
+num_blocks = 1000
 seed = 42
 output_path = "/tmp/testchain1"
 genesis_path = "../demo_genesis.json"
@@ -7,12 +7,11 @@ persistence_mode = "consensus_engine"
 #persistence_mode = "direct_insert"
 
 [blocks]
-# This key is bound to the @a25bf8b23a8e9351e0f26b8faf2639bb212301ac address from demo_genesis.json
-funding_key = "4d3720932c12ff71d29bcb9f56bfc620f131b7a97483248ecd199a22f4c6a416"
-#funding_key = "cefefeee1a2d6952648e435c4e0cb5310a5d93ad199a974f4a51e72b9eff8d99"
+# This key is bound to the @4940b1f59b833d557c330b3f1805c204bdcc9029 address from demo_genesis.json
+funding_key = "f7598c0c6642927286bc5974bbbb22992043dd10b94ec3e62ccfafb65873b858"
 average_block_time_secs = 10
 miner_address = "@ee4a3a385d2bc7c46bc0925a5b3052f70e5f7b87"
-min_transactions_per_block = 3
-max_transactions_per_block = 6
+min_transactions_per_block = 5
+max_transactions_per_block = 15
 active_addresses_count = 10
-need_undo = false
+need_undo = true
