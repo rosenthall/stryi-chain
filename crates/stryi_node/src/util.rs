@@ -3,7 +3,7 @@ use multiaddr::{Multiaddr, Protocol};
 use rustls_pki_types::ServerName;
 use std::io::{ErrorKind, Read};
 use std::net::SocketAddrV4;
-use std::path::PathBuf;
+use std::path::Path;
 use stryi_storage::GenesisInitConfig;
 use tokio::io;
 
@@ -79,7 +79,11 @@ pub fn derive_grpc_tls_sans(
 }
 
 /// Reads and deserializes the config from a provided path.
-pub fn try_genesis_config_from_path(path: PathBuf) -> Result<GenesisInitConfig, StryiNodeError> {
+pub fn try_genesis_config_from_path(
+    path: impl AsRef<Path>,
+) -> Result<GenesisInitConfig, StryiNodeError> {
+    let path = path.as_ref();
+
     // Check if file exists and if it is a file.
     if !path.is_file() {
         return Err(StryiNodeError::Io(io::Error::new(
@@ -91,7 +95,7 @@ pub fn try_genesis_config_from_path(path: PathBuf) -> Result<GenesisInitConfig, 
         )));
     }
 
-    let mut file = std::fs::File::open(&path)?;
+    let mut file = std::fs::File::open(path)?;
     let mut buf = String::new();
     file.read_to_string(&mut buf)?;
 

@@ -6,7 +6,7 @@
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
 
 /// Represents the behavior of the node at startup.
 #[derive(Debug, Deserialize, Default, Clone, Copy, Serialize)]
@@ -41,10 +41,12 @@ impl FromStr for NodeStartMode {
 #[command(name = "stryi-node", author, version, about = "StryiChain node")]
 pub struct CliArgs {
     /// Path to the TOML configuration file.
-    /// Only respected as a CLI flag; the key is ignored inside the file.
-    #[arg(long, default_value = "stryichain.toml")]
+    /// The node requires a TOML config file at startup.
+    /// CLI flags override defaults and TOML settings, but do not make the config file optional.
+    /// When omitted, the node tries `./stryichain.toml` and exits if it does not exist.
+    #[arg(long)]
     #[serde(skip)]
-    pub config_path: String,
+    pub config_path: Option<PathBuf>,
 
     /* network */
     /// Multi-addr the node listens on, e.g. `/ip4/0.0.0.0/tcp/1234`.
@@ -75,11 +77,11 @@ pub struct CliArgs {
     /* storage */
     /// Directory containing the node’s database.
     #[arg(long)]
-    pub storage_path: Option<String>,
+    pub storage_path: Option<PathBuf>,
 
     /// Optional path to a JSON file describing the genesis block.
     #[arg(long)]
-    pub genesis_config_path: Option<String>,
+    pub genesis_config_path: Option<PathBuf>,
 
     /// Automatically accept the provided genesis without interactive confirmation.
     #[arg(long)]
@@ -131,7 +133,7 @@ pub struct CliArgs {
     /* keys */
     /// Path where the peer's Ed25519 key is backed up.
     #[arg(long)]
-    pub peer_key_path: Option<String>,
+    pub peer_key_path: Option<PathBuf>,
 
     /* TLS */
     /// Comma-separated list of SANs for the self-signed certificate.

@@ -57,7 +57,6 @@ use crate::util::{derive_grpc_tls_sans, resolve_ipv4_advertise, try_genesis_conf
 use colored::Colorize;
 use std::collections::HashMap;
 use std::error::Error;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use stryi_core::address::AccountAddress;
@@ -234,25 +233,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("Start mode = {:?}", start_mode);
 
     // Setup bootstrap helper
-    let genesis_bootstrap = GenesisBootstrap::new(cfg.storage_path.clone().into());
+    let genesis_bootstrap = GenesisBootstrap::new(cfg.storage_path.clone());
 
     // Initializing storage in the configured provided path
 
     // probe storage's meta-information
     let storage_status = StorageStatus::from_path(&cfg.storage_path).map_err(|e| {
-        error!("Failed to probe storage at {}: {e}", &cfg.storage_path);
+        error!(
+            "Failed to probe storage at {}: {e}",
+            cfg.storage_path.display()
+        );
         StryiNodeError::other(format!("probe storage: {e}"))
     })?;
     info!(
         "Storage status at {} => {:?}",
-        &cfg.storage_path, storage_status
+        cfg.storage_path.display(),
+        storage_status
     );
 
     let storage: Arc<RwLock<StryiStorage>> = match (start_mode, &storage_status) {
         // Already initialized - just open
         (_start_mode, StorageStatus::Initialized { .. }) => {
-            let st =
-                StryiStorage::initialize_in_path(PathBuf::from(&cfg.storage_path), None).await?;
+            let st = StryiStorage::initialize_in_path(cfg.storage_path.clone(), None).await?;
             Arc::new(RwLock::new(st))
         }
 
@@ -262,12 +264,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // 3. confirm_and_save(meta)
         // 4. initialize storage with the same config (commits the block)
         (NodeStartMode::Bootstrap, StorageStatus::NoGenesis) => {
-            let p = cfg.genesis_config_path.as_deref().ok_or_else(|| {
+            let p = cfg.genesis_config_path.as_ref().ok_or_else(|| {
                 StryiNodeError::invalid_config_value(
                     "Bootstrap mode requires `genesis_config_path`",
                 )
             })?;
-            let genesis_cfg = try_genesis_config_from_path(PathBuf::from(p))?;
+            let genesis_cfg = try_genesis_config_from_path(p)?;
 
             let preview_block = Block::new_genesis(
                 genesis_cfg.version,
@@ -289,18 +291,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     e
                 })?;
 
-            let st = StryiStorage::initialize_in_path(
-                PathBuf::from(&cfg.storage_path),
-                Some(genesis_cfg),
-            )
-            .await?;
+            let st = StryiStorage::initialize_in_path(cfg.storage_path.clone(), Some(genesis_cfg))
+                .await?;
             Arc::new(RwLock::new(st))
         }
 
         // Join + empty datadir: Pre-Genesis layout (genesis will be fetched)
         (NodeStartMode::Join, StorageStatus::NoGenesis) => {
-            let st =
-                StryiStorage::initialize_in_path(PathBuf::from(&cfg.storage_path), None).await?;
+            let st = StryiStorage::initialize_in_path(cfg.storage_path.clone(), None).await?;
             Arc::new(RwLock::new(st))
         }
 
@@ -348,20 +346,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // -- Initialize NetworkManager --
 
-    // Backup peer key
-    let peer_key = match PeerKey::restore(&cfg.peer_key_path) {
-        Ok(k) => {
-            info!("Restored peer key from {}", &cfg.peer_key_path);
-            k
-        }
-        Err(_) => {
-            info!("No existing peer key, generating a fresh one");
-            let fresh = PeerKey::generate_random();
-            // Ignore I/O error on the first run; report only if backup fails later.
-            let _ = fresh.backup(&cfg.peer_key_path);
-            fresh
-        }
-    };
+    let peer_key = PeerKey::restore_or_generate(&cfg.peer_key_path)?;
 
     let keypair = peer_key.inner().clone(); // clone to hand over to NetworkManager
 

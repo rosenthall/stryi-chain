@@ -11,14 +11,16 @@ use figment::{
     providers::{Serialized, Toml},
 };
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+const DEFAULT_CONFIG_PATH: &str = "stryichain.toml";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NodeConfig {
     /* global settings */
     pub chain_name: String,
     pub chain_id: String,
-    pub genesis_config_path: Option<String>,
+    pub genesis_config_path: Option<PathBuf>,
     pub block_header_version: u16,
     #[serde(default)]
     pub start_mode: NodeStartMode,
@@ -32,7 +34,7 @@ pub struct NodeConfig {
     pub network_gossipsub_heartbeat_secs: u64,
 
     /* storage */
-    pub storage_path: String,
+    pub storage_path: PathBuf,
     pub auto_accept_genesis: bool,
 
     /* mempool */
@@ -57,7 +59,7 @@ pub struct NodeConfig {
     pub http_service_version: u32,
 
     /* keys */
-    pub peer_key_path: String,
+    pub peer_key_path: PathBuf,
 
     /* TLS */
     pub tls_sans: Vec<String>,
@@ -79,7 +81,7 @@ impl Default for NodeConfig {
             network_ping_timeout_secs: 10,
             network_gossipsub_heartbeat_secs: 10,
 
-            storage_path: "/var/lib/stryi_chain".into(),
+            storage_path: PathBuf::new(),
             auto_accept_genesis: false,
 
             mempool_max_transactions: 100,
@@ -99,7 +101,7 @@ impl Default for NodeConfig {
             http_service_advertise: None,
             http_service_version: 1,
 
-            peer_key_path: "/var/lib/stryi_chain/peer.stryi_keys".into(),
+            peer_key_path: PathBuf::new(),
 
             tls_sans: vec!["localhost".into()],
         }
@@ -108,27 +110,87 @@ impl Default for NodeConfig {
 
 impl NodeConfig {
     /// Merge defaults  <  TOML file  <  explicit CLI flags.
-    /// Will return an error if config_path was provided in CLI parameters but does not exist
+    /// Requires a TOML config file either via `--config-path` or `./stryichain.toml`.
     pub fn load() -> Result<Self, StryiNodeError> {
         let cli = CliArgs::parse();
+        let storage_path_from_cli = cli.storage_path.is_some();
+        let peer_key_path_from_cli = cli.peer_key_path.is_some();
+        let genesis_config_path_from_cli = cli.genesis_config_path.is_some();
 
-        // assert that config_path exists
-        let path = Path::new(&cli.config_path);
-        if !path.is_file() {
-            return Err(StryiNodeError::Other(format!(
-                "The provided config path is not a file! Provided path : {}",
-                path.to_str().unwrap()
-            )));
+        let config_path = match cli.config_path.as_deref() {
+            Some(path) => {
+                let path = path.to_path_buf();
+                if !path.is_file() {
+                    return Err(StryiNodeError::other(format!(
+                        "The provided config path is not a file! Provided path: {}",
+                        path.display()
+                    )));
+                }
+                path
+            }
+            // Fallback to the default config path if no config path is provided.
+            None => {
+                let path = PathBuf::from(DEFAULT_CONFIG_PATH);
+                if !path.is_file() {
+                    return Err(StryiNodeError::other(format!(
+                        "No configuration file found. Pass --config-path or create ./{DEFAULT_CONFIG_PATH}.",
+                    )));
+                }
+                path
+            }
+        };
+
+        let config_dir = config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+
+        let mut figment = Figment::new()
+            // built-in defaults have the lowest priority
+            .merge(Serialized::defaults(NodeConfig::default()));
+
+        figment = figment.merge(Toml::file(&config_path).profile("default"));
+        figment = figment.merge(Serialized::from(cli, "default"));
+
+        let mut cfg: Self = figment.extract().map_err(StryiNodeError::other)?;
+
+        if !genesis_config_path_from_cli {
+            resolve_optional_path_from_config_dir(&mut cfg.genesis_config_path, &config_dir);
         }
 
-        let figment = Figment::new()
-            // built-in defaults have the lowest priority
-            .merge(Serialized::defaults(NodeConfig::default()))
-            // values from TOML are more valuable if the file exists
-            .merge(Toml::file(&cli.config_path).profile("default"))
-            // and finally, explicit CLI flags have the highest priority
-            .merge(Serialized::from(cli, "default"));
+        if !storage_path_from_cli {
+            resolve_path_from_config_dir(&mut cfg.storage_path, &config_dir);
+        }
+        if cfg.storage_path.as_os_str().is_empty() {
+            return Err(StryiNodeError::invalid_config_value(
+                "storage_path is required. Set it in the config file or pass --storage-path.",
+            ));
+        }
 
-        figment.extract().map_err(StryiNodeError::other)
+        if !peer_key_path_from_cli {
+            resolve_path_from_config_dir(&mut cfg.peer_key_path, &config_dir);
+        }
+        if cfg.peer_key_path.as_os_str().is_empty() {
+            cfg.peer_key_path = cfg.storage_path.join("peer.stryi_keys");
+        }
+
+        Ok(cfg)
+    }
+}
+
+fn resolve_optional_path_from_config_dir(path: &mut Option<PathBuf>, config_dir: &Path) {
+    if let Some(path) = path {
+        resolve_path_from_config_dir(path, config_dir);
+    }
+}
+
+fn resolve_path_from_config_dir(path: &mut PathBuf, config_dir: &Path) {
+    if path.as_os_str().is_empty() {
+        return;
+    }
+
+    let current_path = path.clone();
+    if current_path.is_relative() {
+        *path = config_dir.join(current_path);
     }
 }
