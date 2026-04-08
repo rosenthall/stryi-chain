@@ -3,6 +3,7 @@ use crate::grpc::{GRPC_SERVICE_TAG, StryiSyncServiceConfig};
 use crate::grpc_services::ChainInfo;
 use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
 use crate::node::ibd::ingest_ibd_batch;
+use crate::node::lca::find_lca;
 use crate::node::remote_peer::RemotePeer;
 use crate::node::{ConnectedNode, SyncedNode};
 use crate::util::extract_tls_verification_host;
@@ -93,6 +94,8 @@ impl ConnectedNode {
         // fetch genesis from peer, compare or save locally
         self.ensure_genesis(&mut remote_peer).await?;
 
+        let external_height = remote_chain_info.height;
+
         /*
           ___ _   _ _ __   ___
          / __| | | | '_ \ / __|
@@ -107,52 +110,50 @@ impl ConnectedNode {
 
         // ask the peer if its chain already includes our tip
         // this is an easy case for synchronization, since it just requires download and apply all the remaining blocks
-        info!("Checking if peer has our local tip included in its chain.");
+        info!("Checking if peer includes our local tip in its canonical chain.");
 
-        let peer_includes_local_tip = remote_peer
-            .request_block_by_hash(local_tip_hash)
-            .await
-            .is_ok();
+        let peer_includes_local_tip =
+            match remote_peer.request_block_by_height(local_tip_height).await {
+                Ok(block) => block.block_hash() == local_tip_hash,
+                Err(_) => false,
+            };
 
         debug!("peer_includes_local_tip={}", peer_includes_local_tip);
 
-        // Now we have to find sync_start_height
         let sync_start_height = if peer_includes_local_tip {
             info!(
-                "Peer {} knows our local tip {}.",
+                "Peer {} includes our tip on its canonical chain. Simple sync from {} to {}.",
                 remote_peer.peer_id(),
-                local_tip_hash
+                local_tip_height + 1,
+                external_height
             );
 
-            // start right after our local tip
             local_tip_height + 1
         } else {
-            info!("Peer doesn't include our local tip. Finding LCA.");
-
-            let (lca_height, lca_hash) = self
-                .find_last_common_ancestor(
-                    &mut remote_peer,
-                    remote_chain_info.height,
-                    local_tip_height,
-                )
-                .await?;
-
             info!(
-                "Successfully found Last-Common-Ancestor (LCA) block: height={}, hash={}!",
-                lca_height, lca_hash
+                "Peer {} does not include our tip on its canonical chain. Finding LCA.",
+                remote_peer.peer_id()
             );
 
-            // Start after LCA
+            let (lca_height, lca_hash) = find_lca(
+                &self.storage,
+                &mut remote_peer,
+                external_height,
+                local_tip_height,
+            )
+            .await?;
+
+            info!(
+                "Successfully found Last-Common-Ancestor (LCA) block: height={}, hash={}. Syncing from {} to {}.",
+                lca_height,
+                lca_hash,
+                lca_height + 1,
+                external_height
+            );
+
             lca_height + 1
         };
 
-        info!(
-            "Success! peer {} knows block {} (which is our local tip)! Downloading the rest of the blocks..",
-            remote_peer.peer_id(),
-            local_tip_hash
-        );
-
-        let external_height = remote_chain_info.height;
         let local_work = engine.tip().map(|(_, _, w)| w).unwrap_or(0);
         let remote_work = remote_chain_info.total_difficulty as u128;
 
