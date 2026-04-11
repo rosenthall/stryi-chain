@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 /// BlockUndo stores the aggregated state changes made by a block.
-/// It contains a set of spent UTXOs (with full details) and a set of created outpoints.
+/// It contains a set of spent UTXOs (with full details) and a set of the created outpoints.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BlockUndo {
     pub spent_utxos: HashSet<(OutPoint, UTXO)>,

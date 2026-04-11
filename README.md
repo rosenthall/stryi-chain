@@ -15,7 +15,7 @@ grow.
 
 ![Quickstart demo: generate a chain, start the node, inspect nodestate, send a transaction, and watch the next block land](demo/stryi-quickstart.gif)
 
-## Crates
+## Crates structure
 
 - `stryi_core`: core blockchain logic and shared domain types (`Block`, `Transaction`, `AccountAddress`, and more) + tx
   mempool implementation

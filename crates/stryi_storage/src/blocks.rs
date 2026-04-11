@@ -13,14 +13,12 @@ use stryi_core::block::{Block, BlockHash};
 use stryi_core::storage::BlockStorage;
 
 impl StryiStorage {
-    /// Converts a block height to a database key
     fn height_to_key(height: usize) -> Result<[u8; 8], StryiStorageError> {
         u64::try_from(height)
             .map(|h| h.to_be_bytes())
             .map_err(|_| StryiStorageError::InvalidHeight(height))
     }
 
-    /// Converts bytes from database into BlockHash
     fn bytes_to_block_hash(bytes: &[u8]) -> Result<BlockHash, StryiStorageError> {
         BlockHash::try_from(bytes.to_vec()).map_err(|e| {
             StryiStorageError::IncorrectHashValue(format!(
@@ -30,13 +28,11 @@ impl StryiStorage {
         })
     }
 
-    /// Serialize block for storage
     fn serialize_block(block: &Block) -> Result<Vec<u8>, StryiStorageError> {
         bincode::serde::encode_to_vec(block, standard())
             .map_err(StryiStorageError::SerializationError)
     }
 
-    /// Deserialize block from storage
     fn deserialize_block(data: &[u8]) -> Result<Block, StryiStorageError> {
         let (block, _) = bincode::serde::decode_from_slice(data, standard())
             .map_err(StryiStorageError::DeserializationError)?;
@@ -51,17 +47,10 @@ impl BlockStorage for StryiStorage {
         let block = block.clone();
 
         Box::pin(async move {
-            // Serialize the block itself
             let serialized_block = Self::serialize_block(&block)?;
             let height_key = Self::height_to_key(block.header.height as usize)?;
-
-            // Compute the block hash from the block
             let block_hash = block.block_hash();
-
-            // Read current state so we can update chain stats
             let current_state = self.get_current_storage_state()?;
-
-            // Compute new chain difficulty, etc.
             let new_chain_diff =
                 current_state.chain_difficulty + (1 << block.header.difficulty_bits);
             let new_state = StorageStateInformation {
@@ -71,7 +60,6 @@ impl BlockStorage for StryiStorage {
                 chain_difficulty: new_chain_diff,
             };
 
-            // Prepare BlockIndexData
             let index_data = BlockIndexData {
                 parent_hash: block.header.previous_block_hash,
                 height: block.header.height,
@@ -79,24 +67,21 @@ impl BlockStorage for StryiStorage {
             };
 
             let index_bytes = bincode::serde::encode_to_vec(&index_data, standard())?;
-            // Create a write transaction. We will update blocks, heights, and state partitions by just one transaction
+            // Keep block data, indexes, and chain state in one transaction.
             let mut tx = self.keyspace.write_tx();
 
-            // Store block data in blocks partition
             tx.insert(
                 &self.blocks_partition,
                 Slice::from(&block_hash.data[..]),
                 Slice::from(serialized_block),
             );
 
-            // Store height mapping in heights partition
             tx.insert(
                 &self.heights_partition,
                 Slice::from(&height_key[..]),
                 Slice::from(&block_hash.data[..]),
             );
 
-            // Store block index entry in block_index partition
             tx.insert(
                 &self.block_index_partition,
                 Slice::from(&block_hash.data[..]),
@@ -119,15 +104,11 @@ impl BlockStorage for StryiStorage {
                 );
             }
 
-            // Update storage state value in stats_partition
             let state_key = UserKey::from([0u8; 32]);
             let state_value: UserValue = new_state.try_into()?;
             tx.insert(&self.stats_partition, state_key, state_value);
 
-            // Commit the transaction
             tx.commit().map_err(StryiStorageError::FjallError)?;
-
-            // Exit
             Ok(())
         })
     }
@@ -136,7 +117,7 @@ impl BlockStorage for StryiStorage {
         &self,
         hashes: Vec<BlockHash>,
     ) -> BoxFuture<'_, Result<HashMap<BlockHash, Block>, Self::StorageError>> {
-        // in fact this method is not performing *real* batch-read but just reading blocks ony-by-one, so batching is only api-level thing.
+        // Fjall does not expose a bulk read here, so this loops over hashes.
         Box::pin(async move {
             let mut result_map = HashMap::new();
             for hash in hashes {
@@ -197,21 +178,15 @@ impl BlockStorage for StryiStorage {
         let end = *range.end();
 
         Box::pin(async move {
-            // Early return if range is invalid
             StryiStorage::validate_range(&range)?;
-
-            // Setup result map
             let mut result_map = HashMap::with_capacity(end - start + 1);
 
-            // Convert usize to u64 in range for compatibility with return type
             for height in (start..=end).map(|n| n as u64) {
-                // Get BlockHash by height
                 let key = StryiStorage::height_to_key(height as usize)?;
                 match heights_partition
                     .get(Slice::from(&key[..]))
                     .map_err(StryiStorageError::FjallError)?
                 {
-                    // Return error if unable to find a BlockHash by height.
                     None => {
                         return Err(StryiStorageError::NotFound(format!(
                             "BlockHash of block with height: {height}"
@@ -219,13 +194,11 @@ impl BlockStorage for StryiStorage {
                     }
 
                     Some(hash_bytes) => {
-                        //  Try to get entire Block by hash we got.
                         let hash = StryiStorage::bytes_to_block_hash(&hash_bytes)?;
                         match blocks_partition
                             .get(Slice::from(&hash.data[..]))
                             .map_err(StryiStorageError::FjallError)?
                         {
-                            // Return error if unable to find a Block by hash.
                             None => {
                                 return Err(StryiStorageError::NotFound(format!(
                                     "block with hash: {hash}"
@@ -240,7 +213,6 @@ impl BlockStorage for StryiStorage {
                     }
                 }
             }
-            // Return map
             Ok(result_map)
         })
     }

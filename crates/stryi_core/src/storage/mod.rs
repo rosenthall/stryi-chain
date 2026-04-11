@@ -68,7 +68,7 @@ pub trait UtxoStorage: Send + Sync {
         Box::pin(async move { self.batch_put_utxos(vec![(outpoint, utxo)]).await })
     }
 
-    /// Fetches **exactly one** UTXO. `None` means “not found or already spent”.
+    /// Fetches **exactly one** UTXO. `None` means "not found or already spent".
     /// By default, this just forwards to [`batch_get_utxos`]. Override if you need
     fn get_utxo(
         &self,
@@ -95,8 +95,7 @@ pub enum RangeError {
     InvalidRange { start: usize, end: usize },
 }
 
-/// Thread‑safe backend for persistent block storage.
-/// NOTE: The single-item helpers `get_block_by_hash` and `get_block_by_height` have default implementations that simply wrap their batch counterparts
+/// NOTE: `get_block_by_hash` and `get_block_by_height` have default impls that wrap their batch counterparts.
 pub trait BlockStorage: Send + Sync {
     type StorageError: Debug + Error + Send + Error;
 

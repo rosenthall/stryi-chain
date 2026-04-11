@@ -67,7 +67,7 @@ pub struct Transaction {
     pub data: TransactionData,
 
     /// Signature.
-    /// First byte stores the recovery id so the signature stays recoverable.
+    /// The first byte stores the recovery id so the signature stays recoverable.
     pub(crate) signature: StryiSignature,
 }
 

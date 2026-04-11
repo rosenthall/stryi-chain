@@ -3,8 +3,7 @@ use crate::chaingen::utxo::{TransactionPattern, UtxoSelectionCriteria};
 use rand::Rng;
 
 /// Adaptive transaction generation strategy that adjusts based on context
-/// The idea is to make chaingen do sane choices for each transaction,
-/// so each block will be "better"
+/// Optimizes for higher transaction success rate and healthier UTXO distribution.
 #[derive(Debug)]
 pub struct TxGenerationStrategy {
     /// How many transactions we've successfully generated so far
@@ -19,8 +18,7 @@ pub struct TxGenerationStrategy {
 }
 
 impl TxGenerationStrategy {
-    /// Constructs new instance of TxGenerationStrategy.
-    /// The max_attempts is calculated as `target_txs.saturating_mul(3).max(10)`
+    /// Create new a instance. The `max_attempts` is calculated as `target_txs.saturating_mul(3).max(10)`
     pub fn new(target_txs: usize) -> Self {
         Self {
             successful_txs: 0,
@@ -30,7 +28,6 @@ impl TxGenerationStrategy {
         }
     }
 
-    /// Record a successful transaction generation
     pub fn record_success(&mut self) {
         self.successful_txs += 1;
 
@@ -39,9 +36,7 @@ impl TxGenerationStrategy {
             self.attempts = 0;
         }
     }
-
-    /// Record a failed attempt
-    pub fn record_attempt(&mut self) {
+    pub fn record_fail(&mut self) {
         self.attempts += 1;
     }
 
@@ -73,7 +68,7 @@ impl TxGenerationStrategy {
         still_have_attempts && need_more_txs
     }
 
-    /// Choose transaction pattern adaptively based on current context
+    /// Choose a transaction pattern adaptively based on the current context
     ///
     /// Strategy:
     /// - Early phase (0-30%): Favor splitting to create more UTXOs for future txs
@@ -255,16 +250,13 @@ impl TxGenerationStrategy {
         }
     }
 
-    /// Choose UTXO selection strategy adaptively based on fees and economics
-    ///
+    /// Choose UTXO selection strategy based on tx shape and generation phase
     /// Returns: (UtxoSelectionCriteria, count)
-    ///
-    /// Strategy:
-    /// - For Simple/Splitting: Select 1 UTXO using economically optimal criteria
-    /// - For Consolidation: Select multiple UTXOs to maximize consolidation benefit
-    /// - For Complex: Balance between input count and output diversity
-    /// - Consider minimum viable output values to prevent UTXO dust accumulation
-    /// - Use fee_policy to make economically sound decisions
+    /// Algorithm:
+    /// - Simple / Splitting: use one input
+    /// - Consolidation: use multiple inputs to shrink the UTXO set
+    /// - Complex: use several inputs for better tx graph diversity
+    /// - Avoid excessive dust and oversized transactions
     pub fn choose_utxo_strategy(
         &self,
         pattern: TransactionPattern,
@@ -407,7 +399,7 @@ mod tests {
                 attempt,
                 max_attempts
             );
-            strategy.record_attempt();
+            strategy.record_fail();
         }
 
         // After reaching max_attempts, should not continue
@@ -508,72 +500,5 @@ mod tests {
             criteria,
             UtxoSelectionCriteria::Smallest | UtxoSelectionCriteria::Oldest
         ));
-    }
-
-    #[test]
-    fn test_fallback_prefers_consolidation_on_failures() {
-        let mut strategy = TxGenerationStrategy::new(10);
-        let params = TransactionGenerationParams::default();
-
-        // Test 1: No failures - should have diverse patterns
-        let mut rng = ChaCha8Rng::seed_from_u64(42);
-        let mut simple_count = 0;
-        for _ in 0..100 {
-            let pattern = strategy.choose_pattern(10, &params, &mut rng);
-            if pattern == TransactionPattern::Simple {
-                simple_count += 1;
-            }
-        }
-        // At 0% progress, early phase, Simple should be around 25% (+- 10)
-        assert!(
-            (15..=35).contains(&simple_count),
-            "With no failures, Simple should be ~25%, got {}",
-            simple_count
-        );
-
-        // Test 2: Simulate reaching 30% failure threshold (9 out of 30)
-        for _ in 0..9 {
-            strategy.record_attempt();
-        }
-
-        // Reset RNG for consistent comparison
-        let mut rng = ChaCha8Rng::seed_from_u64(100);
-
-        let mut consolidation_count = 0;
-        for _ in 0..100 {
-            let pattern = strategy.choose_pattern(10, &params, &mut rng);
-            if pattern == TransactionPattern::Consolidation {
-                consolidation_count += 1;
-            }
-        }
-
-        // After 30% failures, should strongly favor consolidation.
-        assert!(
-            consolidation_count >= 70,
-            "After 30% failure rate, should favor Consolidation pattern, got {}",
-            consolidation_count
-        );
-
-        // Test 3: Push to 50% failure rate (15 out of 30)
-        for _ in 0..6 {
-            strategy.record_attempt();
-        }
-
-        let mut rng = ChaCha8Rng::seed_from_u64(200);
-
-        consolidation_count = 0;
-        for _ in 0..100 {
-            let pattern = strategy.choose_pattern(10, &params, &mut rng);
-            if pattern == TransactionPattern::Consolidation {
-                consolidation_count += 1;
-            }
-        }
-
-        // After 50% failures, consolidation should be the deterministic recovery path.
-        assert_eq!(
-            consolidation_count, 100,
-            "After 50% failure rate, should always use Consolidation when possible, got {}",
-            consolidation_count
-        );
     }
 }

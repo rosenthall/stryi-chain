@@ -18,8 +18,6 @@ pub struct StorageStateInformation {
     pub chain_difficulty: usize,
 }
 
-// Define some helper impls
-
 impl TryFrom<&UserValue> for StorageStateInformation {
     type Error = StryiStorageError;
 
@@ -59,11 +57,8 @@ impl StryiStorage {
         state: StorageStateInformation,
     ) -> Result<(), StryiStorageError> {
         let key = UserKey::from([0u8; 32]);
-
-        // Convert state to UserValue
         let value: UserValue = state.try_into()?;
 
-        // Insert into partition
         self.stats_partition
             .insert(key, value)
             .map_err(StryiStorageError::FjallError)?;
@@ -109,10 +104,9 @@ mod tests {
     use super::*;
     #[test]
     fn test_storage_state_operations() -> Result<(), StryiStorageError> {
-        // setup storage
-        let (mut storage, _dir) = crate::blocks::tests::create_test_storage(false); // setup_state_storage is false
+        let (mut storage, _dir) = crate::blocks::tests::create_test_storage(false);
 
-        // Initially, storage state should not exist
+        // Initially, the storage state should not exist
         assert!(matches!(
             storage.get_current_storage_state(),
             Err(StryiStorageError::NoStorageStatsFound(_))
@@ -125,11 +119,8 @@ mod tests {
             blocks_count: 1,
             chain_difficulty: 100,
         };
-
-        // Update storage state
         storage.update_storage_state(test_state.clone())?;
 
-        // Retrieve and verify state
         let retrieved_state = storage.get_current_storage_state()?;
         assert_eq!(retrieved_state, test_state);
 

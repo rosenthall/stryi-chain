@@ -8,18 +8,16 @@ use stryi_core::storage::UndoStorage;
 impl UndoStorage for StryiStorage {
     type StorageError = StryiStorageError;
 
-    /// Stores undo data for a block in the undo partition.
-    /// The key is the block hash, and the value is the serialized BlockUndo data.
+    /// Store undo data keyed by block hash.
     fn put_block_undo(
         &self,
         hash: BlockHash,
         undo: BlockUndo,
     ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         Box::pin(async move {
-            // Serialize BlockUndo using bincode
             let undo_bytes = bincode::serde::encode_to_vec(undo, bincode::config::standard())?;
 
-            // Store in undo partition using block hash as key
+            // Undo entries are addressed by the hash of the block they can roll back.
             self.undo_partition
                 .insert(Slice::from(&hash.data[..]), Slice::from(undo_bytes))
                 .map_err(StryiStorageError::FjallError)?;
@@ -28,34 +26,30 @@ impl UndoStorage for StryiStorage {
         })
     }
 
-    /// Retrieves undo data for a block from the undo partition.
+    /// Load undo data for a block.
     fn get_block_undo(
         &self,
         hash: BlockHash,
     ) -> BoxFuture<'_, Result<Option<BlockUndo>, Self::StorageError>> {
         Box::pin(async move {
-            // Try to fetch the raw bytes for this block’s undo
             let maybe_raw = self
                 .undo_partition
                 .get(Slice::from(&hash.data[..]))
                 .map_err(StryiStorageError::FjallError)?;
 
-            // If there was no entry, we return Ok(None) instead of an error
+            // Missing undo data is not an error.
             let raw = match maybe_raw {
                 Some(bytes) => bytes,
                 None => return Ok(None),
             };
 
-            // Deserialize bytes into BlockUndo
             let (undo, _) = bincode::serde::decode_from_slice(&raw, bincode::config::standard())?;
 
-            // Wrap in Some and return
             Ok(Some(undo))
         })
     }
 
-    /// Removes undo data for a block from the undo partition.
-    /// Does not return error if undo data doesn't exist.
+    /// Delete undo data for a block. Missing entries are ignored.
     fn delete_block_undo(&self, hash: BlockHash) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         Box::pin(async move {
             self.undo_partition
@@ -77,9 +71,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_block_undo_operations() -> Result<(), StryiStorageError> {
-        let (storage, _temp_dir) = create_test_storage(false); // setup_state_storage is false
+        let (storage, _temp_dir) = create_test_storage(false);
 
-        // Create test block_hash and undo data
         let block_hash = BlockHash::new(&[1u8; 32]);
         let undo = BlockUndo {
             spent_utxos: HashSet::from([(
@@ -114,10 +107,8 @@ mod tests {
             ]),
         };
 
-        // Test storing undo data
         storage.put_block_undo(block_hash, undo).await?;
 
-        // Test retrieving undo data
         let retrieved = storage
             .get_block_undo(block_hash)
             .await?
@@ -125,10 +116,8 @@ mod tests {
         assert_eq!(retrieved.spent_utxos.len(), 1);
         assert_eq!(retrieved.created_outpoints.len(), 4);
 
-        // Test removing undo data
         storage.delete_block_undo(block_hash).await?;
 
-        // Verify undo data is gone
         assert!(matches!(storage.get_block_undo(block_hash).await, Ok(None)));
 
         Ok(())

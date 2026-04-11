@@ -20,12 +20,10 @@ pub struct SeedRange {
 }
 
 impl SeedRange {
-    /// getter for the `height` field
     #[inline]
     pub fn height(&self) -> u64 {
         self.height
     }
-    /// getter for the `value` field
     #[inline]
     pub fn value(&self) -> u64 {
         self.value
@@ -67,8 +65,6 @@ pub fn validate(seed: &SeedValue, num_blocks: u64) -> Result<(), String> {
                         .to_string(),
                 );
             }
-
-            // if empty - error
             if ranges.is_empty() {
                 return Err("seed ranges cannot be empty".to_string());
             }
@@ -142,7 +138,6 @@ mod tests {
         expect_err_substr: Option<&'static str>,
     }
 
-    /// Simple helper function to instantize seed range.
     fn range(height: u64, value: u64) -> SeedRange {
         SeedRange { height, value }
     }
@@ -262,12 +257,9 @@ mod tests {
             },
         ];
 
-        // Iterate through all the cases
         for case in cases {
-            // validate
             let res = validate(&case.seed, case.num_blocks);
 
-            // and compare validation result with expected.
             match (case.expect_ok, res) {
                 // no error expected, no error occurred
                 (true, Ok(())) => {}
@@ -278,7 +270,7 @@ mod tests {
                 // Error expected, got Ok
                 (false, Ok(())) => panic!("[{}] expected Err, got Ok", case.name),
 
-                // If expected error and got error - make sure that reason of error is identical to the one we expected.
+                // If expected error and got error - make sure that its the right one
                 (false, Err(e)) => {
                     if let Some(substr) = case.expect_err_substr {
                         assert!(

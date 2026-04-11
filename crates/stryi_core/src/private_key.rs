@@ -8,12 +8,7 @@ use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt::{Debug, Display};
 
-/// Represents a private key in the StryiChain system.
-///
-/// This struct wraps a `k256::ecdsa::SigningKey` and provides
-/// serialization and deserialization functionality for transferring
-/// the private key as a 32-byte hexadecimal string.
-/// Also, wrapper implements `TryFrom<String>` and `Display`.
+/// A private key (wraps [`k256::ecdsa::SigningKey`]).
 #[derive(Clone)]
 pub struct PrivateKey {
     inner: SigningKey,

@@ -1,16 +1,17 @@
 use serde::{Deserialize, Serialize};
 
 /// Global consensus parameters stored in the genesis block.
-/// These parameters affect proof‑of‑work difficulty adjustment and block‑reward emission and remain fixed for the lifetime of the chain.
+/// These parameters affect proof‑of‑work difficulty adjustment and block‑reward emission
+/// and remain fixed for the lifetime of the chain.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Eq, PartialEq)]
 pub struct ConsensusConsts {
     /// Number of blocks generated between each difficulty adjustment.
     /// `1000` will mean that each one thousand of applied blocks will increment `current_difficulty` by one.
     pub difficulty_adjustment_interval_blocks: u64,
 
-    /// The starting block subsidy (in the chain’s base units) paid to the miner of block *height 1*.
+    /// The starting block subsidy paid to the miner of block *height 1*.
     ///
-    /// Example: `10_000` means the genesis‑era reward is 10000 coins.
+    /// Example: `10_000` means the genesis-era reward is 10,000 coins.
     pub initial_subsidy: u64,
 
     /// The number of blocks between **linear reward drops**.
@@ -27,8 +28,7 @@ pub struct ConsensusConsts {
 }
 
 impl Default for ConsensusConsts {
-    /// Creates an instance of ConsensusConsts with reasonable values.
-    /// Meant to be used for testing
+    /// **Testing** defaults.
     fn default() -> Self {
         Self {
             difficulty_adjustment_interval_blocks: 100,
@@ -40,13 +40,6 @@ impl Default for ConsensusConsts {
 }
 
 impl ConsensusConsts {
-    /// Creates a new set of global consensus parameters.
-    ///
-    /// # Parameters
-    /// * `difficulty_adjustment_interval_blocks` - how many blocks between difficulty recalibrations.
-    /// * `initial_subsidy` - reward for block height 0, expressed in the chain’s base units.
-    /// * `decay_interval` - number of blocks between linear reward drops (0 => no decay).
-    /// * `decay_step` - amount subtracted from the subsidy each time `decay_interval` is reached.
     pub fn new(
         difficulty_adjustment_interval_blocks: u64,
         initial_subsidy: u64,
@@ -94,25 +87,5 @@ impl ConsensusConsts {
         let steps = height / self.decay_interval;
         self.initial_subsidy
             .saturating_sub(steps.saturating_mul(self.decay_step))
-    }
-
-    /// Returns the number of blocks between difficulty adjustments.
-    pub fn difficulty_adjustment_interval_blocks(&self) -> u64 {
-        self.difficulty_adjustment_interval_blocks
-    }
-
-    /// Gets current `initial_subsidy`
-    pub fn initial_subsidy(&self) -> u64 {
-        self.initial_subsidy
-    }
-
-    /// Gets current `decay_interval`
-    pub fn decay_interval(&self) -> u64 {
-        self.decay_interval
-    }
-
-    /// Gets current `decay_step`
-    pub fn decay_step(&self) -> u64 {
-        self.decay_step
     }
 }

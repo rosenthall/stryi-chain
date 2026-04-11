@@ -168,17 +168,14 @@ impl StryiMiner {
         &self,
         best_txs: Vec<Transaction>,
     ) -> Result<Block, StryiStorageError> {
-        // Get the latest block hash from storage
         let (latest_block_height, latest_block_hash) = self.backend.tip().await?;
 
-        // Get current timestamp
         let system_time = SystemTime::now();
         let timestamp = system_time
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("SystemTime before UNIX_EPOCH, this should never normally happen")
             .as_secs();
 
-        // Calculate difficulty for the next block height
         let next_height = latest_block_height + 1;
         let difficulty_bits = self.backend.difficulty_bits(next_height);
 
@@ -208,12 +205,10 @@ impl StryiMiner {
             }],
         });
 
-        // Prepend coinbase to mempool transactions
         let mut all_txs = Vec::with_capacity(1 + best_txs.len());
         all_txs.push(coinbase_tx);
         all_txs.extend(best_txs);
 
-        // Compute merkle root over all transactions (including coinbase)
         let merkle_root = calc_merkle_root(&all_txs);
         header.merkle_root_hash = merkle_root;
 
@@ -323,7 +318,7 @@ fn mine_block(block: &mut Block, cancel: &CancellationToken) -> bool {
 
     // TODO: Pre-compute block's static parts; memcpy the varying 4-byte nonce into a buffer before hashing instead of serializing the whole header each time.
 
-    // outer loop – repeat batches until solved or canceled
+    // outer loop - repeat batches until solved or canceled
     while !cancel.is_cancelled() {
         // Rayon tries the whole batch in parallel; stops the moment `find_any`
         // receives `Some(nonce)`

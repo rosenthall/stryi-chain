@@ -476,7 +476,7 @@ mod tests {
     };
     use tokio::task;
 
-    // Test‑helper : deterministic genesis block
+    // Test helper: deterministic genesis block
     fn make_test_genesis_block() -> Block {
         let premine_owner = AccountAddress::new(&[0u8; 20]);
         let genesis_tx = Transaction {
@@ -564,7 +564,7 @@ mod tests {
         store.put_utxo(op2, utxo2).await.unwrap();
         assert_eq!(store.get_utxo(op1).await.unwrap().unwrap().value, 10);
 
-        // remove first — should succeed
+        // remove first - should succeed
         store.remove_utxo(op1).await.unwrap();
 
         // subsequent fetch must error
@@ -595,7 +595,7 @@ mod tests {
             .collect();
 
         store.batch_put_utxos(batch.clone()).await.unwrap();
-        // remove even‑indexed outpoints
+        // remove even-indexed outpoints
         let to_remove: Vec<_> = batch
             .iter()
             .enumerate()

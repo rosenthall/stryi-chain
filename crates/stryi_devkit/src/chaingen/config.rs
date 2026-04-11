@@ -60,7 +60,8 @@ impl<'de> Deserialize<'de> for PersistenceMode {
     }
 }
 
-/// Chain-wide settings: generation scope, seeding, and output/genesis paths.
+/// Chain-wide settings.
+/// Correspond to the `[chain]` block from the docs.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ChainSettings {
     /// Total number of blocks to generate after genesis, including distributor block.
@@ -69,7 +70,6 @@ pub struct ChainSettings {
     /// Seed strategy: either a single seed (`42`) or multiple ranges.
     pub seed: SeedValue,
 
-    /// Where to initialize the chain’s data.
     pub output_path: PathBuf,
 
     /// Path to genesis JSON (same format as used by `stryi-node`).
@@ -78,22 +78,25 @@ pub struct ChainSettings {
     /// How generated blocks are persisted/applied.
     /// Allowed values: "consensus_engine", "direct_insert"
     /// Default: "consensus_engine"
-    /// - "consensus_engine" - Build and feed blocks into StryiConsensusEngine; validates and applies blocks as a real node would. Recommended for most tests and benchmarks.
-    /// - "direct_insert" - Write blocks directly to storage without consensus validation. Faster, useful for low-level tests, but may create chains that real nodes reject. Use only when you know what you are doing.
+    /// - "consensus_engine" - Build and feed blocks into StryiConsensusEngine;
+    ///   validates and applies blocks as a real node would.
+    /// - "direct_insert" - Write blocks directly to storage without consensus validation
+    ///   Faster, useful for low-level tests, but may create chains that real nodes reject.
+    ///   **Use only when you know what you are doing.**
     pub persistence_mode: PersistenceMode,
 }
 
 /// Block-generation rules for timestamps, miner, and synthetic traffic.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BlocksSettings {
-    /// Private key of the account that has funds (e.g. from genesis or just chain activity) to distribute them evenly for generation purposes.
+    /// Private key of the account that has funds (e.g. from the genesis or just chain activity) to distribute them evenly for generation purposes.
     pub funding_key: PrivateKey,
 
     /// Average time between blocks, in seconds (used for header timestamps).
     pub average_block_time_secs: u64,
 
-    /// Miner address used to mine all generated blocks.
-    pub miner_address: String,
+    /// Receiver of the mining rewards.
+    pub miner_address: AccountAddress,
 
     /// Minimum transactions per block (inclusive).
     pub min_transactions_per_block: u32,
@@ -105,8 +108,8 @@ pub struct BlocksSettings {
     pub active_addresses_count: u32,
 
     /// Whether to insert undo data for each block.
-    /// This will increase the size of the generated chain, but allows testing of reorg-related logic
-    /// NOTE: Ignored when using persistence_mode consensus_engine, becasue it does it anyway
+    /// This will increase the size of the generated chain but allows testing of reorg-related logic
+    /// NOTE: Ignored when using persistence_mode consensus_engine, because it does it anyway
     pub need_undo: bool,
 }
 
@@ -184,11 +187,6 @@ impl ChainGenConfig {
             ));
         }
 
-        // check that miner address is valid stryi address
-        if let Err(e) = AccountAddress::from_hash_string(&self.blocks.miner_address) {
-            return Err(format!("miner_address is not a valid address: {e}"));
-        }
-
         Ok(())
     }
 }
@@ -227,7 +225,10 @@ mod tests {
                 )
                 .expect("valid private key"),
                 average_block_time_secs: 10,
-                miner_address: "@2fdf51216b8d12feb0ecd4299446465cd8c013a5".to_string(),
+                miner_address: AccountAddress::from_hash_string(
+                    "@2fdf51216b8d12feb0ecd4299446465cd8c013a5",
+                )
+                .expect("valid address"),
                 min_transactions_per_block: 2,
                 max_transactions_per_block: 6,
                 active_addresses_count: 10,

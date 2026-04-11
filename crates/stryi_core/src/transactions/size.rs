@@ -1,10 +1,9 @@
 // This module heavily relies on information from bincode specs :
 // https://git.sr.ht/~stygianentity/bincode/tree/trunk/item/docs/spec.md
-// bincode is not that easy as I thought as this point
 
 use crate::transactions::Transaction;
 
-/// Base size of bincode-serialized transaction, includes `version`, `kind` and `signature`, with no ins/outs.
+/// The base size of a bincode-serialized transaction includes `version`, `kind` and `signature`, with no ins/outs.
 const BASE_SIZE: usize = 91;
 
 /// Size of a single bincode-serialized `TransactionIn` object.

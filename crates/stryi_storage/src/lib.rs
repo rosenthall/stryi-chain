@@ -1,61 +1,5 @@
-//! The database uses a **key-value storage model** to ensure efficiency and scalability.
-//!
-//! We maintain **eight** separate partitions in this design:
-//!
-//! 1. **Blocks**
-//!    - Key   : `stryi_core::block::BlockHash` (32 bytes of the block hash)
-//!    - Value : A `bincode`-serialized `stryi_core::block::Block`
-//!    
-//!    This partition stores the full blocks in the blockchain. Each block references the previous one via
-//!    its header, and we also track the block's height separately in another partition.
-//!
-//! 2. **Height**
-//!    - Key   : 8 bytes of `height` (big-endian u64)
-//!    - Value : 32 bytes of block hash (the same as in the blocks partition key)
-//!
-//!    This partition maps each block's height to its `BlockHash`, enabling quick lookups by height. It
-//!    also helps us retrieve the chain in sequence or find the latest block via `last_key_value()`.
-//!
-//! 3. **UTXO**
-//!    - Key   : 36 bytes `[txid (32 bytes) | vout (4 bytes, big-endian)]`
-//!    - Value : A `bincode`-serialized `UTXO` (unspent output)
-//!
-//!    This partition stores unspent transaction outputs (UTXOs). The key is the combination of a
-//!    transaction hash (32 bytes) and an output index `vout` (4 bytes). Each entry's value is the UTXO
-//!    data (including its owner address, value, etc.).
-//!
-//! 4. **Addresses**
-//!    - Key   : 20 bytes of `AccountAddress`
-//!    - Value : A `bincode`-serialized `HashSet<OutPoint>` referencing all outpoints belonging to that address
-//!
-//!    This partition is our **address index**, mapping each address to the set of outpoints owned by
-//!    that address. When inserting or removing UTXOs, we keep this index in sync. Then, for lookups such
-//!    as `get_utxos_for_address`, we can quickly retrieve the relevant outpoints without scanning all
-//!    UTXOs.
-//! 5. **Stats**
-//!     - Key  : 32 zero bytes
-//!     - Value : A `bincode`-serialized `StorageStateInformation`.
-//!
-//!     The only goal of this partition is to hold current information about storage state. We will
-//!    update stats after each new block. This allows us to perform some consensus-related logic of comparing different chains.
-//! 6. **Undo**
-//!     - Key : `stryi_core::block::BlockHash` (32 bytes of the block hash)
-//!     - Value : A `bincode`-serialized `stryi_core::BlockUndo` object
-//!
-//!     This partition is our per-block backup data. The thing allows us easily restore pre-block state, by just keeping
-//!    `BlockUndo` in base. Restoration is just simple as deleting all the new outputs and restoring all the existing ones.
-//!    A high-level struct for implementing this functionality is `ChainReorganizer`
-//!
-//! 7. **Block Indexes**
-//!     - Key : `stryi_core::block::BlockHash` (32 bytes of the block hash)
-//!     - Value : A `bincode`-serialized `stryi_storage::index::BlockIndexData` object
-//!
-//! 8. **Transaction Indexes**
-//!     - Key : `stryi_core::transactions::TransactionHash` (32 bytes of the transaction hash)
-//!     - Value : A `bincode`-serialized `stryi_storage::tx_index::TransactionIndexData` object
-//!
-//! By maintaining these 8 partitions, we get efficient lookups for blocks, block heights, UTXOs by
-//! outpoint, addresses to outpoint sets and will be able to correctly and safely reorganize chain for consensus purposes.
+//! Storage backend for blocks, UTXOs, chain state, and rollback data.
+//! See `TABLES.md` for the reference for all the partitions, and storage schema
 
 #![allow(incomplete_features)]
 // This feature was added to avoid a known bug: https://github.com/rust-lang/rust/issues/133199
@@ -98,17 +42,7 @@ use stryi_core::block::{Block, BlockHash, GenesisState};
 use stryi_core::storage::{BlockStorage, UtxoStorage};
 use stryi_core::transactions::{OutPoint, TransactionKind, UTXO};
 
-/// `StryiStorage` manages eight partitions within a single Fjall keyspace:
-/// - `blocks_partition`: For storing blocks keyed by hash
-/// - `heights_partition`: For storing mappings from height -> hash
-/// - `utxo_partition`: For storing actual UTXOs keyed by outpoints (txid+vout)
-/// - `addresses_partition`: For mapping addresses -> set of outpoints
-/// - `stats_partition`: For storing the only value with current statistics for entire chain
-/// - `undo_partition` : For storing per-block restoration data to be able to restore any previous state
-/// - `block_index_partition`: For storing some metadata like parent_hash, height, current chain work, etc
-/// - `transaction_index_partition`: For storing canonical transaction -> block location mappings
-///
-/// Each partition is opened once at initialization, and we keep a reference in this struct.
+/// Storage handle over the Fjall keyspace and its opened partitions.
 pub struct StryiStorage {
     /// Partition storing blocks keyed by block hash
     pub(crate) blocks_partition: TxPartition,
@@ -122,7 +56,7 @@ pub struct StryiStorage {
     /// Partition storing address -> set of OutPoints referencing that address
     pub(crate) addresses_partition: TxPartition,
 
-    /// Partition stores only one value - current chain state, must be updated after each new block or a reorganization
+    /// Singleton chain state record.
     pub(crate) stats_partition: TxPartition,
 
     /// Partition storing block hash -> `stryi_core::undo::UndoData`
@@ -148,7 +82,7 @@ pub struct GenesisInitConfig {
 
 #[cfg(test)]
 impl GenesisInitConfig {
-    /// Creates new GenesisBlockConfig with some reasonable parameters for tests
+    /// Build a minimal genesis config for tests.
     /// NOTE: Genesis, by convention, must have at least one allocation
     pub fn new_test() -> Self {
         let mut wanted_balances = IndexMap::new();
@@ -157,65 +91,55 @@ impl GenesisInitConfig {
 
         Self {
             wanted_balances,
-            genesis_state: GenesisState::default(), // Use default for testing.
+            genesis_state: GenesisState::default(),
             version: 0,
         }
     }
 }
 
-/// Strict header/body invariants for a genesis candidate.
+/// Validate the storage-side invariants for a genesis block.
 pub fn validate_genesis(block: &Block) -> Result<(), Box<dyn Error + Send + Sync>> {
     let h = &block.header;
 
-    // simple helper for errors
     let invariant_err =
         |msg: &str| io::Error::other(format!("genesis invariant failed: {msg}")).into();
 
-    // The genesis block must be height 0.
     if h.height != 0 {
         return Err(invariant_err("header.height must be 0"));
     }
 
-    // Merkle root must be valid
     if !block.is_merkle_root_valid() {
         return Err(invariant_err("header.merkle_root must be valid"));
     }
 
-    // The previous hash must be all zeros for the root.
     if h.previous_block_hash != BlockHash::empty() {
         return Err(invariant_err("header.previous_block_hash must be zero"));
     }
 
-    // Must have is_genesis=true
     if !h.is_genesis() {
         return Err(invariant_err("header.is_genesis() must be true"));
     }
 
-    // Exactly one transaction
     if block.data.transactions.len() != 1 {
         return Err(invariant_err("exactly one transaction is required"));
     }
 
     let tx = &block.data.transactions[0];
 
-    // The only transaction shall be Genesis kind
     if tx.data.kind != TransactionKind::Genesis {
         return Err(invariant_err("transaction must have genesis kind"));
     }
 
-    // .. and have no inputs
     if !tx.data.inputs.is_empty() {
         return Err(invariant_err("transaction must have no inputs"));
     }
 
-    // Genesis transaction must have at least one output
     if tx.data.outputs.is_empty() {
         return Err(invariant_err(
             "genesis transaction must have at least one output",
         ));
     }
 
-    // All the recipients of allocations must be unique (no double funding for a single account)
     let mut seen_addresses = HashSet::new();
 
     for output in &tx.data.outputs {
@@ -223,19 +147,15 @@ pub fn validate_genesis(block: &Block) -> Result<(), Box<dyn Error + Send + Sync
             return Err(invariant_err("all allocation recipients must be unique"));
         }
 
-        // Check for zero-value allocations
         if output.value == 0 {
             return Err(invariant_err("genesis allocations must be non-zero"));
         }
     }
 
-    // Is that all the checks we need for genesis?
-
     Ok(())
 }
 
-/// simple helper function to extract all UTXOs from a block
-/// returns a vector of (OutPoint, UTXO) tuples
+/// Extract all block outputs as `(OutPoint, UTXO)` pairs.
 pub fn extract_utxos_from_block(block: &Block) -> Vec<(OutPoint, UTXO)> {
     block
         .data
@@ -266,22 +186,11 @@ pub fn extract_utxos_from_block(block: &Block) -> Vec<(OutPoint, UTXO)> {
 }
 
 impl StryiStorage {
-    /// Creates (or opens) the database at the given `path`.
+    /// Opens or creates the Fjall keyspace and all eight storage partitions.
     ///
-    /// Behavior:
-    /// - Always opens/creates the Fjall keyspace and the seven partitions (blocks, heights, utxo,
-    ///   addresses, stats, undo, block_indexes) in transactional mode.
-    /// - If the `stats` partition already contains state, the storage is treated as initialized
-    ///   and returned as-is (the `genesis_config` argument is ignored).
-    /// - If no state is found (brand-new database):
-    ///     - When `genesis_config` is Some(..): build and insert the genesis block, initialize stats, return the handle.
-    ///     - When `genesis_config` is None: create an empty layout with initial stats and return the handle
-    ///       without inserting a genesis block; the caller may commit genesis later (e.g., after network sync).
-    ///
-    /// Notes:
-    /// - This function performs no network I/O.
-    /// - Callers that defer genesis should ensure it is committed before exposing chain-dependent services.
-    /// - Acquires an exclusive lock file to prevent concurrent initialization attempts.
+    /// If `stats` already contains state, the existing storage is returned and
+    /// `genesis_config` is ignored. On a brand-new database, this either stores
+    /// genesis from `genesis_config` or initializes empty pre-genesis state.
     pub async fn initialize_in_path(
         path: PathBuf,
         genesis_config: Option<GenesisInitConfig>,
@@ -298,7 +207,7 @@ impl StryiStorage {
             keyspace.disk_space()
         );
 
-        // Open or create the seven partitions with default options
+        // Open or create the eight partitions with default options
         let blocks_partition =
             keyspace.open_partition("blocks", PartitionCreateOptions::default())?;
         let heights_partition =
@@ -351,7 +260,7 @@ impl StryiStorage {
                     storage.init_with_genesis(gconfig.clone()).await?;
 
                     info!(
-                        "Genesis inserted: {} allocations, genesis's chain statics = {:#?}, version={}",
+                        "Genesis inserted: allocations={}, genesis_state={:#?}, version={}",
                         gconfig.wanted_balances.len(),
                         gconfig.genesis_state,
                         gconfig.version

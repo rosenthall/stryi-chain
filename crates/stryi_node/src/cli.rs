@@ -1,7 +1,4 @@
 //! Command-line configuration overrides for StryiNode.
-//!
-//! Every field is an `Option<T>`.
-//! If a flag is omitted, its value doesn’t overwrite the TOML file.
 
 use clap::Parser;
 use serde::{Deserialize, Serialize};
@@ -42,7 +39,7 @@ impl FromStr for NodeStartMode {
 pub struct CliArgs {
     /// Path to the TOML configuration file.
     /// The node requires a TOML config file at startup.
-    /// CLI flags override defaults and TOML settings, but do not make the config file optional.
+    /// CLI flags override defaults and the TOML settings, but do not make the config file optional.
     /// When omitted, the node tries `./stryichain.toml` and exits if it does not exist.
     #[arg(long)]
     #[serde(skip)]
@@ -75,7 +72,7 @@ pub struct CliArgs {
     pub network_gossipsub_heartbeat_secs: Option<u64>,
 
     /* storage */
-    /// Directory containing the node’s database.
+    /// Directory containing the node's database.
     #[arg(long)]
     pub storage_path: Option<PathBuf>,
 

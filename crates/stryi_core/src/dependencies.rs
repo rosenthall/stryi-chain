@@ -6,26 +6,23 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use std::collections::{HashMap, HashSet};
 
-/// DependencyGraph provides transaction validation and dependency analysis capabilities.
-/// It combines efficient hash-based validation with graph-based analytics to enable
-/// both fast validation and advanced transaction flow analysis.
+/// Transaction dependency DAG for in-block validation ordering.
 #[derive(Debug)]
 pub struct DependencyGraph {
-    // Core validation structures
-    pub(crate) output_index: HashMap<OutPoint, usize>, // Maps transaction outputs to their position in block
-    spent_outputs: HashSet<OutPoint>,                  // Tracks which outputs have been spent
-    external_inputs: HashSet<OutPoint>, // Stores UTXOs from previous blocks that need verification
+    // outpoint to tx position in the block
+    pub(crate) output_index: HashMap<OutPoint, usize>,
+    spent_outputs: HashSet<OutPoint>,
+    // UTXOs from the earlier blocks, need storage lookup
+    external_inputs: HashSet<OutPoint>,
 
-    // Graph structures for advanced analysis
-    graph: DiGraph<usize, ()>, // Directed graph representing transaction dependencies
-    node_indices: Vec<NodeIndex>, // Maps transaction indices to graph nodes
+    graph: DiGraph<usize, ()>,
+
+    // tx index to graph node
+    node_indices: Vec<NodeIndex>,
 }
 
 impl DependencyGraph {
-    /// Builds a dependency graph from block data, performing initial validation.
-    /// Creates both hash-based validation structures and graph representation.
-    ///
-    /// Returns error if invalid dependencies are detected, such as duplicate outputs.
+    /// Fails on duplicate outputs.
     pub fn build(block_data: &BlockData) -> Result<Self, StryiCoreError> {
         let graph_struct = DiGraph::new();
         let node_indices = Vec::new();
@@ -79,19 +76,16 @@ impl DependencyGraph {
         Ok(dep_graph)
     }
 
-    /// Validates the ordering of transactions within the block and prevents double spends.
-    /// Uses efficient hash-based structures for quick validation.
+    /// Checks tx ordering and catches double-spends.
     pub fn validate_order(&mut self, block_data: &BlockData) -> Result<(), StryiCoreError> {
         for (tx_idx, tx) in block_data.transactions.iter().enumerate() {
             for input in &tx.data.inputs {
-                // Prevent double spending of outputs
                 if !self.spent_outputs.insert(input.previous_output) {
                     return Err(StryiCoreError::TransactionDependencyError {
                         msg: "Double spend detected".to_string(),
                     });
                 }
 
-                // Ensure correct transaction ordering
                 if let Some(&dep_tx_idx) = self.output_index.get(&input.previous_output)
                     && dep_tx_idx >= tx_idx
                 {
@@ -104,12 +98,12 @@ impl DependencyGraph {
         Ok(())
     }
 
-    /// Returns set of UTXOs from previous blocks that need verification
+    /// Outpoints that aren't created in this block (need storage lookup).
     pub fn get_external_dependencies(&self) -> &HashSet<OutPoint> {
         &self.external_inputs
     }
 
-    /// Returns list of transactions that the given transaction depends on
+    /// In-block predecessors of `tx_idx`.
     pub fn get_transaction_dependencies(&self, tx_idx: usize) -> Vec<usize> {
         if tx_idx >= self.node_indices.len() {
             return Vec::new();
@@ -140,7 +134,7 @@ impl DependencyGraph {
                 }
             }
 
-            // Mark current group as processed
+            // Mark the current group as processed
             for idx in &current_group {
                 processed.insert(*idx);
             }

@@ -358,7 +358,7 @@ impl ConnectedNode {
 
         if candidates.is_empty() {
             return Err(StryiNodeError::other(
-                "all peers have less or equal work than local chain — nothing to sync",
+                "all peers have less or equal work than local chain - it's nothing to sync",
             ));
         }
 

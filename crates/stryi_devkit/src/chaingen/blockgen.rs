@@ -10,7 +10,6 @@ use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::collections::HashSet;
-use stryi_core::address::AccountAddress;
 use stryi_core::block::{Block, BlockHash, meets_difficulty};
 use stryi_core::consensus::BlockStorage;
 use stryi_core::transactions::{
@@ -19,30 +18,23 @@ use stryi_core::transactions::{
 use tracing::{debug, info, warn};
 
 impl ChainGenerator {
-    /// generates a deterministic and valid block at `height` that has only one payment transaction which evenly distributes all the balance of the funding account.
+    /// Generates a deterministic and valid block at `height` that has only one payment transaction which evenly distributes all the balance of the funding account.
     /// It uses all the existing UTXOs outputs of funder.
     pub async fn build_distributing_block(
         &self,
         state: &mut GenerationState,
     ) -> Result<Block, String> {
-        // quick check
         if !state.account_utxos.is_empty() {
             return Err(
                 "Distributor block can only be built as the first generated block".to_string(),
             );
         }
 
-        // use consts from self
         let consts = self.consensus_consts;
-
-        // Create coinbase transaction
-        let miner = AccountAddress::from_hash_string(&self.config.blocks.miner_address)
-            .map_err(|e| format!("invalid miner_address in config: {e}"))?;
-
-        // distributor height: first block after the current tip
+        let miner = self.config.blocks.miner_address;
         let distributor_chain_height = self.pre_generation_height + 1;
 
-        // Get the previous block (current tip) to compute timestamp and version/difficulty
+        // Get the current tip to compute timestamp and version/difficulty
         let prev_block = {
             let s = self.storage.read().await;
             s.get_block_by_height(self.pre_generation_height)
@@ -56,17 +48,10 @@ impl ChainGenerator {
                 })?
         };
 
-        // Use the previous header timestamp + average_block_time_secs
         let base_time = self.config.blocks.average_block_time_secs;
         let timestamp = prev_block.header.timestamp.saturating_add(base_time);
-
-        // Use difficulty for distributor height
         let bits = consts.difficulty_bits_for_height(distributor_chain_height);
-
-        // For block version, reuse previous version if available (deterministic continuity)
         let version = prev_block.header.version;
-
-        // Coinbase/subsidy for this chain height
         let subsidy = consts.block_subsidy(distributor_chain_height);
 
         let coinbase_tx = Transaction::new_unsigned(TransactionData {
@@ -79,7 +64,6 @@ impl ChainGenerator {
             }],
         });
 
-        // Build distribution transaction
         let dist_tx = generate_distributing_transaction(state)
             .map_err(|e| format!("Failed to generate distributing transaction: {}", e))?;
 
@@ -96,7 +80,7 @@ impl ChainGenerator {
         // Finalize block
         let mut block = Block::new(
             vec![coinbase_tx, dist_tx],
-            prev_block.block_hash(), // chain continuity
+            prev_block.block_hash(),
             distributor_chain_height,
             bits,
             timestamp,
@@ -149,9 +133,7 @@ impl ChainGenerator {
         let variance = rng.random_range(0..=variance_range);
         let timestamp = prev.header.timestamp.saturating_add(base_time + variance);
 
-        // Miner + subsidy.
-        let miner = AccountAddress::from_hash_string(&self.config.blocks.miner_address)
-            .map_err(|e| format!("invalid miner_address in config: {e}"))?;
+        let miner = self.config.blocks.miner_address;
         let subsidy = self.consensus_consts.block_subsidy(height);
 
         // Start with a coinbase transaction
@@ -164,12 +146,9 @@ impl ChainGenerator {
                 recipient: miner,
             }],
         });
-
-        // Calculate how many payment transactions to generate
         let mut transactions = vec![coinbase_tx];
 
         // Choose accounts to use in this block
-
         let (min_txs, max_txs) = (
             self.config.blocks.min_transactions_per_block,
             self.config.blocks.max_transactions_per_block,
@@ -197,7 +176,7 @@ impl ChainGenerator {
         let mut spent_in_block: HashSet<OutPoint> = HashSet::new();
 
         while strategy.should_continue() {
-            strategy.record_attempt();
+            strategy.record_fail();
 
             // Get accounts with UTXOs
             let top_accounts =
@@ -230,7 +209,6 @@ impl ChainGenerator {
                     utxos_to_select,
                 );
 
-                // Generate transaction
                 if let Some(tx) = generate_transaction(
                     &sender_key,
                     pattern,
@@ -239,7 +217,6 @@ impl ChainGenerator {
                     rng,
                     &params,
                 ) {
-                    // Mark the UTXOs as spent in this block
                     for utxo in selected_utxos {
                         spent_in_block.insert(utxo.outpoint);
                     }
@@ -273,7 +250,7 @@ impl ChainGenerator {
             1, // version
         );
 
-        // Mine nonce in parallel using ordered scan for a deterministic result.
+        // Mine nonce in parallel using ordered scan for a deterministic result between runs.
         self.mine_block_parallel_ordered(&mut block)?;
 
         Ok(block)
@@ -295,7 +272,6 @@ impl ChainGenerator {
             let mut hdr = base_header;
             hdr.nonce = nonce;
 
-            // bincode serde encode (no aliasing), hash, then difficulty check.
             let header_bytes = match bincode::serde::encode_to_vec(hdr, bincode::config::standard())
             {
                 Ok(v) => v,

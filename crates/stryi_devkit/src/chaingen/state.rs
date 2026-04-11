@@ -15,7 +15,6 @@ use stryi_storage::chaingen::StryiStorageChaingenExt;
 use stryi_storage::{StryiStorage, StryiStorageError};
 use tracing::{debug, info};
 
-/// Current state of chain's generation.
 #[derive(Clone)]
 pub struct GenerationState {
     /// Collection of all the accounts that are used during a generation process.
@@ -127,12 +126,11 @@ impl GenerationState {
             })
             .collect();
 
-        // Sort by UTXO count ascending (least UTXOs first), tie-breaker: address bytes
+        // Sort by least UTXOs available. Use account address as a tie-breaker.
         addr_counts.sort_by(|(a_addr, a_cnt), (b_addr, b_cnt)| {
             a_cnt.cmp(b_cnt).then_with(|| a_addr.data.cmp(&b_addr.data))
         });
 
-        // Take first n addresses
         Some(
             addr_counts
                 .into_iter()
@@ -152,7 +150,6 @@ impl GenerationState {
             .filter(|(_addr, utxos)| !utxos.is_empty())
             .filter_map(|(addr, utxos)| {
                 self.accounts.get(addr).map(|signing_key| {
-                    // Собираем вектор, сортируем канонично и только потом строим IndexSet
                     let mut utxos_vec: Vec<_> = utxos.iter().cloned().collect();
 
                     // Canonical, deterministic order (txid, then vout)
@@ -228,7 +225,7 @@ impl GenerationState {
         let mut accounts = IndexMap::new();
 
         for i in 0..amount {
-            // Create deterministic seed for each account by combining base seed with index
+            // Create a deterministic seed for each account by combining base seed with index
             let account_seed = base_seed.wrapping_add(i as u64);
 
             let mut rng = StdRngWrapper(rand::rngs::StdRng::seed_from_u64(account_seed));

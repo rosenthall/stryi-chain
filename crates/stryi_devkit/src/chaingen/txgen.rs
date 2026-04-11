@@ -287,7 +287,7 @@ pub fn generate_consolidation_tx(
         return None;
     }
 
-    // Limit number of inputs to prevent huge transactions
+    // Limit the number of inputs to prevent huge transactions
     let utxos_to_use: Vec<_> = utxos_to_spend.into_iter().take(params.max_inputs).collect();
 
     let num_inputs = utxos_to_use.len();

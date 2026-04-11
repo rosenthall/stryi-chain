@@ -8,8 +8,8 @@ use rustls_pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use stryi_network::Keypair;
 
 /// TLS identity of a Stryi node.
-/// *one* certificate + its matching private key, generated from the
-/// node’s libp2p Ed25519 key.
+/// *one* certificate and its matching private key, generated from the
+/// node's libp2p Ed25519 key.
 pub struct NodeTlsIdentity {
     /// PEM-encoded X.509 certificate (`-----BEGIN CERTIFICATE-----`)
     pub cert_pem: String,

@@ -7,12 +7,6 @@ use crate::{
 use tracing::trace;
 
 /// Runs all header-level consensus rules.
-///
-/// Validation steps:
-/// 1. expected difficulty bits (via `DifficultyCalc`);
-/// 2. proof-of-work check against declared difficulty;
-/// 3. Merkle root verification.
-///
 /// NOTE:
 /// - This function is async because difficulty calculation may depend
 ///   on chain state and require async access.

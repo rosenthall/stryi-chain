@@ -29,7 +29,7 @@ pub enum TransactionPattern {
     Splitting,
     /// Multiple inputs, multiple outputs (complex)
     ///
-    /// *NOTE*: Inputs amount are the same as outputs.
-    /// So if it burns 4 txins, it must create 4 new txouts in order to keep balance.
+    /// *NOTE*: Inputs amount is the same as outputs.
+    /// So if it burns 4 txins, it must create 4 new txouts to keep balance.
     Complex,
 }

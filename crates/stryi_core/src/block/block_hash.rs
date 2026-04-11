@@ -4,15 +4,6 @@ use hashx::{Error, HashX};
 use crate::hash::HashKind;
 
 /// Represents a specific hash kind for block hashes using HashX + BLAKE3
-///
-/// How it works:
-/// 1. We take the input data and compute an initial BLAKE3 digest (32 bytes).
-/// 2. That digest serves as a seed for building a `HashX` program. If the seed
-///    is "weak" (`Error::ProgramConstraints`), we keep re-hashing it with BLAKE3
-///    until we get a "strong" seed.
-/// 3. We process the original data in 8-byte chunks, feeding each `u64` through
-///    the HashX program and updating a BLAKE3 hasher with the 32-byte partial output.
-/// 4. We finalize BLake3 to get a 32-byte final result.
 #[derive(Default, Clone, Copy, PartialEq, Debug, Eq, Hash)]
 pub struct BlockHashKind;
 
@@ -35,10 +26,10 @@ impl HashKind for BlockHashKind {
     /// # Panic
     /// Panics on unexpected [`HashX::new`] errors other than [`Error::ProgramConstraints`].
     fn hash(data: &[u8]) -> [u8; Self::SIZE] {
-        // (1) Compute an initial seed from BLAKE3(data)
+        //  Compute an initial seed from BLAKE3(data)
         let mut seed = blake3::hash(data).as_bytes().to_vec();
 
-        // (2) Build a HashX function, re-hashing if the seed is "weak"
+        // Build a HashX function, re-hashing if the seed is "weak" according to hashx
         let hashx = loop {
             match HashX::new(&seed) {
                 Ok(hx) => break hx, // Successfully built -> exit loop
@@ -52,7 +43,7 @@ impl HashKind for BlockHashKind {
             }
         };
 
-        // (3) Process the data in 8-byte chunks, passing 32-byte partial outputs to a BLAKE3 hasher
+        // Process the data in 8-byte chunks, passing 32-byte partial outputs to a BLAKE3 hasher
         let mut blender = blake3::Hasher::new();
         let mut input_u64 = 0u64;
         let mut byte_count = 0;
@@ -62,8 +53,8 @@ impl HashKind for BlockHashKind {
             byte_count += 1;
 
             if byte_count % 8 == 0 {
-                let chunk_hash = hashx.hash_to_bytes(input_u64); // [u8; 32]
-                blender.update(&chunk_hash); // Update hasher state
+                let chunk_hash = hashx.hash_to_bytes(input_u64);
+                blender.update(&chunk_hash);
                 input_u64 = 0;
             }
         }
@@ -74,20 +65,16 @@ impl HashKind for BlockHashKind {
             blender.update(&chunk_hash);
         }
 
-        // (4) Finalize BLAKE3 -> 32 bytes
+        // Finalize via BLAKE3 to just 32 bytes
         let blake3_output = blender.finalize();
         let mut result = [0u8; 32];
         result.copy_from_slice(&blake3_output.as_bytes()[..32]);
 
-        // Return the finalized BLAKE3 32 bytes
         result
     }
 }
 
-/// Type represents a hash of the block.
-///
-/// Internally calls `BlockHashKind::hash`, then
-/// stores the result in an instance of `Hash<BlockHashKind>`.
+/// A hash of a block.
 pub type BlockHash = crate::hash::Hash<BlockHashKind>;
 
 impl BlockHash {

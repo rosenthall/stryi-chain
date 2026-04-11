@@ -4,7 +4,7 @@ use crate::transactions::{OutPoint, Transaction, TransactionKind, UTXO};
 use std::collections::HashSet;
 
 /// UtxoProcessor is responsible for applying and reverting blocks to the UTXO set.
-// TODO: Add some configuration structs?
+// TODO: Add some configuration for the UtxoProcessor?
 pub struct UtxoProcessor;
 
 impl Default for UtxoProcessor {

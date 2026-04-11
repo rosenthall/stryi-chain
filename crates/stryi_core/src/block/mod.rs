@@ -13,7 +13,6 @@ use crate::transactions::{
 };
 use serde::{Deserialize, Serialize};
 
-/// BlockData holds a list of transactions of block
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BlockData {
     /// List of transactions included in this block
@@ -61,8 +60,7 @@ impl BlockHeader {
 /// Stored in genesis, never changes.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GenesisState {
-    /// Static values for consensus:
-    /// covering proof‑of‑work difficulty adjustment and block‑reward emission, etc.
+    /// Consensus parameters.
     #[serde(rename = "consts")]
     pub consensus_consts: ConsensusConsts,
     // TODO: Some Additional fields in genesis_state? We may add any configurations/kill switches in here. Or maybe just string with info about the block?

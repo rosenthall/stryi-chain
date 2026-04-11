@@ -61,7 +61,6 @@ pub enum StryiNodeHttpApiError {
     #[schema(title = "ResourceNotFoundError")]
     ResourceNotFound { resource: ResourceKind },
 
-    // Keep string for logging at call sites; response body won’t leak it.
     #[schema(title = "UnexpectedError")]
     #[error("unexpected: {0}")]
     Unexpected(String),

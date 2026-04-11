@@ -1,8 +1,6 @@
 use crate::block::{Block, BlockHash};
 use std::collections::HashMap;
 
-/// Metadata stored for **each** block that currently belongs to the canonical chain.
-/// Does not store UTXO's themselves, but only required metadata.
 #[derive(Clone, Debug, PartialEq)]
 struct ChainIndexEntry {
     parent: BlockHash,
@@ -17,10 +15,7 @@ struct TipInfo {
     work: u128,
 }
 
-/// In‑memory index of the *active* chain.
-///
-/// * `entries` are metadata for every block in the main chain;
-/// * `tip` is the cached best block for O(1) access.
+/// In-memory index of the active chain.
 #[derive(Clone, PartialEq, Debug)]
 pub struct ChainIndex {
     entries: HashMap<BlockHash, ChainIndexEntry>,
@@ -28,7 +23,6 @@ pub struct ChainIndex {
 }
 
 impl ChainIndex {
-    /// Creates a new empty instance of `ChainIndex`
     #[inline(always)]
     pub fn new() -> Self {
         Self {
@@ -37,9 +31,7 @@ impl ChainIndex {
         }
     }
 
-    /// Insert/overwrite a block together with already‑calculated cumulative work.
-    ///
-    /// The caller must guarantee that `cumulative_work` is
+    /// Caller must guarantee that `cumulative_work` is
     /// `work(parent) + 2^difficulty_bits`.
     pub fn insert(&mut self, block: &Block, cumulative_work: u128) {
         let hash = block.block_hash();
@@ -67,8 +59,7 @@ impl ChainIndex {
         }
     }
 
-    /// Drop a block from the index.
-    /// If the removed block was the tip it re‑scans the map to pick the next heaviest.
+    /// If the removed block was the tip, re-scans the map to pick the next heaviest.
     pub fn remove(&mut self, hash: &BlockHash) -> bool {
         let existed = self.entries.remove(hash).is_some();
         if !existed {
@@ -82,27 +73,22 @@ impl ChainIndex {
         true
     }
 
-    /// O(1) - does the hash belong to the active chain?
     pub fn has(&self, hash: &BlockHash) -> bool {
         self.entries.contains_key(hash)
     }
 
-    /// Parent hash if the block is tracked.
     pub fn parent(&self, hash: &BlockHash) -> Option<BlockHash> {
         self.entries.get(hash).map(|e| e.parent)
     }
 
-    /// Height lookup.
     pub fn height(&self, hash: &BlockHash) -> Option<u64> {
         self.entries.get(hash).map(|e| e.height)
     }
 
-    /// Cumulative work lookup.
     pub fn work(&self, hash: &BlockHash) -> Option<u128> {
         self.entries.get(hash).map(|e| e.work)
     }
 
-    /// Current best tip.
     pub fn tip(&self) -> Option<(u64, BlockHash, u128)> {
         self.tip.as_ref().map(|t| (t.height, t.hash, t.work))
     }

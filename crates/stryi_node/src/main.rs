@@ -120,8 +120,6 @@ fn use_json_logs() -> bool {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Initialize the tracing subscriber.
-
     // Use EnvFilter to filter out some of the unnecessary logs (like h2, handshakes, etc.)
     // Set the default log level to info if RUST_LOG is not set
     let filter_layer = EnvFilter::try_from_default_env()
@@ -130,7 +128,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .add_directive("h2=info".parse()?)
         .add_directive("lsm_tree=info".parse()?);
 
-    // With telemetry enabled: include the console layer
+    // With telemetry enabled we include the console layer
     #[cfg(feature = "telemetry")]
     {
         if use_json_logs() {
@@ -158,7 +156,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // Without telemetry: omit the console layer entirely
+    // Without telemetry, we omit the console layer entirely
     #[cfg(not(feature = "telemetry"))]
     {
         if use_json_logs() {
@@ -184,8 +182,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // Initialize cfg. We use both .toml file and cli parameters for configuration
-    // CLI parameters have higher priority than the toml config so the user can overlap values.
     let cfg = NodeConfig::load().map_err(|e| {
         error!("Got error while trying to setup configuration : {e}");
         e
@@ -252,17 +248,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let storage: Arc<RwLock<StryiStorage>> = match (start_mode, &storage_status) {
-        // Already initialized - just open
+        // if already initialized - just open
         (_start_mode, StorageStatus::Initialized { .. }) => {
             let st = StryiStorage::initialize_in_path(cfg.storage_path.clone(), None).await?;
             Arc::new(RwLock::new(st))
         }
 
-        // Bootstrap + empty datadir:
-        // 1. read local genesis config
-        // 2. build the preview block deterministically
-        // 3. confirm_and_save(meta)
-        // 4. initialize storage with the same config (commits the block)
+        // if doing bootstrap and datadir is empty - setup meta
         (NodeStartMode::Bootstrap, StorageStatus::NoGenesis) => {
             let p = cfg.genesis_config_path.as_ref().ok_or_else(|| {
                 StryiNodeError::invalid_config_value(
@@ -296,13 +288,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Arc::new(RwLock::new(st))
         }
 
-        // Join + empty datadir: Pre-Genesis layout (genesis will be fetched)
+        // if Join and datadir is empty it's a pre-Genesis layout
+        // genesis will be fetched and saved later.
         (NodeStartMode::Join, StorageStatus::NoGenesis) => {
             let st = StryiStorage::initialize_in_path(cfg.storage_path.clone(), None).await?;
             Arc::new(RwLock::new(st))
         }
 
-        // Corrupted meta -> hard stop
+        // if meta is corrupted - halt
         (_, StorageStatus::Corrupted { reason }) => {
             return Err(StryiNodeError::other(format!("Storage meta corrupted: {reason}")).into());
         }
@@ -318,19 +311,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         60 * 60,               // 1-hour expiry time
     );
 
-    // Create utxo_lookup for mempool that reads UTXO by the outpoint from storage
+    // Create utxo_lookup closure for mempool that reads UTXO by the outpoint from storage
     let utxo_lookup: UtxoLookup = {
         let storage = storage.clone();
 
-        // Closure captures Arc-ed storage
         Box::new(move |out_point: &OutPoint| {
-            // Clone storage for the async block
             let storage = storage.clone();
-
-            // Copy outpoint by value into async block
             let out_point = *out_point;
 
-            // Return boxed async future that reads UTXO
             Box::pin(async move {
                 storage
                     .read()
@@ -347,8 +335,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // -- Initialize NetworkManager --
 
     let peer_key = PeerKey::restore_or_generate(&cfg.peer_key_path)?;
-
-    let keypair = peer_key.inner().clone(); // clone to hand over to NetworkManager
+    let keypair = peer_key.inner().clone();
 
     // -- get peer_id --
     let peer_id = PeerId::from_public_key(&keypair.public());

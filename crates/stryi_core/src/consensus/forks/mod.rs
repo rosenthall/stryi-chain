@@ -1,5 +1,5 @@
-/// Implementation of the overlay mechanism for forks.
+/// The overlay mechanism for forks.
 pub mod overlay;
 
-/// Implementation of the fork registry
+/// The fork registry
 pub mod registry;

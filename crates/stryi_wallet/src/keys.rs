@@ -52,7 +52,7 @@ pub fn load_wallet(path: &Path) -> Result<WalletFile> {
 
 /// Loads a wallet file, returning a clear error if no wallet exists yet.
 pub fn require_wallet(path: &Path) -> Result<WalletFile> {
-    load_wallet(path).context("no wallet found — run `stryi-wallet init` first")
+    load_wallet(path).context("no wallet found. Try to run `stryi-wallet init` first")
 }
 
 /// Saves wallet in json file. Creates parent dirs if needed.

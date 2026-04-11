@@ -35,10 +35,7 @@ pub struct StryiSyncService<DB>
 where
     DB: BlockStorage + UtxoStorage,
 {
-    /// Basic configuration fields, like version of the protocol or the name of chain
     pub(crate) config: StryiSyncServiceConfig,
-
-    /// Arc'd storage reference
     pub(crate) storage: Arc<RwLock<DB>>,
 }
 
@@ -141,9 +138,9 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
                         Some((Ok(pb_header), next_state))
                     }
 
-                    // Both “failed to load” cases in one arm
+                    // Both "failed to load" cases in one arm
                     other => {
-                        // Turn the match‐arm payload into a concrete error
+                        // Turn the match-arm payload into a concrete error
                         let e: StryiStorageError = match other {
                             Err(e) => e,
                             Ok(None) => StryiStorageError::NotFound(format!(
@@ -151,7 +148,7 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
                                 current_height
                             )),
 
-                            // We’ve covered Ok(Some) above, so it should be impossible
+                            // We've covered Ok(Some) above, so it should be impossible
                             _ => unreachable!(),
                         };
 
@@ -264,23 +261,16 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
             return Err(Status::invalid_argument("Too many block hashes requested"));
         }
 
-        // We will build a stream of results by iterating over `hashes`.
-        // Clone the Arc so we can move it into the closure.
         let storage = self.storage.clone();
 
-        // Produce a stream by iterating over each raw hash. For each hash, we do an async fetch
-        // to get the block from storage, then return Ok(pb_block) or an Err(Status).
         let block_stream = stream::iter(hashes).then(move |block_hash| {
             let storage = storage.clone();
             async move {
-                // Convert string hash to BlockHash
                 let block_hash = BlockHash::from_hash_string(&block_hash)
                     .map_err(|e| Status::invalid_argument(format!("Invalid hash: {e:?}")))?;
 
-                // 2) Read from storage
                 let store = storage.read().await;
 
-                // 2) fetch Option<Block> from storage
                 let opt_block = store.get_block_by_hash(block_hash).await.map_err(|e| {
                     if matches!(e, StryiStorageError::NotFound(_)) {
                         Status::not_found("Block not found in storage")
@@ -292,11 +282,7 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
                 let block =
                     opt_block.ok_or_else(|| Status::not_found("Block not found in storage"))?;
 
-                // 3) Convert to PbBlock
-                let pb_block: PbBlock = block.into();
-
-                // 4) Return it
-                Ok(pb_block)
+                Ok(block.into())
             }
         });
 

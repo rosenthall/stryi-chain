@@ -7,7 +7,7 @@ use stryi_core::transactions::{
 };
 use utoipa::ToSchema;
 
-/// Generic error body for the API, used in various endpoints.
+/// Common error body for the API
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiErrorBody {
     #[schema(example = "resource_not_found")]
@@ -22,7 +22,8 @@ pub struct ApiErrorBody {
 /// Payload returned by `/api/nodestate`.
 #[derive(Serialize, ToSchema)]
 pub struct NodeStateBody {
-    /// Human-readable name of the network (e.g. “devnet”, “mainnet”).
+    /// Human-readable name of this chain.
+    /// For instance, "testnet03", "mainnet"
     pub chain_name: String,
 
     /// Numeric version of this HTTP API.

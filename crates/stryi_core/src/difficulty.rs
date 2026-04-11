@@ -7,31 +7,23 @@ use futures::future::{BoxFuture, ready};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Asynchronous difficulty calculator injected as a function.
-/// **Currently, a thin wrapper over `difficulty_bits_for_height`, but extensible to state-dependent policies.**
-///
-// - `&S` is the chain state, may include any required data to calculate difficulty; `usize` is the block height.
-// - HRTB (`for<'a>`) ties the future’s lifetime to the borrow of `&S`.
-// - Returns a `u8` difficulty or `StryiCoreError`.
-// - `Send + Sync + 'static` enables sharing across threads.
-// - `BoxFuture` erases the concrete future type.
+/// Async difficulty calculator, returns required bits amount for specified height.
+/// Currently just wraps pure (in a functional programming way) `difficulty_bits_for_height`,
+/// but takes generic `S` so it can be replaced by any better implementation later
+/// (that may consider network load, average new block arriving time, etc)
 pub type DifficultyCalc<S> = Arc<
     dyn for<'a> Fn(&'a S, u64) -> BoxFuture<'a, Result<u8, StryiCoreError>> + Send + Sync + 'static,
 >;
 
-/// Builds a difficulty calculator from consensus rules stored in the genesis block.
-/// Currently, height-only, but extensible to state-dependent policies.
+/// Reads consensus rules from genesis and returns a [`DifficultyCalc`].
 pub async fn load_rules_and_build_calc<DB>(
     db: Arc<RwLock<DB>>,
 ) -> Result<DifficultyCalc<DB>, StryiCoreError>
 where
     DB: BlockStorage + StorageStats + Send + Sync + 'static,
 {
-    // Try to read the genesis block from storage (height = 0).
     let genesis_opt = {
-        // Short, read-only guard scope.
         let guard = db.read().await;
-        // Fetch the block at height 0.
         guard.get_block_by_height(0).await
     }
     .map_err(|e| StryiCoreError::StorageError {
@@ -42,7 +34,6 @@ where
         ),
     })?;
 
-    // Fail fast if the genesis block is missing.
     let genesis_block = match genesis_opt {
         Some(b) => b,
         None => {
@@ -53,7 +44,6 @@ where
         }
     };
 
-    // Destructure and ensure that `genesis_state` is present.
     match genesis_block {
         Block {
             header:
@@ -63,9 +53,7 @@ where
                 },
             ..
         } => {
-            // Extract immutable consensus constants from the genesis state.
             let consts: ConsensusConsts = state.consensus_consts;
-            // Build a height-only difficulty calculator that captures only `consts`.
             Ok(difficulty_calculator_from_consts::<DB>(consts))
         }
         Block {
@@ -82,8 +70,7 @@ where
     }
 }
 
-/// Builds a difficulty calculator from immutable consensus constants.
-/// This particular calculator implementation only captures `ConsensusConsts` and does not rely on db state.
+/// Height-only difficulty calculator from the given constants (ignores db state).
 #[inline]
 pub fn difficulty_calculator_from_consts<S>(consts: ConsensusConsts) -> DifficultyCalc<S>
 where

@@ -24,10 +24,7 @@ pub struct BlockValidator<ST>
 where
     ST: StorageStats + Send + Sync + 'static,
 {
-    /// Immutable consensus parameters (subsidy, decay, etc.)
     pub consensus_consts: ConsensusConsts,
-
-    /// Simple closure for convenient calculation of difficulty at a given height.
     pub difficulty_calc: DifficultyCalc<ST>,
 }
 

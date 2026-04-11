@@ -11,13 +11,8 @@ use tracing::{debug, trace};
 /// for generating purposes.
 #[derive(Clone, PartialEq, Debug)]
 pub struct FundAccount {
-    /// Funder address
     funder_address: AccountAddress,
-
-    /// private key of this account
     private_key: PrivateKey,
-
-    /// List of all the available UTXOs for this address mapped by their outputs.
     utxos: IndexMap<OutPoint, UTXO>,
 }
 
@@ -25,7 +20,7 @@ static MINIMAL_TOTAL_AVAILABLE_BALANCE_FUNDING_ACCOUNT: u64 = 1_000_000;
 
 impl FundAccount {
     /// Builds FundAccount
-    /// Queries all the available utxos for this account, returns error if no balance is available
+    /// Queries all the available utxos for this account, checks if it has enough balance to be the funder
     pub async fn load_from_private_key(
         private_key: PrivateKey,
         storage: &StryiStorage,
@@ -45,14 +40,12 @@ impl FundAccount {
         let utxos = IndexMap::from_iter(utxos);
         debug!("All the available utxos of funder account : {:#?}", utxos);
 
-        // quick check if this account even has balance
         if utxos.is_empty() {
             return Err(
                 "Provided funding key, apparently, has no available balance in chain for distribution.".to_string()
             );
         }
 
-        // Check if funding account has enough balance to be funder
         let balance = utxos.values().map(|utxo| utxo.value).sum::<u64>();
         if balance < MINIMAL_TOTAL_AVAILABLE_BALANCE_FUNDING_ACCOUNT {
             return Err(format!(
@@ -67,12 +60,9 @@ impl FundAccount {
             utxos,
         })
     }
-
-    // -- Getters --
-
-    /// Gets address
-    pub fn address(&self) -> AccountAddress {
-        self.funder_address
+    /// Gets a list of all the available UTXOs for this address mapped by their outputs.
+    pub fn utxos(&self) -> IndexMap<OutPoint, UTXO> {
+        self.utxos.clone()
     }
 
     /// Returns sum of all the output values from owned by this account UTXOs.
@@ -81,13 +71,11 @@ impl FundAccount {
         self.utxos.values().map(|utxo| utxo.value).sum()
     }
 
-    /// Gets the private key
-    pub fn private_key(&self) -> &PrivateKey {
-        &self.private_key
+    pub fn address(&self) -> AccountAddress {
+        self.funder_address
     }
 
-    /// Gets a list of all the available UTXOs for this address mapped by their outputs.
-    pub fn utxos(&self) -> IndexMap<OutPoint, UTXO> {
-        self.utxos.clone()
+    pub fn private_key(&self) -> &PrivateKey {
+        &self.private_key
     }
 }

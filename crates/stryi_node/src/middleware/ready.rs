@@ -14,7 +14,7 @@ use tower::{Layer, Service};
 /// Wrapped services will reject requests until this flag is `true`.
 pub type ReadyFlag = Arc<RwLock<bool>>;
 
-/// Implemented by a service to emit a protocol-correct “not ready” reply.
+/// Implemented by a service to emit a protocol-correct "not ready" reply.
 pub trait NotReadyResponder: Send + Sync + 'static {
     type NotReadyResponse;
 
