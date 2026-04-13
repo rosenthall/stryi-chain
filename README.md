@@ -3,7 +3,7 @@
 StryiChain is a Rust blockchain prototype built for experiments and learning.
 
 It combines a CPU-oriented Proof-of-Work based on Tor's `HashX` and
-`BLAKE3`, `libp2p` networking, `gRPC` sync, and a CLI wallet for local
+`BLAKE3`, `libp2p` networking, `gRPC`-based sync, and a CLI wallet for local
 testing.
 
 The project is named after the [Stryi River](https://en.wikipedia.org/wiki/Stryi_(river)) in Ukraine.
@@ -28,9 +28,10 @@ grow.
 
 ## Build
 
-Install some dependencies:
+Requires **Rust nightly**. The exact version is pinned in `rust-toolchain.toml`.
 
 ```bash
+# Install deps
 # Ubuntu
 sudo apt-get install -y --no-install-recommends \
   clang \
@@ -112,18 +113,135 @@ at `http://localhost:5556` by default. It does not start the node itself.
 
 ![Interactive `stryi-wallet` session against a running local node](demo/stryi-wallet-interactive-mode.gif)
 
-## What is NOT (yet?) implemented
+### Explore the API
+
+You can also browse the http api:
+while the node is running, open [http://localhost:5556/api/swagger-ui](http://localhost:5556/api/swagger-ui).
+
+## Features
+
+### Consensus Engine
+
+The consensus engine first classifies each incoming block's disposition (extends tip,
+starts a fork, continues a known fork, etc.) and then processes it accordingly. Fork
+validation happens against overlay storages - temporary layers on top of the canonical
+chain - so the node can validate a competing fork without touching the real state.
+If the fork wins, the overlay is committed and the old tip gets rolled back using
+stored undo data. The whole thing ended up simpler than expected.
+
+### Custom Proof-of-Work
+
+The PoW is built on
+Tor's [HashX](https://tpo.pages.torproject.net/core/doc/tor/md_ext_2equix_2hashx_2README.html)
+combined with BLAKE3.
+
+**Why not just SHA-256 like Bitcoin?**
+
+- **Bitcoin's SHA-256 is trivially parallelizable**. Mining migrated from CPUs
+  to GPUs to FPGAs to ASICs within a few years, making common hardware really inefficient
+- **Litecoin tried [Scrypt](https://www.tarsnap.com/scrypt/scrypt.pdf)** (a memory-hard KDF) to fix this, which just
+  resulted in one more kind of the ASICs to appear. However, it at least raised the hardware cost curve.
+- **HashX takes a different approach** - it compiles a unique short program from each
+  block's seed, so the CPU executes a different instruction sequence every time.
+  It's harder to bake into ASICs when the computation itself keeps changing
+- **BLAKE3 ties it together** - since HashX main capability is being ASIC-resistant, and they claim to be
+  preimage-resistant, but not
+  collision-resistant - we combine it with the BLAKE3. HashX is not a general-purpose cryptographic hash.
+
+tl;dr Same reason Monero switched to RandomX.
+
+My approach *theoretically should be* **reasonably** ASIC-resistant for a basic blockchain while remaining much simpler
+than RandomX.
+
+### Hybrid Network
+
+The networking layer combines the libp2p stack with a separate gRPC service.
+
+libp2p handles peer discovery, block/tx propagation, mempool synchronization,
+and service advertisement.
+
+I avoided using libp2p for bulk block transfer because:
+
+- extra complexity at this level for no real benefit
+- still worse than gRPC in speed and stability for this task
+- other blockchains do the same split (Solana, Ethereum CL, and conceptually
+  Avalanche, Polkadot, Near)
+
+The libp2p layer lets nodes exchange signed service records -- each node
+advertises its gRPC address along with a TLS cert. After that, nodes
+connect via gRPC directly.
+
+#### Network layer architecture
+
+```
++--stryi_network---------------------------------------------------+
+|                                                                  |
+|  +--libp2p layer--------+                                        |
+|  |                      |                                        |
+|  |  discovery:          |                                        |
+|  |    rendezvous        | - register and discover peers          |
+|  |    identity          | - Ed25519 peer ids, authority checks   |
+|  |                      |                                        |
+|  |  propagation:        |                                        |
+|  |    gossipsub         | - broadcast blocks, txs, tips          |
+|  |    mempool sync      | - exchange transaction pools           |
+|  |                      |                                        |
+|  |  services:           |                                        |
+|  |    service records   | - advertise grpc-sync, http endpoints  |
+|  |                      |                                        |
+|  +----------------------+                                        |
+|             |                                                    |
+|             | node A broadcasts signed ServiceRecord             |
+|             | with its gRPC addr + TLS cert over libp2p          |
+|             | --> node B dials that addr directly                |
+|             v                                                    |
+|  +--gRPC (HTTP/2) layer-+                                        |
+|  |                      |                                        |
+|  |  GetChainInfo        | - height, tip hash, cumulative work    |
+|  |  GetBlocksByHeight   | - stream full blocks for IBD, reorgs   |
+|  |  binary-search LCA   | - find fork point by block heights     |
+|  |                      |                                        |
+|  +----------------------+                                        |
+|                                                                  |
++------------------------------------------------------------------+
+```
+
+### Performance
+
+On average, the Node (and the StryiConsensusEngine) fully validates and applies ~180 blocks/sec on GHA free shared
+runner (4 vCPU cores) when performing Initial-Block-Download/reorg on **250 blocks** with total ~3700 transactions.
+Proof:
+<a href="https://bencher.dev/perf/stryichain?lower_value=false&upper_value=false&lower_boundary=false&upper_boundary=false&x_axis=version&branches=9b14b8a6-2243-4e11-8280-b59b52165d96&testbeds=627aa475-6e11-4f51-820e-7c8dc150724c%2Ce35664cc-adc7-4c6a-99e0-18220707ee04&benchmarks=ad177bc0-2a92-4a5f-8136-d9162b22f752&measures=8613913e-2bb2-40ec-9457-3cb09e68f66b&start_time=1771191406223&end_time=1776029806223&tab=plots&plots_search=b5304137-b034-4b2f-a987-50c90422327e&key=true&reports_per_page=4&branches_per_page=8&testbeds_per_page=8&benchmarks_per_page=8&plots_per_page=8&reports_page=1&branches_page=1&testbeds_page=1&benchmarks_page=1&plots_page=1&utm_medium=share&utm_source=bencher&utm_content=img&utm_campaign=perf%2Bimg&utm_term=stryichain"><img src="https://api.bencher.dev/v0/projects/stryichain/perf/img?branches=9b14b8a6-2243-4e11-8280-b59b52165d96&heads=&testbeds=627aa475-6e11-4f51-820e-7c8dc150724c%2Ce35664cc-adc7-4c6a-99e0-18220707ee04&specs=%2C&benchmarks=ad177bc0-2a92-4a5f-8136-d9162b22f752&measures=8613913e-2bb2-40ec-9457-3cb09e68f66b&start_time=1771191406223&end_time=1776029806223" title="stryichain" alt="stryichain - Bencher" /></a>
+
+### Other things that are in
+
+- UTXO transaction model with secp256k1 signatures
+- Configurable fee policy: heavier transactions (more inputs, outputs, bytes) require more fees to be included in the
+  block.
+- HTTP API for blocks, transactions, balances, node state (querying and interacting with all of which is supported by
+  `stryi_wallet -i`)
+- Deterministic, fast, and customizable chain generator for testing and benchmarks
+- CLI wallet with interactive REPL
+- Persistent storage backed by [fjall](https://crates.io/crates/fjall)
+- Multi-node E2E tests in Docker Compose (IBD, reorgs, tx lifecycle)
+- Mempool with dependency tracking, and Replace-By-Fee
+
+## What is **NOT** (*yet?*) implemented
 
 - Bitcoin-style transaction scripts. Scripting support for things like coin locking and other non-trivial
   spending conditions
-- A more capable wallet implementation that can create transactions with multiple outputs.
+- A more capable wallet implementation that can create transactions with multiple outputs with a nice UX.
 - Multisig (or threshold signatures) support
 - An ENS-like username system, but native and baked into the core architecture
     - The idea: social-networks-inspired username format like @trinity, @neo, @007 as first-class AccountAddress values
     - Would probably need new `TransactionKind` variants to handle renting, buying, and transferring names
     - Probably needs a decentralized storage layer for name resolution (via Kademlia DHT?)
+- Orphan blocks handling for the ConsensusEngine. Currently, the consensus engine just drops blocks whose
+  parent is absolutely unknown .
 - A minimalistic block explorer (something like etherscan) using htmx and ssr
-- stryi_devkit's loadgen tool
+- Smarter FeePolicy, RBF, and DifficultyCalc - currently these are simple
+  linear formulas, not adaptive to actual network conditions
+- stryi_devkit's loadgen tool and new corresponding e2e routines with some benchmarks
 
 ## Testing
 
@@ -169,6 +287,7 @@ Two manual GitHub Actions workflows to test different layers:
 
 - HashX
     - https://tpo.pages.torproject.net/core/doc/tor/md_ext_2equix_2hashx_2README.html
+    - https://tpo.pages.torproject.net/core/doc/tor/md_ext_2equix_2devlog.html
     - https://gitlab.torproject.org/tpo/core/arti/-/issues/889
 - Blockchain's general concepts
     - https://btcinformation.org/en/developer-reference
