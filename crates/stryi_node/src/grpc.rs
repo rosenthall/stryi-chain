@@ -210,7 +210,7 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
                         Some((Ok(pb_block), next_state))
                     }
 
-                    // Block was not found in storage → translate to a gRPC NotFound error
+                    // Block was not found in storage - translate to a gRPC NotFound error
                     Ok(None) => {
                         let status = Status::not_found(format!(
                             "Block at height {} not found",

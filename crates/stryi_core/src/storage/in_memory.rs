@@ -282,7 +282,7 @@ impl BlockStorage for StryiInMemoryStorage {
 
                 // diagnostic log
                 println!(
-                    "[test-storage] ↑ tip -> height={}, hash={}, total_blocks={}, chain_difficulty={}",
+                    "[test-storage] tip -> height={}, hash={}, total_blocks={}, chain_difficulty={}",
                     st.latest_block.0, st.latest_block.1, st.blocks_count, st.chain_difficulty,
                 );
             }

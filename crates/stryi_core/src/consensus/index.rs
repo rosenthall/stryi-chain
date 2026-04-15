@@ -149,7 +149,7 @@ mod tests {
         let w_a = w_g + (1u128 << 6);
         idx.insert(&a, w_a);
 
-        // remove tip (a) → tip should fall back to genesis
+        // remove tip (a) -> tip should fall back to genesis
         idx.remove(&a.block_hash());
         assert_eq!(idx.tip().unwrap(), (0, g.block_hash(), w_g));
     }

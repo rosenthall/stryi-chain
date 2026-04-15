@@ -8,7 +8,7 @@ use crate::hash::HashKind;
 pub struct BlockHashKind;
 
 impl HashKind for BlockHashKind {
-    const SIZE: usize = 32; // Final output is 32 bytes
+    const SIZE: usize = 32; // The final output is 32 bytes
     const PREFIX: &'static str = "Bx";
 
     /// Computes a 32-byte hash of the provided `data` using:
@@ -91,7 +91,6 @@ impl BlockHash {
 mod tests {
     use super::*;
 
-    /// Tests BlockHashKind::hash logic by hashing some sample inputs.
     #[test]
     fn test_block_hash_basic() {
         let input1 = b"hello world";
@@ -101,13 +100,11 @@ mod tests {
         let hash1 = BlockHashKind::hash(input1);
         let hash2 = BlockHashKind::hash(input2);
 
-        // We don't strictly test for "collisions" here, but we can assert they're not identical
         assert_ne!(
             hash1, hash2,
             "Different inputs should produce different block hashes."
         );
 
-        // Just confirm we get 32-byte outputs
         assert_eq!(hash1.len(), 32);
         assert_eq!(hash2.len(), 32);
 

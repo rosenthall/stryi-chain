@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Global consensus parameters stored in the genesis block.
-/// These parameters affect proof‑of‑work difficulty adjustment and block‑reward emission
+/// These parameters affect proof-of-work difficulty adjustment and block-reward emission
 /// and remain fixed for the lifetime of the chain.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Eq, PartialEq)]
 pub struct ConsensusConsts {

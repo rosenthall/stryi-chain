@@ -3,12 +3,21 @@
 StryiChain is a Rust blockchain prototype built for experiments and learning.
 
 It combines a CPU-oriented Proof-of-Work based on Tor's `HashX` and
-`BLAKE3`, `libp2p` networking, `gRPC`-based sync, and a CLI wallet for local
+`BLAKE3`, `libp2p`+`gRPC` networking, and a CLI wallet for local
 testing.
 
 The project is named after the [Stryi River](https://en.wikipedia.org/wiki/Stryi_(river)) in Ukraine.
 
-## Quickstart
+## Contents
+
+- [Crates structure](#crates-structure)
+- [Build](#build)
+- [Local Demo](#local-demo)
+- [Features](#features)
+- [Testing](#testing)
+- [Links](#links)
+
+## Showcase
 
 Generate a 20-block demo chain, start a local node, inspect `nodestate`, send a transaction, and watch the chain length
 grow.
@@ -19,7 +28,7 @@ grow.
 
 - `stryi_core`: core blockchain logic and shared domain types (`Block`, `Transaction`, `AccountAddress`, and more) + tx
   mempool implementation
-- `stryi_node`: the node binary implementation, grpc and http servers, config engine, miner, main event loop,
+- `stryi_node`: the node binary implementation, gRPC and http servers, config engine, miner, main event loop,
 - `stryi_storage`: storage layer for blocks, UTXOs, transactions. Powered by the [fjall](https://crates.io/crates/fjall)
   db
 - `stryi_network`: p2p networking and higher-level protocol glue
@@ -44,8 +53,6 @@ sudo apt-get install -y --no-install-recommends \
 brew install protobuf openssl pkg-config
 ```
 
-On other platforms make sure you have the required dependencies installed.
-
 Build the binaries used in the local demo:
 
 ```bash
@@ -59,6 +66,9 @@ local node, and sends a transaction between two demo accounts.
 
 Demo assets live in [`demo/`](demo). The labeled keys used below are
 recorded in [`demo/genesis-keys.txt`](demo/genesis-keys.txt).
+
+<details>
+<summary>Full step-by-step walkthrough</summary>
 
 All commands below run from the repository root:
 
@@ -99,10 +109,18 @@ Leave the node running. Open a second terminal in the repository root before con
 ./target/release/stryi-wallet --wallet-path /tmp/stryi-demo/wallet.json send --from @4c8c01f08adc9162ff3d137389399634a375d6d6 --to @3972d0819c496cadff43cc37f99a9322745aa397 --amount 25000 --wait
 ```
 
+### 4. Explore the API
+
+While the node is running, you can open the Swagger UI
+at [http://localhost:5556/api/swagger-ui](http://localhost:5556/api/swagger-ui)
+to browse all available endpoints.
+
+</details>
+
 ## Wallet Interactive Mode
 
 If you want to use the wallet as a REPL instead of one-shot commands, start
-it after the node from step 1 is already running.
+it after the node from [step 1](#1-generate-the-chain-and-start-the-node) is already running.
 
 ```bash
 ./target/release/stryi-wallet --wallet-path /tmp/stryi-demo/wallet.json -i
@@ -112,11 +130,6 @@ This is the session shown in the GIF below. The wallet connects to the node
 at `http://localhost:5556` by default. It does not start the node itself.
 
 ![Interactive `stryi-wallet` session against a running local node](demo/stryi-wallet-interactive-mode.gif)
-
-### Explore the API
-
-You can also browse the http api:
-while the node is running, open [http://localhost:5556/api/swagger-ui](http://localhost:5556/api/swagger-ui).
 
 ## Features
 
@@ -150,8 +163,16 @@ combined with BLAKE3.
 
 tl;dr Same reason Monero switched to RandomX.
 
-My approach *theoretically should be* **reasonably** ASIC-resistant for a basic blockchain while remaining much simpler
+My approach *should be* **reasonably** ASIC-resistant for a basic blockchain while remaining much simpler
 than RandomX.
+
+#### How it works (see [`block_hash.rs`](crates/stryi_core/src/block/block_hash.rs) for more details)
+
+1. `BLAKE3(block_header)` -> seed
+2. `HashX::new(seed)` -> compiles a unique short program from the seed (retries with a re-hash if the seed is "weak")
+3. The header is split into 8-byte chunks; each chunk is run through the compiled HashX program
+4. All chunk outputs are fed into a streaming BLAKE3 hasher -> final 32-byte hash
+5. The hash must be below the current difficulty target
 
 ### Hybrid Network
 
@@ -167,53 +188,48 @@ I avoided using libp2p for bulk block transfer because:
 - other blockchains do the same split (Solana, Ethereum CL, and conceptually
   Avalanche, Polkadot, Near)
 
-The libp2p layer lets nodes exchange signed service records -- each node
+The libp2p layer lets nodes exchange signed service records - each node
 advertises its gRPC address along with a TLS cert. After that, nodes
 connect via gRPC directly.
 
-#### Network layer architecture
+#### Network layer architecture scheme
 
 ```
-+--stryi_network---------------------------------------------------+
-|                                                                  |
-|  +--libp2p layer--------+                                        |
-|  |                      |                                        |
-|  |  discovery:          |                                        |
-|  |    rendezvous        | - register and discover peers          |
-|  |    identity          | - Ed25519 peer ids, authority checks   |
-|  |                      |                                        |
-|  |  propagation:        |                                        |
-|  |    gossipsub         | - broadcast blocks, txs, tips          |
-|  |    mempool sync      | - exchange transaction pools           |
-|  |                      |                                        |
-|  |  services:           |                                        |
-|  |    service records   | - advertise grpc-sync, http endpoints  |
-|  |                      |                                        |
-|  +----------------------+                                        |
-|             |                                                    |
-|             | node A broadcasts signed ServiceRecord             |
-|             | with its gRPC addr + TLS cert over libp2p          |
-|             | --> node B dials that addr directly                |
-|             v                                                    |
-|  +--gRPC (HTTP/2) layer-+                                        |
-|  |                      |                                        |
-|  |  GetChainInfo        | - height, tip hash, cumulative work    |
-|  |  GetBlocksByHeight   | - stream full blocks for IBD, reorgs   |
-|  |  binary-search LCA   | - find fork point by block heights     |
-|  |                      |                                        |
-|  +----------------------+                                        |
-|                                                                  |
-+------------------------------------------------------------------+
++--stryi_network---------------------------------------------------------+
+|                                                                        |
+|  +--libp2p (broadcast)--------------+   +--gRPC (direct, TLS)-------+  |
+|  |                                  |   |                           |  |
+|  |  discovery:                      |   |  GetChainInfo             |  |
+|  |    rendezvous - find peers       |   |    tip, height, work      |  |
+|  |    identity   - Ed25519 ids      |   |                           |  |
+|  |                                  |   |  GetBlocksByHeight        |  |
+|  |  propagation:                    |   |    block stream for IBD   |  |
+|  |    gossipsub - blocks, txs, tips |   |                           |  |
+|  |    mempool   - exchange tx pools |   |  binary-search LCA        |  |
+|  |                                  |   |    find fork point        |  |
+|  |  services:                       |   |                           |  |
+|  |    svc records - addr + TLS cert |   |                           |  |
+|  |                                  |   |                           |  |
+|  +----------------+-----------------+   +---+-----------------------+  |
+|                   |                         |                          |
+|                   v  peers learn each       ^                          |
+|                   |  other's gRPC address   |                          |
+|                   |  and TLS cert from      |                          |
+|                   v  signed service records ^                          |
+|                   |  using the libp2p layer |                          |
+|                   +---->------->------>-----+                          |
+|                                                                        |
++------------------------------------------------------------------------+
 ```
 
 ### Performance
 
 On average, the Node (and the StryiConsensusEngine) fully validates and applies ~180 blocks/sec on GHA free shared
-runner (4 vCPU cores) when performing Initial-Block-Download/reorg on **250 blocks** with total ~3700 transactions.
-Proof:
+runner (4 vCPU cores) when performing Initial-Block-Download/reorg on **250 blocks** with total ~3700 transactions
+(~15 txs/block with 1 to 8 inputs and 15 outputs) :
 <a href="https://bencher.dev/perf/stryichain?lower_value=false&upper_value=false&lower_boundary=false&upper_boundary=false&x_axis=version&branches=9b14b8a6-2243-4e11-8280-b59b52165d96&testbeds=627aa475-6e11-4f51-820e-7c8dc150724c%2Ce35664cc-adc7-4c6a-99e0-18220707ee04&benchmarks=ad177bc0-2a92-4a5f-8136-d9162b22f752&measures=8613913e-2bb2-40ec-9457-3cb09e68f66b&start_time=1771191406223&end_time=1776029806223&tab=plots&plots_search=b5304137-b034-4b2f-a987-50c90422327e&key=true&reports_per_page=4&branches_per_page=8&testbeds_per_page=8&benchmarks_per_page=8&plots_per_page=8&reports_page=1&branches_page=1&testbeds_page=1&benchmarks_page=1&plots_page=1&utm_medium=share&utm_source=bencher&utm_content=img&utm_campaign=perf%2Bimg&utm_term=stryichain"><img src="https://api.bencher.dev/v0/projects/stryichain/perf/img?branches=9b14b8a6-2243-4e11-8280-b59b52165d96&heads=&testbeds=627aa475-6e11-4f51-820e-7c8dc150724c%2Ce35664cc-adc7-4c6a-99e0-18220707ee04&specs=%2C&benchmarks=ad177bc0-2a92-4a5f-8136-d9162b22f752&measures=8613913e-2bb2-40ec-9457-3cb09e68f66b&start_time=1771191406223&end_time=1776029806223" title="stryichain" alt="stryichain - Bencher" /></a>
 
-### Other things that are in
+### Core Features
 
 - UTXO transaction model with secp256k1 signatures
 - Configurable fee policy: heavier transactions (more inputs, outputs, bytes) require more fees to be included in the
@@ -226,7 +242,7 @@ Proof:
 - Multi-node E2E tests in Docker Compose (IBD, reorgs, tx lifecycle)
 - Mempool with dependency tracking, and Replace-By-Fee
 
-## What is **NOT** (*yet?*) implemented
+### Not yet implemented
 
 - Bitcoin-style transaction scripts. Scripting support for things like coin locking and other non-trivial
   spending conditions
@@ -237,9 +253,9 @@ Proof:
     - Would probably need new `TransactionKind` variants to handle renting, buying, and transferring names
     - Probably needs a decentralized storage layer for name resolution (via Kademlia DHT?)
 - Orphan blocks handling for the ConsensusEngine. Currently, the consensus engine just drops blocks whose
-  parent is absolutely unknown .
+  parent is absolutely unknown.
 - A minimalistic block explorer (something like etherscan) using htmx and ssr
-- Smarter FeePolicy, RBF, and DifficultyCalc - currently these are simple
+- Smarter FeePolicy, RBF, and DifficultyCalc impls. Currently these are simple
   linear formulas, not adaptive to actual network conditions
 - stryi_devkit's loadgen tool and new corresponding e2e routines with some benchmarks
 
@@ -275,7 +291,7 @@ tokio-console
 
 ### CI
 
-Two manual GitHub Actions workflows to test different layers:
+Two manually triggered GitHub Actions workflows to test different layers:
 
 - `Run nextest`
   Runs `cargo nextest run --workspace` for fast and parallel unit test runs.
@@ -283,7 +299,7 @@ Two manual GitHub Actions workflows to test different layers:
   Runs multi-container system scenarios. The available scenarios are described in [e2e/README.md](e2e/README.md).
   The `reorg` E2E scenario also publishes benchmark artifacts and a Bencher report.
 
-# Helpful Links
+## Links
 
 - HashX
     - https://tpo.pages.torproject.net/core/doc/tor/md_ext_2equix_2hashx_2README.html

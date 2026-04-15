@@ -5,7 +5,6 @@ use std::fmt::{Display, Formatter};
 use tracing::debug;
 
 /// Result of routing an incoming block relative to the local chain state.
-/// This enum is purely topological, and
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::consensus) enum BlockDisposition {
     /// Block hash already known locally
