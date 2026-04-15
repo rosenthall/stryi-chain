@@ -135,12 +135,10 @@ at `http://localhost:5556` by default. It does not start the node itself.
 
 ### Consensus Engine
 
-The consensus engine first classifies each incoming block's disposition (extends tip,
-starts a fork, continues a known fork, etc.) and then processes it accordingly. Fork
-validation happens against overlay storages - temporary layers on top of the canonical
-chain - so the node can validate a competing fork without touching the real state.
-If the fork wins, the overlay is committed and the old tip gets rolled back using
-stored undo data. The whole thing ended up simpler than expected.
+The consensus engine classifies every incoming block: extends the tip, starts a new fork, continues an existing fork, or has an unknown parent. We need this to know exactly against what storage overlay we have to validate it.
+
+When a competing fork appears, the node needs to validate it without corrupting the canonical chain. It does this through overlay storages - temporary layers on top of the real state. If the fork wins (more cumulative work), the overlay is committed and the old tip is rolled back using stored undo data. If it loses, the overlay is discarded. The canonical state is only ever touched once the outcome is known.
+
 
 ### Custom Proof-of-Work
 
