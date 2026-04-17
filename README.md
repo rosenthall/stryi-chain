@@ -135,10 +135,13 @@ at `http://localhost:5556` by default. It does not start the node itself.
 
 ### Consensus Engine
 
-The consensus engine classifies every incoming block: extends the tip, starts a new fork, continues an existing fork, or has an unknown parent. We need this to know exactly against what storage overlay we have to validate it.
+The consensus engine classifies every incoming block: extends the tip, starts a new fork, continues an existing fork, or
+has an unknown parent. We need this to know exactly against what storage overlay we have to validate it.
 
-When a competing fork appears, the node needs to validate it without corrupting the canonical chain. It does this through overlay storages - temporary layers on top of the real state. If the fork wins (more cumulative work), the overlay is committed and the old tip is rolled back using stored undo data. If it loses, the overlay is discarded. The canonical state is only ever touched once the outcome is known.
-
+When a competing fork appears, the node needs to validate it without corrupting the canonical chain. It does this
+through overlay storages - temporary layers on top of the real state. If the fork wins (more cumulative work), the
+overlay is committed and the old tip is rolled back using stored undo data. If it loses, the overlay is discarded. The
+canonical state is only ever touched once the outcome is known.
 
 ### Custom Proof-of-Work
 
@@ -150,8 +153,9 @@ combined with BLAKE3.
 
 - **Bitcoin's SHA-256 is trivially parallelizable**. Mining migrated from CPUs
   to GPUs to FPGAs to ASICs within a few years, making common hardware really inefficient
-- **Litecoin tried [Scrypt](https://www.tarsnap.com/scrypt/scrypt.pdf)** (a memory-hard KDF) to fix this, which just
-  resulted in one more kind of the ASICs to appear. However, it at least raised the hardware cost curve.
+- **Litecoin switched to [Scrypt](https://www.tarsnap.com/scrypt/scrypt.pdf)** (a memory-hard KDF) to try to avoid this.
+  It didn't really stop ASICs - it just led to a different kind appearing, though it did raise the cost of building
+  specialized hardware
 - **HashX takes a different approach** - it compiles a unique short program from each
   block's seed, so the CPU executes a different instruction sequence every time.
   It's harder to bake into ASICs when the computation itself keeps changing
@@ -161,8 +165,7 @@ combined with BLAKE3.
 
 tl;dr Same reason Monero switched to RandomX.
 
-My approach *should be* **reasonably** ASIC-resistant for a basic blockchain while remaining much simpler
-than RandomX.
+My approach should be **reasonably** ASIC-resistant for a basic blockchain while remaining much simpler than RandomX.
 
 #### How it works (see [`block_hash.rs`](crates/stryi_core/src/block/block_hash.rs) for more details)
 
@@ -224,8 +227,14 @@ connect via gRPC directly.
 
 On average, the Node (and the StryiConsensusEngine) fully validates and applies ~180 blocks/sec on GHA free shared
 runner (4 vCPU cores) when performing Initial-Block-Download/reorg on **250 blocks** with total ~3700 transactions
-(~15 txs/block with 1 to 8 inputs and 15 outputs) :
-<a href="https://bencher.dev/perf/stryichain?lower_value=false&upper_value=false&lower_boundary=false&upper_boundary=false&x_axis=version&branches=9b14b8a6-2243-4e11-8280-b59b52165d96&testbeds=627aa475-6e11-4f51-820e-7c8dc150724c%2Ce35664cc-adc7-4c6a-99e0-18220707ee04&benchmarks=ad177bc0-2a92-4a5f-8136-d9162b22f752&measures=8613913e-2bb2-40ec-9457-3cb09e68f66b&start_time=1771191406223&end_time=1776029806223&tab=plots&plots_search=b5304137-b034-4b2f-a987-50c90422327e&key=true&reports_per_page=4&branches_per_page=8&testbeds_per_page=8&benchmarks_per_page=8&plots_per_page=8&reports_page=1&branches_page=1&testbeds_page=1&benchmarks_page=1&plots_page=1&utm_medium=share&utm_source=bencher&utm_content=img&utm_campaign=perf%2Bimg&utm_term=stryichain"><img src="https://api.bencher.dev/v0/projects/stryichain/perf/img?branches=9b14b8a6-2243-4e11-8280-b59b52165d96&heads=&testbeds=627aa475-6e11-4f51-820e-7c8dc150724c%2Ce35664cc-adc7-4c6a-99e0-18220707ee04&specs=%2C&benchmarks=ad177bc0-2a92-4a5f-8136-d9162b22f752&measures=8613913e-2bb2-40ec-9457-3cb09e68f66b&start_time=1771191406223&end_time=1776029806223" title="stryichain" alt="stryichain - Bencher" /></a>
+(~15 txs/block, 1-to-8 inputs and outputs per tx.)
+
+<a href="https://bencher.dev/perf/stryichain?branches=9b14b8a6-2243-4e11-8280-b59b52165d96&testbeds=627aa475-6e11-4f51-820e-7c8dc150724c%2Ce35664cc-adc7-4c6a-99e0-18220707ee04&benchmarks=ad177bc0-2a92-4a5f-8136-d9162b22f752&measures=8613913e-2bb2-40ec-9457-3cb09e68f66b&x_axis=version&lower_value=false&upper_value=false&key=true">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://stryichain-perf-badge.rzntl256.workers.dev/chart.svg?theme=dark">
+    <img src="https://stryichain-perf-badge.rzntl256.workers.dev/chart.svg?theme=light" alt="StryiChain - blocks validated per second">
+  </picture>
+</a>
 
 ### Core Features
 
