@@ -33,7 +33,7 @@ fn pkcs8_from_seed(seed: &[u8; 32]) -> Result<PrivateKeyDer<'static>, pkcs8::Err
             oid: ed25519_oid,
             parameters: None,
         },
-        private_key: &key_octet,
+        private_key: key_octet,
         public_key: None,
     };
 

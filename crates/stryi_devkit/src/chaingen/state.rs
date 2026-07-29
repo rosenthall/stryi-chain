@@ -206,7 +206,7 @@ impl GenerationState {
 
             let mut rng = rand::rngs::StdRng::seed_from_u64(account_seed);
 
-            // Generate a random signing key
+            #[allow(deprecated)]
             let signing_key = SigningKey::random(&mut rng);
 
             let verifying_key = signing_key.verifying_key();

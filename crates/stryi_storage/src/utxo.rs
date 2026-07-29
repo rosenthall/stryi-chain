@@ -59,8 +59,8 @@ impl UtxoStorage for StryiStorage {
 
             for (op, u) in utxos {
                 let key = encode_utxo_key(&op);
-                let bytes = postcard::to_stdvec(&u)
-                    .map_err(StryiStorageError::SerializationError)?;
+                let bytes =
+                    postcard::to_stdvec(&u).map_err(StryiStorageError::SerializationError)?;
                 batch.insert(&up, Slice::from(&key), Slice::from(bytes));
 
                 addr_map.entry(u.owner).or_default().insert(op);
@@ -95,7 +95,7 @@ impl UtxoStorage for StryiStorage {
             for op in outpoints {
                 let key = encode_utxo_key(&op);
                 let raw_opt = snapshot
-                    .get(&up, &key)
+                    .get(&up, key)
                     .map_err(StryiStorageError::FjallError)?;
                 let raw = raw_opt.ok_or_else(|| {
                     StryiStorageError::NotFound(format!("UTXO not found: {:?}", op))
@@ -164,8 +164,7 @@ impl UtxoStorage for StryiStorage {
         let snapshot = self.db.snapshot();
 
         Box::pin(async move {
-            let outpoints_set =
-                load_address_set(&snapshot, &self.addresses_partition, &address)?;
+            let outpoints_set = load_address_set(&snapshot, &self.addresses_partition, &address)?;
 
             let utxos = self.batch_get_utxos(outpoints_set).await?;
 
