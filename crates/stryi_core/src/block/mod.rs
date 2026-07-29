@@ -3,6 +3,7 @@ pub(crate) mod mining;
 
 pub use block_hash::BlockHash;
 pub use mining::meets_difficulty;
+pub use mining::mine_block_memcpy;
 use std::collections::HashMap;
 
 use crate::address::AccountAddress;
@@ -49,10 +50,31 @@ pub struct BlockHeader {
     pub genesis_state: Option<GenesisState>,
 }
 
+/// Size of the fixed-layout header encoding used for hashing.
+pub const HEADER_HASH_SIZE: usize = 88;
+/// Offset of the 4-byte nonce in the fixed-layout encoding.
+pub const NONCE_OFFSET: usize = 83;
+
 impl BlockHeader {
     /// returns true if self.genesis_state is Some.
     pub const fn is_genesis(&self) -> bool {
         self.genesis_state.is_some()
+    }
+
+    /// Fixed-layout LE encoding of the header, used for PoW hashing.
+    /// Only valid for non-genesis headers (genesis uses `BlockHash::empty()`).
+    pub fn to_hash_bytes(&self) -> [u8; HEADER_HASH_SIZE] {
+        debug_assert!(!self.is_genesis(), "to_hash_bytes on genesis header");
+        let mut buf = [0u8; HEADER_HASH_SIZE];
+        buf[0..2].copy_from_slice(&self.version.to_le_bytes());
+        buf[2..34].copy_from_slice(&self.merkle_root_hash.data);
+        buf[34..66].copy_from_slice(&self.previous_block_hash.data);
+        buf[66..74].copy_from_slice(&self.height.to_le_bytes());
+        buf[74] = self.difficulty_bits;
+        buf[75..83].copy_from_slice(&self.timestamp.to_le_bytes());
+        buf[83..87].copy_from_slice(&self.nonce.to_le_bytes());
+        buf[87] = if self.genesis_state.is_some() { 1 } else { 0 };
+        buf
     }
 }
 
@@ -204,13 +226,8 @@ impl Block {
     pub fn block_hash(&self) -> BlockHash {
         if self.is_genesis() {
             return BlockHash::empty();
-        };
-
-        let header_bytes = postcard::to_stdvec(&self.header)
-            .expect("Failed to serialize block header");
-
-        // Create the final block hash
-        BlockHash::new(&header_bytes)
+        }
+        BlockHash::new(&self.header.to_hash_bytes())
     }
 
     /// Returns the miner reward recipient from the coinbase transaction.

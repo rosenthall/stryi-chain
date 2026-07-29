@@ -67,7 +67,7 @@ pub fn warm_up() {
                         let mut hdr = header;
                         hdr.nonce = nonce_base.wrapping_add(i as u32);
 
-                        let bytes = postcard::to_stdvec(&hdr).unwrap();
+                        let bytes = hdr.to_hash_bytes();
                         let h = BlockHash::new(&bytes);
                         let _ = meets_difficulty(&h, DIFFICULTY as u8);
                     });

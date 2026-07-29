@@ -3,12 +3,12 @@ pub use backend::MinerBackend;
 pub use backend::NodeMinerBackend;
 
 
-use rand::{rng, RngExt};
-use rayon::iter::ParallelIterator;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use stryi_core::address::AccountAddress;
-use stryi_core::block::{Block, BlockHash, BlockHeader, meets_difficulty};
+#[cfg(test)]
+use stryi_core::block::meets_difficulty;
+use stryi_core::block::{Block, BlockHash, BlockHeader};
 use stryi_core::mempool::MemPool;
 use stryi_core::merkletree::{MerkleHash, calc_merkle_root};
 use stryi_core::transactions::{Transaction, TransactionData, TransactionKind, TransactionOut};
@@ -304,55 +304,9 @@ impl StryiMiner {
 }
 
 /// Mine a block by finding a valid nonce.
-/// The function runs an infinite outer loop;
-/// every iteration launches a parallel search over a **fixed** batch
-/// After each batch it checks `cancel.is_cancelled()` and exits if asked.
-/// On success, it writes the winning nonce into `block.header.nonce` and
-/// returns `true`; if cancelled first, returns `false`.
+/// Delegates to `stryi_core::block::mine_block_memcpy` for the fixed-layout memcpy approach.
 fn mine_block(block: &mut Block, cancel: &CancellationToken) -> bool {
-    use rayon::iter::IntoParallelIterator;
-
-    const BATCH: u64 = 100_000; // candidates per Rayon batch
-    let bits = block.header.difficulty_bits; // current network target
-
-    // TODO: Pre-compute block's static parts; memcpy the varying 4-byte nonce into a buffer before hashing instead of serializing the whole header each time.
-
-    // outer loop - repeat batches until solved or canceled
-    while !cancel.is_cancelled() {
-        // Rayon tries the whole batch in parallel; stops the moment `find_any`
-        // receives `Some(nonce)`
-        let found = (0..BATCH)
-            .into_par_iter()
-            .filter_map(|_| {
-                // independent RNG per thread
-                let mut rng = rng();
-                let candidate = rng.random();
-
-                // local header copy avoids data races
-                let mut hdr = block.header;
-                hdr.nonce = candidate;
-
-                // hash(header) and difficulty check
-                let bytes =
-                    postcard::to_stdvec(&hdr).expect("header serialization cannot fail");
-
-                let hash = BlockHash::new(&bytes);
-                if meets_difficulty(&hash, bits) {
-                    Some(candidate)
-                } else {
-                    None
-                }
-            })
-            .find_any(|_| true);
-
-        // if we found a valid nonce, write it into the block and return true
-        if let Some(nonce) = found {
-            block.header.nonce = nonce;
-            return true;
-        }
-    }
-
-    false // cancelled
+    stryi_core::block::mine_block_memcpy(block, || cancel.is_cancelled())
 }
 
 #[cfg(test)]
@@ -392,8 +346,7 @@ mod tests {
         assert!(solved, "PoW should succeed for an easy target");
 
         // Verify the resulting nonce really meets EASY_BITS
-        let bytes = postcard::to_stdvec(&block.header).unwrap();
-        let hash = BlockHash::new(&bytes);
+        let hash = block.block_hash();
 
         assert!(
             meets_difficulty(&hash, EASY_BITS),

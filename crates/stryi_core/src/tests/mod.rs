@@ -3,7 +3,7 @@ mod mempool;
 mod utxo_processor;
 
 use crate::address::AccountAddress;
-use crate::block::mining::mine_block_in_parallel;
+use crate::block::mining::mine_block_memcpy;
 use crate::block::{Block, BlockHash, GenesisState};
 use crate::consensus::{BlockValidator, ConsensusConsts, StryiConsensusEngine};
 use crate::difficulty::difficulty_calculator_from_consts;
@@ -105,7 +105,7 @@ pub(crate) fn make_block_mined(
         1,
     );
     assert!(
-        mine_block_in_parallel(&mut block, 2_000_000),
+        mine_block_memcpy(&mut block, || false),
         "Mining failed - this should not happen for difficulty_bits <= 2"
     );
     block

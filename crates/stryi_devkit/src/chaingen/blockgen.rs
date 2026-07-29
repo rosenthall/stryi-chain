@@ -272,11 +272,7 @@ impl ChainGenerator {
             let mut hdr = base_header;
             hdr.nonce = nonce;
 
-            let header_bytes = match postcard::to_stdvec(&hdr)
-            {
-                Ok(v) => v,
-                Err(_) => return false,
-            };
+            let header_bytes = hdr.to_hash_bytes();
             let h = BlockHash::new(&header_bytes);
             meets_difficulty(&h, hdr.difficulty_bits)
         });

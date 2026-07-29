@@ -1,5 +1,4 @@
-#[cfg(test)]
-use crate::block::Block;
+use crate::block::{Block, NONCE_OFFSET};
 use crate::block::block_hash::BlockHash;
 
 /// Checks if the provided block hash meets the given difficulty (bits) requirement.
@@ -36,62 +35,45 @@ pub fn meets_difficulty(block_hash: &BlockHash, bits: u8) -> bool {
     true
 }
 
-/// Mines the given block in parallel by generating random 32-bit nonce's.
-/// Note: This function is designed for testing purposes and should not be used in production.
-/// Note: The max_attempts parameter is used to prevent infinite loops during testing.
-/// - `max_attempts` is the maximum number of random trials across all threads.
-/// - Returns `true` if a solution is found (and updates the block's nonce),
-///   otherwise returns `false`.
-#[cfg(test)]
-pub(crate) fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bool {
-    use rand::RngExt;
-    use rand::rng;
-    use rayon::prelude::*;
+/// Mine a block by finding a valid nonce.
+/// Pre-computes the header buffer once, then memcpys only the nonce per attempt.
+/// `should_stop` is polled between batches.
+pub fn mine_block_memcpy<F: Fn() -> bool>(block: &mut Block, should_stop: F) -> bool {
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
+    use rand::{rng, RngExt};
 
+    const BATCH: u64 = 100_000;
     let bits = block.header.difficulty_bits;
-    // We use `find_any` over a parallel iterator so that if ANY thread finds a valid nonce,
-    // the search stops.
-    let found_nonce = (0..max_attempts)
-        .into_par_iter()
-        .filter_map(|_| {
-            // Each iteration picks a random nonce
-            let mut rng = rng();
-            let candidate_nonce = rng.random::<u32>();
+    let base_buf = block.header.to_hash_bytes();
 
-            // Make a local copy of the header so we don't mutate the shared block in parallel
-            let mut local_header = block.header;
-            local_header.nonce = candidate_nonce;
+    while !should_stop() {
+        let found = (0..BATCH)
+            .into_par_iter()
+            .filter_map(|_| {
+                let candidate: u32 = rng().random();
+                let mut buf = base_buf;
+                buf[NONCE_OFFSET..NONCE_OFFSET + 4].copy_from_slice(&candidate.to_le_bytes());
+                let hash = BlockHash::new(&buf);
+                if meets_difficulty(&hash, bits) {
+                    Some(candidate)
+                } else {
+                    None
+                }
+            })
+            .find_any(|_| true);
 
-            // Serialize the header
-            let header_bytes =
-                postcard::to_stdvec(&local_header)
-                    .expect("Failed to serialize block header");
-
-            // Compute the hash
-            let candidate_hash = BlockHash::new(&header_bytes);
-
-            // Check if this candidate hash meets difficulty
-            if meets_difficulty(&candidate_hash, bits) {
-                Some(candidate_nonce)
-            } else {
-                None
-            }
-        })
-        .find_any(|_nonce| true);
-
-    // If we found a valid nonce, update the block and return true
-    if let Some(nonce) = found_nonce {
-        block.header.nonce = nonce;
-        true
-    } else {
-        false
+        if let Some(nonce) = found {
+            block.header.nonce = nonce;
+            return true;
+        }
     }
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use crate::address::AccountAddress;
-    use crate::block::mining::{meets_difficulty, mine_block_in_parallel};
+    use crate::block::mining::{meets_difficulty, mine_block_memcpy};
     use crate::block::{Block, BlockHash};
     use crate::transactions::{
         OutPoint, TransactionData, TransactionHash, TransactionIn, TransactionKind, TransactionOut,
@@ -99,6 +81,7 @@ mod tests {
     use k256::ecdsa::SigningKey;
     use rand::rng;
     use rand::random;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
     fn test_parallel_mining_small_bits() {
@@ -143,18 +126,16 @@ mod tests {
             b
         };
 
-        // Attempt parallel mining
-        let found = mine_block_in_parallel(&mut block, 500_000);
+        // Attempt parallel mining; cap at 5 batches (~500k attempts)
+        let batches = AtomicU64::new(0);
+        let found = mine_block_memcpy(&mut block, || batches.fetch_add(1, Ordering::Relaxed) >= 5);
         println!("Found solution: {}", found);
 
         if found {
             println!("Final nonce = {}", block.header.nonce);
 
             // Verify difficulty on the final block
-            let header_bytes =
-                postcard::to_stdvec(&block.header).unwrap();
-
-            let block_hash = BlockHash::new(&header_bytes);
+            let block_hash = block.block_hash();
             assert!(
                 meets_difficulty(&block_hash, block.header.difficulty_bits),
                 "The resulting block hash does not meet difficulty"
