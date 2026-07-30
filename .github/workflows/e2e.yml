@@ -11,6 +11,11 @@ on:
         options:
           - reorg
           - tx-lifecycle
+      no_cache:
+        description: "Rebuild Docker images from scratch (bypass cache)"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   e2e:
@@ -56,6 +61,7 @@ jobs:
           file: e2e/docker/node.Dockerfile
           tags: stryi-e2e-node:ci
           load: true
+          no-cache: ${{ inputs.no_cache }}
           cache-from: |
             type=gha,scope=e2e-rust-chef
             type=gha,scope=e2e-node
@@ -70,6 +76,7 @@ jobs:
           file: e2e/docker/tools.Dockerfile
           tags: stryi-e2e-tools:ci
           load: true
+          no-cache: ${{ inputs.no_cache }}
           cache-from: |
             type=gha,scope=e2e-rust-chef
             type=gha,scope=e2e-tools
@@ -83,6 +90,7 @@ jobs:
           file: e2e/docker/devkit.Dockerfile
           tags: stryi-e2e-devkit:ci
           load: true
+          no-cache: ${{ inputs.no_cache }}
           cache-from: |
             type=gha,scope=e2e-rust-chef
             type=gha,scope=e2e-devkit
