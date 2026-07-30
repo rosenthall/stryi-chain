@@ -11,13 +11,13 @@ name = "stryi_network"
 path = "src/lib.rs"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-thiserror = "2"
-tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 tokio-util = "0.7.19" # just for CancelationToken
-tracing = "0.1.44"
+tracing = { workspace = true }
 libp2p = { version = "0.56.0", features = ["rendezvous", "ed25519", "ping", "serde", "gossipsub", "identify", "request-response", "cbor", "tcp", "noise", "yamux", "tokio", "macros", "dns"] }
-futures = "0.3.33"
+futures = { workspace = true }
 stryi_core = { path = "../stryi_core" }
-postcard = { version = "1", features = ["use-std"] }
-rand = "0.10.2"
+postcard = { workspace = true }
+rand = { workspace = true }

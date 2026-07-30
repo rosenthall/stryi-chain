@@ -18,31 +18,31 @@ name = "stryi-node"
 path = "src/main.rs"
 
 [dependencies]
-tracing = "0.1"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 console-subscriber = { version = "0.5.0", optional = true, default-features = false, features = ["parking_lot", "env-filter"] }
-tokio = { version = "1.53.1", features = ["rt", "macros", "rt-multi-thread", "tracing", "signal"] }
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread", "tracing", "signal"] }
 tokio-stream = "0.1.19"
 tokio-util = "0.7.19"
 stryi_network = { path = "../stryi_network" }
 stryi_core = { path = "../stryi_core" }
 stryi_storage = { path = "../stryi_storage" }
 futures-util = "0.3.33"
-clap = { version = "4.6.4", features = ["derive"] }
+clap = { workspace = true }
 tonic = { version = "0.14.6", features = ["tls-aws-lc"] }
 tonic-prost = "0.14.6"
 prost = "0.14.4"
-serde_json = "1.0.151"
-thiserror = "2.0.19"
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 colored = "3.1.1"
-postcard = { version = "1", features = ["use-std"] }
+postcard = { workspace = true }
 tower = "0.5.3"
 zeroize = "1.9.0"
 pem = "4.0.0"
 rcgen = { version = "0.14.8", features = ["crypto", "x509-parser"] }
 rustls-pki-types = "1.15.1"
 pkcs8 = "0.11.0"
-serde = { version = "1.0.229", features = ["derive"] }
+serde = { workspace = true }
 figment = { version = "0.10.19", features = ["toml"] }
 serde_with = "3.21.0"
 http = "1.4.2"
@@ -51,11 +51,11 @@ axum = { version = "0.8.9", features = ["macros"] }
 utoipa = "5.5.0"
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
 tower-http = { version = "0.7.0", features = ["compression-gzip", "trace", "set-header", "validate-request"] }
-base64 = "0.23.0"
-rand = "0.10.2"
-rayon = "1.12.0"
+base64 = { workspace = true }
+rand = { workspace = true }
+rayon = { workspace = true }
 indicatif = "0.18.6"
-comfy-table = "7.2.2"
+comfy-table = { workspace = true }
 multiaddr = "0.18.2"
 
 [dev-dependencies]
