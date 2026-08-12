@@ -150,9 +150,8 @@ impl MemPool {
     /// Restores storage and dependency state from a serialized snapshot.
     pub fn restore_state(&mut self, data: Vec<u8>) -> Result<(), MemPoolError> {
         let sync_data: MemPoolSyncData =
-            bincode::serde::decode_from_slice(&data, bincode::config::standard())
-                .map_err(|e| MemPoolError::Storage(Box::new(e)))?
-                .0;
+            postcard::from_bytes(&data)
+                .map_err(|e| MemPoolError::Storage(Box::new(e)))?;
 
         self.storage.clear();
         self.dependency_tracker.clear();

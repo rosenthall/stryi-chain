@@ -13,11 +13,11 @@ pub enum StryiStorageError {
     #[error("Database is not initialized and no configuration for setting up provided")]
     NoInitializationConfigProvided,
 
-    #[error("Bincode serialization error")]
-    SerializationError(#[from] bincode::error::EncodeError),
+    #[error("Serialization error")]
+    SerializationError(#[from] postcard::Error),
 
-    #[error("Bincode deserialization error")]
-    DeserializationError(#[from] bincode::error::DecodeError),
+    #[error("Deserialization error")]
+    DeserializationError(postcard::Error),
 
     #[error("Error while trying construct typed hash object from bytes, message : {0}")]
     IncorrectHashValue(String),

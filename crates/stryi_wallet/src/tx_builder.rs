@@ -1,7 +1,6 @@
 use anyhow::{Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use bincode::config::standard;
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
 use stryi_core::transactions::{
@@ -104,10 +103,10 @@ pub fn build_payment(
     Ok(tx_data.sign(&signing_key))
 }
 
-/// Serializes a signed transaction to base64-encoded bincode for node submission.
+/// Serializes a signed transaction to base64-encoded postcard for node submission.
 pub fn serialize_for_submission(tx: &Transaction) -> Result<String> {
     let bytes =
-        bincode::serde::encode_to_vec(tx, standard()).map_err(|e| anyhow::anyhow!("{e}"))?;
+        postcard::to_stdvec(tx).map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(BASE64_STANDARD.encode(bytes))
 }
 
@@ -115,12 +114,12 @@ pub fn serialize_for_submission(tx: &Transaction) -> Result<String> {
 mod tests {
     use super::*;
     use k256::ecdsa::SigningKey;
-    use k256::elliptic_curve::rand_core::OsRng;
+    use rand::rng;
     use stryi_core::PrivateKey;
     use stryi_core::transactions::TransactionHash;
 
     fn make_key() -> (PrivateKey, AccountAddress) {
-        let sk = SigningKey::random(&mut OsRng);
+        let sk = SigningKey::random(&mut rng());
         let addr = AccountAddress::from_public_key(sk.verifying_key());
         (PrivateKey::new(sk), addr)
     }

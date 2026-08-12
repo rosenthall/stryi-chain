@@ -5,8 +5,6 @@ use crate::{
     BroadcastBlock, ChainTipAnnouncement, NetworkEvent, StryiBehaviour, StryiEvent,
     StryiNetworkError, StryiNetworkManager, manager,
 };
-use bincode::config::standard;
-use bincode::serde::decode_from_slice;
 use libp2p::core::ConnectedPoint;
 use libp2p::identify::{Event as IdentifyEvent, Info as IdentifyInfo};
 use libp2p::ping::Event as PingEvent;
@@ -379,9 +377,8 @@ impl StryiNetworkManager {
 
                 match message.topic.as_str() {
                     manager::TRANSACTIONS_TOPIC_NAME => {
-                        let tx: Transaction = decode_from_slice(&message.data, standard())
-                            .map_err(StryiNetworkError::DecodeGossipsubMessageError)?
-                            .0;
+                        let tx: Transaction = postcard::from_bytes(&message.data)
+                            .map_err(StryiNetworkError::DecodeGossipsubMessageError)?;
                         debug!("Received transaction {} in gossipsub", &tx.data.hash());
 
                         self.event_tx
@@ -390,10 +387,8 @@ impl StryiNetworkManager {
                     }
 
                     manager::BLOCKS_TOPIC_NAME => {
-                        let broadcast_block: BroadcastBlock =
-                            decode_from_slice(&message.data, standard())
-                                .map_err(StryiNetworkError::DecodeGossipsubMessageError)?
-                                .0;
+                        let broadcast_block: BroadcastBlock = postcard::from_bytes(&message.data)
+                            .map_err(StryiNetworkError::DecodeGossipsubMessageError)?;
                         debug!(
                             "Received block {} in gossipsub",
                             &broadcast_block.block.block_hash()
@@ -405,10 +400,8 @@ impl StryiNetworkManager {
                     }
 
                     manager::TIPS_TOPIC_NAME => {
-                        let announcement: ChainTipAnnouncement =
-                            decode_from_slice(&message.data, standard())
-                                .map_err(StryiNetworkError::DecodeGossipsubMessageError)?
-                                .0;
+                        let announcement: ChainTipAnnouncement = postcard::from_bytes(&message.data)
+                            .map_err(StryiNetworkError::DecodeGossipsubMessageError)?;
                         debug!(
                             "Received chain tip announcement in gossipsub: height={}, work={}",
                             announcement.height, announcement.cumulative_work

@@ -1,6 +1,6 @@
 use crate::chaingen::txgen::TransactionGenerationParams;
 use crate::chaingen::utxo::{TransactionPattern, UtxoSelectionCriteria};
-use rand::Rng;
+use rand::{Rng, RngExt};
 
 /// Adaptive transaction generation strategy that adjusts based on context
 /// Optimizes for higher transaction success rate and healthier UTXO distribution.

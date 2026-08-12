@@ -1,4 +1,3 @@
-use bincode::config::standard;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::ThreadPoolBuilder;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -68,7 +67,7 @@ pub fn warm_up() {
                         let mut hdr = header;
                         hdr.nonce = nonce_base.wrapping_add(i as u32);
 
-                        let bytes = bincode::serde::encode_to_vec(hdr, standard()).unwrap();
+                        let bytes = postcard::to_stdvec(&hdr).unwrap();
                         let h = BlockHash::new(&bytes);
                         let _ = meets_difficulty(&h, DIFFICULTY as u8);
                     });

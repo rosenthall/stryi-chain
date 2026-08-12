@@ -3,8 +3,7 @@ use crate::error::StryiStorageError;
 use crate::index::BlockIndexData;
 use crate::stats::StorageStateInformation;
 use crate::tx_index::TransactionIndexData;
-use bincode::config::standard;
-use fjall::{Slice, UserKey, UserValue};
+use fjall::Slice;
 use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::convert::TryFrom;
@@ -29,12 +28,12 @@ impl StryiStorage {
     }
 
     fn serialize_block(block: &Block) -> Result<Vec<u8>, StryiStorageError> {
-        bincode::serde::encode_to_vec(block, standard())
+        postcard::to_stdvec(block)
             .map_err(StryiStorageError::SerializationError)
     }
 
     fn deserialize_block(data: &[u8]) -> Result<Block, StryiStorageError> {
-        let (block, _) = bincode::serde::decode_from_slice(data, standard())
+        let block = postcard::from_bytes(data)
             .map_err(StryiStorageError::DeserializationError)?;
         Ok(block)
     }
@@ -66,23 +65,23 @@ impl BlockStorage for StryiStorage {
                 chain_work: new_chain_diff as u128,
             };
 
-            let index_bytes = bincode::serde::encode_to_vec(&index_data, standard())?;
-            // Keep block data, indexes, and chain state in one transaction.
-            let mut tx = self.keyspace.write_tx();
+            let index_bytes = postcard::to_stdvec(&index_data)?;
+            // Keep block data, indexes, and chain state in one atomic batch.
+            let mut batch = self.db.batch();
 
-            tx.insert(
+            batch.insert(
                 &self.blocks_partition,
                 Slice::from(&block_hash.data[..]),
                 Slice::from(serialized_block),
             );
 
-            tx.insert(
+            batch.insert(
                 &self.heights_partition,
                 Slice::from(&height_key[..]),
                 Slice::from(&block_hash.data[..]),
             );
 
-            tx.insert(
+            batch.insert(
                 &self.block_index_partition,
                 Slice::from(&block_hash.data[..]),
                 Slice::from(index_bytes),
@@ -95,20 +94,20 @@ impl BlockStorage for StryiStorage {
                     block_height: block.header.height,
                     tx_index: tx_index as u32,
                 };
-                let tx_index_bytes = bincode::serde::encode_to_vec(&tx_index_data, standard())?;
+                let tx_index_bytes = postcard::to_stdvec(&tx_index_data)?;
 
-                tx.insert(
+                batch.insert(
                     &self.transaction_index_partition,
                     Slice::from(&tx_hash.data[..]),
                     Slice::from(tx_index_bytes),
                 );
             }
 
-            let state_key = UserKey::from([0u8; 32]);
-            let state_value: UserValue = new_state.try_into()?;
-            tx.insert(&self.stats_partition, state_key, state_value);
+            let state_key = fjall::UserKey::from([0u8; 32]);
+            let state_value: fjall::UserValue = new_state.try_into()?;
+            batch.insert(&self.stats_partition, state_key, state_value);
 
-            tx.commit().map_err(StryiStorageError::FjallError)?;
+            batch.commit().map_err(StryiStorageError::FjallError)?;
             Ok(())
         })
     }
@@ -232,7 +231,7 @@ impl BlockStorage for StryiStorage {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use fjall::{Config, PartitionCreateOptions};
+    use fjall::{Database, KeyspaceCreateOptions};
     use stryi_core::block::{Block, BlockHeader, GenesisState};
     use stryi_core::merkletree::MerkleHash;
     use tempfile::TempDir;
@@ -259,44 +258,43 @@ pub(crate) mod tests {
     /// Helper function to create StryiStorage with temp directory
     pub fn create_test_storage(setup_state_storage: bool) -> (StryiStorage, TempDir) {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let keyspace = Config::new(temp_dir.path())
-            .temporary(true)
-            .open_transactional()
-            .expect("Failed to open keyspace");
+        let db = Database::builder(temp_dir.path())
+            .open()
+            .expect("Failed to open database");
 
-        let blocks_partition = keyspace
-            .open_partition("blocks", PartitionCreateOptions::default())
-            .expect("Failed to create blocks partition");
+        let blocks_partition = db
+            .keyspace("blocks", KeyspaceCreateOptions::default)
+            .expect("Failed to create blocks keyspace");
 
-        let heights_partition = keyspace
-            .open_partition("heights", PartitionCreateOptions::default())
-            .expect("Failed to create heights partition");
+        let heights_partition = db
+            .keyspace("heights", KeyspaceCreateOptions::default)
+            .expect("Failed to create heights keyspace");
 
-        let utxo_partition = keyspace
-            .open_partition("utxo", PartitionCreateOptions::default())
-            .expect("Failed to create utxo partition");
+        let utxo_partition = db
+            .keyspace("utxo", KeyspaceCreateOptions::default)
+            .expect("Failed to create utxo keyspace");
 
-        let addresses_partition = keyspace
-            .open_partition("addresses", PartitionCreateOptions::default())
-            .expect("Failed to create addresses partition");
+        let addresses_partition = db
+            .keyspace("addresses", KeyspaceCreateOptions::default)
+            .expect("Failed to create addresses keyspace");
 
-        let stats_partition = keyspace
-            .open_partition("stats", PartitionCreateOptions::default())
-            .expect("Failed to create stats partition");
+        let stats_partition = db
+            .keyspace("stats", KeyspaceCreateOptions::default)
+            .expect("Failed to create stats keyspace");
 
-        let undo_partition = keyspace
-            .open_partition("undo", PartitionCreateOptions::default())
-            .expect("Failed to create undo partition");
+        let undo_partition = db
+            .keyspace("undo", KeyspaceCreateOptions::default)
+            .expect("Failed to create undo keyspace");
 
-        let block_index_partition = keyspace
-            .open_partition("block_indexes", PartitionCreateOptions::default())
-            .expect("Failed to create undo partition");
-        let transaction_index_partition = keyspace
-            .open_partition("transaction_indexes", PartitionCreateOptions::default())
-            .expect("Failed to create transaction index partition");
+        let block_index_partition = db
+            .keyspace("block_indexes", KeyspaceCreateOptions::default)
+            .expect("Failed to create block_indexes keyspace");
+        let transaction_index_partition = db
+            .keyspace("transaction_indexes", KeyspaceCreateOptions::default)
+            .expect("Failed to create transaction index keyspace");
 
         let mut storage = StryiStorage {
-            keyspace,
+            db,
             blocks_partition,
             heights_partition,
             utxo_partition,

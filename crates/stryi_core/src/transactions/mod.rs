@@ -30,8 +30,7 @@ use crate::address::AccountAddress;
 use crate::error::StryiCoreError;
 use crate::hash::HashKind;
 use crate::transactions::TransactionKind::{Coinbase, Genesis};
-use bincode::{self, config::standard};
-use k256::ecdsa::{SigningKey, VerifyingKey, signature::hazmat::PrehashVerifier};
+use k256::ecdsa::{RecoveryId, Signature, SigningKey, VerifyingKey, signature::hazmat::PrehashVerifier};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Hash)]
 #[repr(u8)]
@@ -74,7 +73,7 @@ pub struct Transaction {
 impl TransactionData {
     /// We hash only unsigned data so signing and tx identity use the same preimage.
     pub fn hash(&self) -> TransactionHash {
-        let encoded = bincode::serde::encode_to_vec(self, standard())
+        let encoded = postcard::to_stdvec(self)
             .expect("Failed to serialize TransactionData for hashing");
 
         TransactionHash::new(&encoded)
@@ -83,9 +82,8 @@ impl TransactionData {
     pub fn sign(self, signing_key: &SigningKey) -> Transaction {
         let msg_bytes: [u8; TransactionHasher::SIZE] = self.hash().data;
 
-        let (signature, recid) = signing_key
-            .sign_prehash_recoverable(&msg_bytes)
-            .expect("ECDSA signing failed for TransactionData");
+        let (signature, recid): (Signature, RecoveryId) = signing_key
+            .sign_prehash_recoverable(&msg_bytes);
 
         // Keep the recovery id beside the signature bytes.
         let mut signature_bytes = [0u8; 65];
@@ -162,7 +160,7 @@ mod tests {
     use super::*;
     use crate::address::AccountAddress;
     use k256::ecdsa::SigningKey;
-    use k256::elliptic_curve::rand_core::OsRng;
+    use rand::rng;
 
     fn create_dummy_transaction_data() -> TransactionData {
         TransactionData {
@@ -184,7 +182,7 @@ mod tests {
 
     #[test]
     fn test_sign_and_verify_transaction_author() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::random(&mut rng());
         let verify_key = signing_key.verifying_key();
 
         let account_address = AccountAddress::new(&verify_key.to_sec1_bytes());
@@ -201,10 +199,10 @@ mod tests {
 
     #[test]
     fn test_verify_transaction_author_wrong_key() {
-        let signing_key_sender = SigningKey::random(&mut OsRng);
+        let signing_key_sender = SigningKey::random(&mut rng());
         let verify_key_sender = signing_key_sender.verifying_key();
 
-        let signing_key_other = SigningKey::random(&mut OsRng);
+        let signing_key_other = SigningKey::random(&mut rng());
         let verify_key_other = signing_key_other.verifying_key();
 
         let account_address_sender = AccountAddress::new(&verify_key_sender.to_sec1_bytes());
@@ -226,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_recover_and_compare_public_key() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::random(&mut rng());
         let verify_key = signing_key.verifying_key();
 
         let tx_data = create_dummy_transaction_data();
@@ -249,10 +247,10 @@ mod tests {
 
     #[test]
     fn test_verify_signature() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::random(&mut rng());
         let verifying_key = signing_key.verifying_key();
 
-        let another_signing_key = SigningKey::random(&mut OsRng);
+        let another_signing_key = SigningKey::random(&mut rng());
         let another_verifying_key = another_signing_key.verifying_key();
 
         let tx_data = create_dummy_transaction_data();

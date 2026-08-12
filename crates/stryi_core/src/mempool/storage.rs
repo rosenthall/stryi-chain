@@ -1,7 +1,6 @@
 use crate::mempool::current_timestamp;
 use crate::mempool::types::MemPoolTx;
 use crate::transactions::{OutPoint, Transaction, TransactionHash};
-use bincode::config::standard;
 use std::collections::HashMap;
 
 /// Stores mempool transactions and the indexes needed to resolve dependencies.
@@ -27,7 +26,7 @@ impl TransactionStorage {
         timestamp: u64,
     ) {
         // Calculate serialized size once during insertion
-        let serialized_size = bincode::serde::encode_to_vec(&tx, standard())
+        let serialized_size = postcard::to_stdvec(&tx)
             .expect("Transaction serialization cannot fail")
             .len();
 

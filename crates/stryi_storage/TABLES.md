@@ -13,7 +13,7 @@ Reference for the Fjall partitions used by `stryi_storage`.
 ## `blocks`
 
 - Key: `stryi_core::block::BlockHash` as 32 raw bytes.
-- Value: `bincode(stryi_core::block::Block)`.
+- Value: `postcard(stryi_core::block::Block)`.
 - Notes: canonical block data. Written by `put_block`.
 
 ## `heights`
@@ -25,35 +25,35 @@ Reference for the Fjall partitions used by `stryi_storage`.
 ## `utxo`
 
 - Key: 36 bytes `[txid (32) | vout (4-byte big-endian u32)]`.
-- Value: `bincode(stryi_core::transactions::UTXO)`.
+- Value: `postcard(stryi_core::transactions::UTXO)`.
 - Notes: primary UTXO set. Updated on UTXO insert/remove paths.
 
 ## `addresses`
 
 - Key: `stryi_core::address::AccountAddress` as 20 raw bytes.
-- Value: `bincode(HashSet<OutPoint>)`.
+- Value: `postcard(HashSet<OutPoint>)`.
 - Notes: secondary index from address to owned outpoints. Updated with `utxo`.
 
 ## `stats`
 
 - Key: fixed all-zero 32-byte key.
-- Value: `bincode(stryi_storage::stats::StorageStateInformation)`.
+- Value: `postcard(stryi_storage::stats::StorageStateInformation)`.
 - Notes: singleton chain-state record. Replaced on initialization and when storing a block.
 
 ## `undo`
 
 - Key: `stryi_core::block::BlockHash` as 32 raw bytes.
-- Value: `bincode(stryi_core::BlockUndo)`.
+- Value: `postcard(stryi_core::BlockUndo)`.
 - Notes: rollback data for detach/reorg paths.
 
 ## `block_indexes`
 
 - Key: `stryi_core::block::BlockHash` as 32 raw bytes.
-- Value: `bincode(stryi_storage::index::BlockIndexData)`.
+- Value: `postcard(stryi_storage::index::BlockIndexData)`.
 - Notes: per-block metadata written with `blocks`.
 
 ## `transaction_indexes`
 
 - Key: `stryi_core::transactions::TransactionHash` as 32 raw bytes.
-- Value: `bincode(stryi_storage::tx_index::TransactionIndexData)`.
+- Value: `postcard(stryi_storage::tx_index::TransactionIndexData)`.
 - Notes: canonical `tx_hash -> (block_hash, block_height, tx_index)` mapping.

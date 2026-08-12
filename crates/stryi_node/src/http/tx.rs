@@ -10,8 +10,7 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
-use bincode::config::standard;
-use bincode::serde::borrow_decode_from_slice;
+
 use futures_util::future::BoxFuture;
 use http::StatusCode;
 use std::sync::Arc;
@@ -84,9 +83,9 @@ impl ConfirmedTransactionLookup for StryiStorage {
     }
 }
 
-/// Send a bincode-encoded transaction wrapped in base64 to the node.
+/// Send a postcard-encoded transaction wrapped in base64 to the node.
 ///
-/// The server decodes base64, deserializes bincode `Transaction`,
+/// The server decodes base64, deserializes `Transaction` via postcard,
 /// recovers & verifies its signature, and (for now) accepts it.
 /// Returns plain text "Transaction accepted" on success.
 #[utoipa::path(
@@ -132,13 +131,12 @@ where
         raw_tx.len()
     );
 
-    // Try to deserialize the raw transaction into a Transaction object from bincode format
-    let transaction: Transaction = borrow_decode_from_slice(&raw_tx, standard())
+    // Try to deserialize the raw transaction into a Transaction object from postcard format
+    let transaction: Transaction = postcard::from_bytes(&raw_tx)
         .map_err(|_| StryiNodeHttpApiError::BadTransaction {
-            reason: BadTxReason::BincodeDeserialize,
-            message: Some("Cannot deserialize transaction (bincode)".to_string()),
-        })?
-        .0;
+            reason: BadTxReason::Deserialize,
+            message: Some("Cannot deserialize transaction (postcard)".to_string()),
+        })?;
     debug!(
         "Successfully deserialized transaction, hash: {}",
         transaction.data.hash()

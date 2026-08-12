@@ -1,5 +1,4 @@
 use crate::{NetworkCommand, NetworkEvent};
-use bincode::error::DecodeError;
 use libp2p::gossipsub::PublishError;
 use libp2p::request_response::InboundRequestId;
 use stryi_core::mempool::MemPoolError;
@@ -43,7 +42,7 @@ pub enum StryiNetworkError {
     CannotRespond(InboundRequestId),
 
     #[error("Cannot decode message from gossipsub : {0:?}")]
-    DecodeGossipsubMessageError(DecodeError),
+    DecodeGossipsubMessageError(postcard::Error),
 
     #[error("Stryi-NetworkManager cannot send NetworkEvent, error: {0}")]
     CannotSendEvent(SendError<NetworkEvent>),
@@ -67,7 +66,7 @@ impl StryiNetworkError {
     pub fn is_gossipsub_insufficient_peers(&self) -> bool {
         matches!(
             self,
-            StryiNetworkError::GossipsubPublish(PublishError::InsufficientPeers)
+            StryiNetworkError::GossipsubPublish(PublishError::NoPeersSubscribedToTopic)
         )
     }
 }

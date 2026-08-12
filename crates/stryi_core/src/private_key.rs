@@ -92,12 +92,12 @@ impl<'de> Deserialize<'de> for PrivateKey {
 mod tests {
     use super::*;
     use crate::address::AccountAddress;
-    use k256::elliptic_curve::rand_core::OsRng;
+    use rand::rng;
 
     #[test]
     fn test_random_private_keys() {
         for i in 1..=20 {
-            let signing_key = SigningKey::random(&mut OsRng);
+            let signing_key = SigningKey::random(&mut rng());
             let private_key = PrivateKey::new(signing_key.clone());
             dbg!(i, private_key.to_string());
 

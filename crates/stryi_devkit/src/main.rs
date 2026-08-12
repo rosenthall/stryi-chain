@@ -1,4 +1,6 @@
 #![allow(incomplete_features)]
+#![cfg_attr(test, allow(deprecated))]
+
 #![feature(generic_const_exprs)]
 
 /// Implementation of ChainGen tool.

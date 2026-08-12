@@ -44,7 +44,7 @@ pub fn meets_difficulty(block_hash: &BlockHash, bits: u8) -> bool {
 ///   otherwise returns `false`.
 #[cfg(test)]
 pub(crate) fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bool {
-    use rand::Rng;
+    use rand::RngExt;
     use rand::rng;
     use rayon::prelude::*;
 
@@ -64,7 +64,7 @@ pub(crate) fn mine_block_in_parallel(block: &mut Block, max_attempts: u64) -> bo
 
             // Serialize the header
             let header_bytes =
-                bincode::serde::encode_to_vec(local_header, bincode::config::standard())
+                postcard::to_stdvec(&local_header)
                     .expect("Failed to serialize block header");
 
             // Compute the hash
@@ -97,7 +97,7 @@ mod tests {
         OutPoint, TransactionData, TransactionHash, TransactionIn, TransactionKind, TransactionOut,
     };
     use k256::ecdsa::SigningKey;
-    use k256::elliptic_curve::rand_core::OsRng;
+    use rand::rng;
     use rand::random;
 
     #[test]
@@ -125,7 +125,7 @@ mod tests {
             }],
         };
 
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::random(&mut rng());
         let signed_tx = tx_data.sign(&signing_key);
 
         // Create a Block with a very low difficulty (bits = 4)
@@ -152,7 +152,7 @@ mod tests {
 
             // Verify difficulty on the final block
             let header_bytes =
-                bincode::serde::encode_to_vec(block.header, bincode::config::standard()).unwrap();
+                postcard::to_stdvec(&block.header).unwrap();
 
             let block_hash = BlockHash::new(&header_bytes);
             assert!(

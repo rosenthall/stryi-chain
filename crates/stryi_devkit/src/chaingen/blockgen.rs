@@ -6,7 +6,7 @@ use crate::chaingen::txgen::{
 };
 use crate::chaingen::utxo::UtxoInfo;
 use indexmap::IndexSet;
-use rand::Rng;
+use rand::RngExt;
 use rand_chacha::ChaCha8Rng;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::collections::HashSet;
@@ -272,7 +272,7 @@ impl ChainGenerator {
             let mut hdr = base_header;
             hdr.nonce = nonce;
 
-            let header_bytes = match bincode::serde::encode_to_vec(hdr, bincode::config::standard())
+            let header_bytes = match postcard::to_stdvec(&hdr)
             {
                 Ok(v) => v,
                 Err(_) => return false,

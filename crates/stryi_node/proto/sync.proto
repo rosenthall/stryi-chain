@@ -1,6 +1,6 @@
 /*
 Note: this proto defines some structures partially:
- some of defined structures contain fields that are basically bincode-serialized bytes.
+ some of defined structures contain fields that are basically postcard-serialized bytes.
 
 Which structures:
 1. Serialized body of block.
@@ -11,7 +11,6 @@ Which structures:
 - No real need of being able to use this in different languages for now.
 - While in dev, I`m constantly changing some fields and thus it is easier to keep like that.
 
-As far as I know there are several bincode implementations for other languages/platforms, so it is still possible.
 */
 
 syntax = "proto3";
@@ -27,12 +26,12 @@ import "google/protobuf/empty.proto";
 // and just new node initialization
 //---------------------------------------------
 message ChainInfo {
-  uint64 height            = 1; // Current main chain height
+  uint64 height = 1; // Current main chain height
   string latest_block_hash = 2; // Hash of the chain's head block
-  uint64 total_difficulty  = 3; // Summed chain work (PoW difficulty)
-  uint64 last_update_time  = 4; // Unix timestamp of last chain update
-  uint32 protocol_version  = 5; // Protocol version for compatibility
-  string chain_name        = 6; // E.g. "Testnet", "Mainnet", or custom
+  uint64 total_difficulty = 3; // Summed chain work (PoW difficulty)
+  uint64 last_update_time = 4; // Unix timestamp of last chain update
+  uint32 protocol_version = 5; // Protocol version for compatibility
+  string chain_name = 6; // E.g. "Testnet", "Mainnet", or custom
 }
 
 //---------------------------------------------
@@ -40,8 +39,8 @@ message ChainInfo {
 //---------------------------------------------
 message BlockHeightRange {
   uint64 start_height = 1; // Inclusive start
-  uint64 end_height   = 2; // Inclusive end
-  uint32 max_blocks   = 3; // Limit for streaming
+  uint64 end_height = 2; // Inclusive end
+  uint32 max_blocks = 3; // Limit for streaming
 }
 
 //---------------------------------------------
@@ -57,7 +56,7 @@ message BlockHashList {
 //---------------------------------------------
 message Block {
   BlockHeader          header = 1;
-  SerializedBlockBody  body   = 2;
+  SerializedBlockBody  body = 2;
 }
 
 //---------------------------------------------
@@ -65,23 +64,23 @@ message Block {
 // Can be easily mapped to Rust structure.
 //---------------------------------------------
 message BlockHeader {
-  uint32 version             = 1;
+  uint32 version = 1;
 
-  string merkle_root_hash    = 2;
+  string merkle_root_hash = 2;
   string previous_block_hash = 3;
 
-  uint64 height              = 4;
-  uint32 difficulty_bits     = 5;
-  uint64 timestamp           = 6;
-  uint32 nonce               = 7;
+  uint64 height = 4;
+  uint32 difficulty_bits = 5;
+  uint64 timestamp = 6;
+  uint32 nonce = 7;
 
-  // Optional bincode-serialized genesis state; present only for the genesis block
-  bytes  genesis_data        = 9;
+  // Optional postcard-serialized genesis state; present only for the genesis block
+  bytes  genesis_data = 9;
 }
 
 //---------------------------------------------
 // Serialized body of block.
-// Body content is serialized using `bincode` (Rust binary serialization),
+// Body content is serialized using `postcard` (Rust binary serialization),
 // chosen for simplicity and performance.
 //---------------------------------------------
 message SerializedBlockBody {

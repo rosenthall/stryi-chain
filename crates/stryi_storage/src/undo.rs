@@ -15,7 +15,7 @@ impl UndoStorage for StryiStorage {
         undo: BlockUndo,
     ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         Box::pin(async move {
-            let undo_bytes = bincode::serde::encode_to_vec(undo, bincode::config::standard())?;
+            let undo_bytes = postcard::to_stdvec(&undo)?;
 
             // Undo entries are addressed by the hash of the block they can roll back.
             self.undo_partition
@@ -43,7 +43,8 @@ impl UndoStorage for StryiStorage {
                 None => return Ok(None),
             };
 
-            let (undo, _) = bincode::serde::decode_from_slice(&raw, bincode::config::standard())?;
+            let undo = postcard::from_bytes(&raw)
+                .map_err(StryiStorageError::DeserializationError)?;
 
             Ok(Some(undo))
         })

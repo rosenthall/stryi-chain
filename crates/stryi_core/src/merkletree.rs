@@ -1,6 +1,5 @@
 use crate::hash::{Hash, HashKind};
 use crate::transactions::Transaction;
-use bincode::config::standard;
 use serde::{Deserialize, Serialize};
 
 /// 32-byte Merkle hash kind.
@@ -162,7 +161,7 @@ pub fn calc_merkle_root(txs: &[Transaction]) -> MerkleHash {
     let leaves: Vec<Vec<u8>> = txs
         .iter()
         .map(|tx| {
-            bincode::serde::encode_to_vec(tx, standard())
+            postcard::to_stdvec(tx)
                 .expect("Transaction serialization cannot fail")
         })
         .collect();
@@ -207,8 +206,7 @@ impl MerkleProof {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bincode::config::standard;
-    use rand::{Rng, rng};
+    use rand::{rng, RngExt};
 
     #[test]
     fn test_tree_creation_and_root() {
@@ -360,13 +358,13 @@ mod tests {
                         leaf_count
                     );
 
-                    // Serialize the proof using bincode
-                    let serialized = bincode::serde::encode_to_vec(&proof, standard())
+                    // Serialize the proof using postcard
+                    let serialized = postcard::to_stdvec(&proof)
                         .expect("Serialization should succeed");
 
                     // Deserialize the proof back
-                    let (deserialized, _decoded_bytes): (MerkleProof, _) =
-                        bincode::serde::decode_from_slice(&serialized, standard())
+                    let deserialized: MerkleProof =
+                        postcard::from_bytes(&serialized)
                             .expect("Deserialization should succeed");
 
                     // Verify that the deserialized proof also verifies correctly

@@ -16,8 +16,8 @@ use utoipa::ToSchema;
 pub enum BadTxReason {
     #[error("base64_decode")]
     Base64Decode,
-    #[error("bincode_deserialize")]
-    BincodeDeserialize,
+    #[error("deserialize")]
+    Deserialize,
     #[error("recover_public_key")]
     RecoverPublicKey,
     #[error("invalid_signature")]

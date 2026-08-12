@@ -1,5 +1,4 @@
 use crate::{StryiStorage, StryiStorageError};
-use bincode::config::standard;
 use fjall::Slice;
 use serde::{Deserialize, Serialize};
 use stryi_core::block::BlockHash;
@@ -25,10 +24,8 @@ impl StryiStorage {
 
         match raw {
             Some(bytes) => {
-                let (decoded, _) = bincode::serde::decode_from_slice::<TransactionIndexData, _>(
-                    &bytes,
-                    standard(),
-                )?;
+                let decoded = postcard::from_bytes::<TransactionIndexData>(&bytes)
+                    .map_err(StryiStorageError::DeserializationError)?;
                 Ok(Some(decoded))
             }
             None => Ok(None),
@@ -39,12 +36,9 @@ impl StryiStorage {
         &self,
         tx_hash: &TransactionHash,
     ) -> Result<(), StryiStorageError> {
-        let mut tx = self.keyspace.write_tx();
-        tx.remove(
-            &self.transaction_index_partition,
-            Slice::from(&tx_hash.data[..]),
-        );
-        tx.commit().map_err(StryiStorageError::FjallError)?;
+        self.transaction_index_partition
+            .remove(Slice::from(&tx_hash.data[..]))
+            .map_err(StryiStorageError::FjallError)?;
         Ok(())
     }
 
@@ -63,7 +57,7 @@ impl StryiStorage {
         let blocks = self
             .batch_get_blocks_by_hashes(block_hashes.clone())
             .await?;
-        let mut tx = self.keyspace.write_tx();
+        let mut batch = self.db.batch();
 
         for block_hash in block_hashes {
             let Some(block) = blocks.get(&block_hash) else {
@@ -77,7 +71,7 @@ impl StryiStorage {
                 };
 
                 if index.block_hash == block_hash {
-                    tx.remove(
+                    batch.remove(
                         &self.transaction_index_partition,
                         Slice::from(&tx_hash.data[..]),
                     );
@@ -85,7 +79,7 @@ impl StryiStorage {
             }
         }
 
-        tx.commit().map_err(StryiStorageError::FjallError)?;
+        batch.commit().map_err(StryiStorageError::FjallError)?;
         Ok(())
     }
 }

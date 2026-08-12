@@ -186,11 +186,11 @@ impl Block {
 
     /// Computes the Merkle root from a list of transactions using MerkleTree.
     pub fn compute_merkle_root(transactions: &[Transaction]) -> MerkleHash {
-        // Convert each transaction into a byte vector by serializing it via bincode
+        // Convert each transaction into a byte vector by serializing it via postcard
         let leaves_data: Vec<Vec<u8>> = transactions
             .iter()
             .map(|tx| {
-                bincode::serde::encode_to_vec(tx, bincode::config::standard())
+                postcard::to_stdvec(tx)
                     .expect("Failed to serialize transaction")
             })
             .collect();
@@ -206,7 +206,7 @@ impl Block {
             return BlockHash::empty();
         };
 
-        let header_bytes = bincode::serde::encode_to_vec(self.header, bincode::config::standard())
+        let header_bytes = postcard::to_stdvec(&self.header)
             .expect("Failed to serialize block header");
 
         // Create the final block hash
@@ -265,7 +265,7 @@ mod tests {
     use crate::address::AccountAddress;
     use crate::transactions::{TransactionData, TransactionKind};
     use k256::ecdsa::SigningKey;
-    use k256::elliptic_curve::rand_core::OsRng;
+    use rand::rng;
 
     #[test]
     fn test_create_block_and_compute_hash() {
@@ -278,7 +278,7 @@ mod tests {
         };
 
         // Generate ephemeral signing key to sign transaction
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::random(&mut rng());
 
         // Sign transaction data
         let signed_tx = tx_data.sign(&signing_key);

@@ -18,7 +18,7 @@ pub struct FeePolicy {
     /// Cost per transaction output
     pub output_cost: u64,
 
-    /// Cost per byte of serialized(via bincode) transaction
+    /// Cost per byte of serialized transaction
     pub byte_cost: u64,
 }
 
@@ -68,8 +68,7 @@ impl FeeCalculator {
 
     /// Calculates the minimum required fee for a transaction
     pub fn calculate_fee(&self, tx: &Transaction) -> u64 {
-        // This avoids doing an actual serialization during fee calculation.
-        let tx_bytes = tx.estimate_serialized_size() as u64;
+        let tx_bytes = tx.serialized_size() as u64;
 
         self.policy.fixed_fee
             + (self.policy.input_cost * tx.data.inputs.len() as u64)
@@ -137,7 +136,7 @@ mod tests {
         // Test case 1: Simple transaction (1 input, 1 output)
         let tx1 = create_test_transaction(1, 1);
         let fee1 = calculator.calculate_fee(&tx1);
-        let expected_size1 = tx1.estimate_serialized_size() as u64;
+        let expected_size1 = tx1.serialized_size() as u64;
 
         assert_eq!(
             fee1,
@@ -150,7 +149,7 @@ mod tests {
         // Test case 2: More complex transaction (3 inputs, 2 outputs)
         let tx2 = create_test_transaction(3, 2);
         let fee2 = calculator.calculate_fee(&tx2);
-        let expected_size2 = tx2.estimate_serialized_size() as u64;
+        let expected_size2 = tx2.serialized_size() as u64;
 
         assert_eq!(
             fee2,

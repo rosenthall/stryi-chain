@@ -25,7 +25,7 @@ mod undo;
 
 pub use meta::*;
 
-use fjall::{Config as FjallConfig, PartitionCreateOptions, TxKeyspace, TxPartition};
+use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -42,34 +42,34 @@ use stryi_core::block::{Block, BlockHash, GenesisState};
 use stryi_core::storage::{BlockStorage, UtxoStorage};
 use stryi_core::transactions::{OutPoint, TransactionKind, UTXO};
 
-/// Storage handle over the Fjall keyspace and its opened partitions.
+/// Storage handle over the Fjall database and its opened keyspaces.
 pub struct StryiStorage {
     /// Partition storing blocks keyed by block hash
-    pub(crate) blocks_partition: TxPartition,
+    pub(crate) blocks_partition: Keyspace,
 
     /// Partition storing block height -> block hash
-    pub(crate) heights_partition: TxPartition,
+    pub(crate) heights_partition: Keyspace,
 
     /// Partition storing UTXOs
-    pub(crate) utxo_partition: TxPartition,
+    pub(crate) utxo_partition: Keyspace,
 
     /// Partition storing address -> set of OutPoints referencing that address
-    pub(crate) addresses_partition: TxPartition,
+    pub(crate) addresses_partition: Keyspace,
 
     /// Singleton chain state record.
-    pub(crate) stats_partition: TxPartition,
+    pub(crate) stats_partition: Keyspace,
 
     /// Partition storing block hash -> `stryi_core::undo::UndoData`
-    pub(crate) undo_partition: TxPartition,
+    pub(crate) undo_partition: Keyspace,
 
     /// Partition storing block hash -> `stryi_storage::index::BlockIndexData`
-    pub(crate) block_index_partition: TxPartition,
+    pub(crate) block_index_partition: Keyspace,
 
     /// Partition storing transaction hash -> canonical block location metadata.
-    pub(crate) transaction_index_partition: TxPartition,
+    pub(crate) transaction_index_partition: Keyspace,
 
-    /// Keyspace for the entire database
-    pub keyspace: TxKeyspace,
+    /// Database handle
+    pub db: Database,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -197,31 +197,30 @@ impl StryiStorage {
     ) -> Result<Self, StryiStorageError> {
         info!("Trying to access Stryi storage at path {}", &path.display());
 
-        // Create or open the KeySpace
-        let cfg = FjallConfig::new(path).temporary(false);
-        let keyspace = cfg.open_transactional()?;
+        // Create or open the database
+        let db = Database::builder(&path).open()?;
 
         info!("Successfully initialized key space!");
         info!(
-            "Current database disk usage is : {} bytes",
-            keyspace.disk_space()
+            "Current database disk space is : {} bytes",
+            db.disk_space()?
         );
 
-        // Open or create the eight partitions with default options
+        // Open or create the eight keyspaces with default options
         let blocks_partition =
-            keyspace.open_partition("blocks", PartitionCreateOptions::default())?;
+            db.keyspace("blocks", KeyspaceCreateOptions::default)?;
         let heights_partition =
-            keyspace.open_partition("heights", PartitionCreateOptions::default())?;
-        let utxo_partition = keyspace.open_partition("utxo", PartitionCreateOptions::default())?;
+            db.keyspace("heights", KeyspaceCreateOptions::default)?;
+        let utxo_partition = db.keyspace("utxo", KeyspaceCreateOptions::default)?;
         let addresses_partition =
-            keyspace.open_partition("addresses", PartitionCreateOptions::default())?;
+            db.keyspace("addresses", KeyspaceCreateOptions::default)?;
         let stats_partition =
-            keyspace.open_partition("stats", PartitionCreateOptions::default())?;
-        let undo_partition = keyspace.open_partition("undo", PartitionCreateOptions::default())?;
+            db.keyspace("stats", KeyspaceCreateOptions::default)?;
+        let undo_partition = db.keyspace("undo", KeyspaceCreateOptions::default)?;
         let block_index_partition =
-            keyspace.open_partition("block_indexes", PartitionCreateOptions::default())?;
+            db.keyspace("block_indexes", KeyspaceCreateOptions::default)?;
         let transaction_index_partition =
-            keyspace.open_partition("transaction_indexes", PartitionCreateOptions::default())?;
+            db.keyspace("transaction_indexes", KeyspaceCreateOptions::default)?;
 
         // Create storage instance
         let mut storage = Self {
@@ -233,7 +232,7 @@ impl StryiStorage {
             undo_partition,
             block_index_partition,
             transaction_index_partition,
-            keyspace,
+            db,
         };
 
         // Attempt to load existing chain state
@@ -339,7 +338,7 @@ impl StryiStorage {
     /// Durably persists all committed data to disk.
     /// Should be called during graceful shutdown to avoid data loss.
     pub fn persist(&self) -> Result<(), StryiStorageError> {
-        self.keyspace
+        self.db
             .persist(fjall::PersistMode::SyncAll)
             .map_err(StryiStorageError::FjallError)
     }

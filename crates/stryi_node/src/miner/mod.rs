@@ -2,9 +2,8 @@ mod backend;
 pub use backend::MinerBackend;
 pub use backend::NodeMinerBackend;
 
-use bincode::config::standard;
-use bincode::serde::encode_to_vec;
-use rand::{Rng, rng};
+
+use rand::{rng, RngExt};
 use rayon::iter::ParallelIterator;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -335,7 +334,7 @@ fn mine_block(block: &mut Block, cancel: &CancellationToken) -> bool {
 
                 // hash(header) and difficulty check
                 let bytes =
-                    encode_to_vec(hdr, standard()).expect("header serialization cannot fail");
+                    postcard::to_stdvec(&hdr).expect("header serialization cannot fail");
 
                 let hash = BlockHash::new(&bytes);
                 if meets_difficulty(&hash, bits) {
@@ -393,7 +392,7 @@ mod tests {
         assert!(solved, "PoW should succeed for an easy target");
 
         // Verify the resulting nonce really meets EASY_BITS
-        let bytes = encode_to_vec(block.header, standard()).unwrap();
+        let bytes = postcard::to_stdvec(&block.header).unwrap();
         let hash = BlockHash::new(&bytes);
 
         assert!(

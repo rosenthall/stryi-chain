@@ -9,7 +9,6 @@ use crate::grpc_services::{
     SerializedBlockBody,
 };
 use crate::middleware::ready::NotReadyResponder;
-use bincode::config::standard;
 use futures_util::stream;
 use http::{Response as HttpResponse, StatusCode};
 use std::net::SocketAddr;
@@ -303,12 +302,12 @@ impl From<Block> for PbBlock {
             difficulty_bits: block.header.difficulty_bits as u32,
             timestamp: block.header.timestamp,
             nonce: block.header.nonce,
-            genesis_data: bincode::serde::encode_to_vec(block.header.genesis_state, standard())
+            genesis_data: postcard::to_stdvec(&block.header.genesis_state)
                 .expect("I bet it won't ever happen 1"),
         };
 
         let body = SerializedBlockBody {
-            serialized: bincode::serde::encode_to_vec(&block.data, standard())
+            serialized: postcard::to_stdvec(&block.data)
                 .expect("I bet it won't ever happen 2"),
         };
 
@@ -332,9 +331,8 @@ impl TryFrom<PbBlock> for Block {
 
             // try to deserialize genesis_state.
             let grpc_genesis_state: Option<GenesisState> =
-                bincode::serde::decode_from_slice(grpc_header.genesis_data.as_slice(), standard())
-                    .map_err(StryiCoreError::other)?
-                    .0;
+                postcard::from_bytes(grpc_header.genesis_data.as_slice())
+                    .map_err(StryiCoreError::other)?;
 
             BlockHeader {
                 version: grpc_header.version as u16,
@@ -353,9 +351,8 @@ impl TryFrom<PbBlock> for Block {
             let grpc_body = value
                 .body
                 .ok_or(StryiCoreError::other("Got block with no body!"))?;
-            bincode::serde::decode_from_slice(&grpc_body.serialized, standard())
+            postcard::from_bytes(&grpc_body.serialized)
                 .map_err(StryiCoreError::other)?
-                .0
         };
 
         // Construct the Block from header and body

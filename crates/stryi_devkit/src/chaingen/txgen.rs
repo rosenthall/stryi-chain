@@ -1,7 +1,7 @@
 use crate::chaingen::state::GenerationState;
 use crate::chaingen::utxo::{TransactionPattern, UtxoInfo};
 use k256::ecdsa::SigningKey;
-use rand::Rng;
+use rand::{Rng, RngExt};
 use rand::seq::IndexedRandom;
 use stryi_core::StryiCoreError;
 use stryi_core::address::AccountAddress;
@@ -419,7 +419,7 @@ fn generate_splitting_tx(
 
     // Select random receivers
     let receivers: Vec<AccountAddress> = receiver_pool
-        .choose_multiple(rng, num_outputs)
+        .sample(rng, num_outputs)
         .copied()
         .collect();
 
@@ -572,7 +572,7 @@ fn generate_complex_tx(
 
     // Select random receivers
     let receivers: Vec<AccountAddress> = receiver_pool
-        .choose_multiple(rng, num_outputs)
+        .sample(rng, num_outputs)
         .copied()
         .collect();
 

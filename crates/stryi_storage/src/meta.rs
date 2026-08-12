@@ -1,5 +1,4 @@
 use crate::StryiStorageError;
-use bincode::config::standard;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::File;
@@ -52,7 +51,7 @@ impl StorageStatus {
     }
 }
 
-/// Atomically write metainfo.bin with a small header + bincode payload.
+/// Atomically write metainfo.bin with a small header + postcard payload.
 pub fn write_status_atomic(root: &Path, status: StorageStatus) -> Result<(), StryiStorageError> {
     if !root.exists() {
         fs::create_dir_all(root).map_err(StryiStorageError::Io)?;
@@ -62,7 +61,7 @@ pub fn write_status_atomic(root: &Path, status: StorageStatus) -> Result<(), Str
     let dst = meta_file_path(root);
 
     // Build payload
-    let payload = bincode::serde::encode_to_vec(&status, standard())
+    let payload = postcard::to_stdvec(&status)
         .map_err(StryiStorageError::SerializationError)?;
 
     // Header: MAGIC(8) + VERSION(u32 LE) + LEN(u32 LE) + BLAKE3(payload)(32)
@@ -150,9 +149,8 @@ pub fn read_status_bin(path: &Path) -> Result<StorageStatus, StryiStorageError> 
         });
     }
 
-    // Decode bincode payload
-    let cfg = standard();
-    let (meta, _consumed): (StorageStatus, usize) = bincode::serde::decode_from_slice(payload, cfg)
+    // Decode postcard payload
+    let meta: StorageStatus = postcard::from_bytes(payload)
         .map_err(StryiStorageError::DeserializationError)?;
 
     Ok(meta)

@@ -7,7 +7,6 @@ use crate::{
     NetworkCommand, NetworkEvent, RendezvousMode, StryiNetworkManagerConfig,
     behaviour::StryiBehaviour, error::StryiNetworkError,
 };
-use bincode::config::standard;
 use futures::StreamExt;
 use libp2p::core::transport::Boxed;
 use libp2p::gossipsub::{IdentTopic, PublishError};
@@ -384,22 +383,22 @@ impl StryiNetworkManager {
                         // -- PublishBlock command --
                         Some(NetworkCommand::PublishBlock { block: broadcast_block, respond_to }) => {
                             debug!("NetworkManager: Got PublishBlock command.");
-                            let result = match bincode::serde::encode_to_vec(&broadcast_block, standard()) {
+                            let result = match postcard::to_stdvec(&broadcast_block) {
                                 Ok(encoded) => {
                                     let topic = IdentTopic::new(BLOCKS_TOPIC_NAME);
                                     match swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
                                         Ok(_) => Ok(()),
-                                        Err(PublishError::InsufficientPeers) => {
+                                        Err(PublishError::NoPeersSubscribedToTopic) => {
                                             let connected_peers = self.connected_peers.read().await.len();
                                             if connected_peers == 0 {
                                                 debug!("Skipping block publish: no gossipsub peers connected yet");
                                                 Ok(())
                                             } else {
                                                 warn!(
-                                                    "Failed to publish block to gossipsub with InsufficientPeers despite {} connected peer(s)",
+                                                    "Failed to publish block to gossipsub with NoPeersSubscribedToTopic despite {} connected peer(s)",
                                                     connected_peers
                                                 );
-                                                Err(PublishError::InsufficientPeers.into())
+                                                Err(PublishError::NoPeersSubscribedToTopic.into())
                                             }
                                         }
                                         Err(e) => {
@@ -419,22 +418,22 @@ impl StryiNetworkManager {
                         // -- PublishTransaction command --
                         Some(NetworkCommand::PublishTransaction { transaction: tx, respond_to }) => {
                             debug!("NetworkManager: Got PublishTransaction command.");
-                            let result = match bincode::serde::encode_to_vec(&tx, standard()) {
+                            let result = match postcard::to_stdvec(&tx) {
                                 Ok(encoded) => {
                                     let topic = IdentTopic::new(TRANSACTIONS_TOPIC_NAME);
                                     match swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
                                         Ok(_) => Ok(()),
-                                        Err(PublishError::InsufficientPeers) => {
+                                        Err(PublishError::NoPeersSubscribedToTopic) => {
                                             let connected_peers = self.connected_peers.read().await.len();
                                             if connected_peers == 0 {
                                                 debug!("Skipping transaction publish: no gossipsub peers connected yet");
                                                 Ok(())
                                             } else {
                                                 warn!(
-                                                    "Failed to publish transaction to gossipsub with InsufficientPeers despite {} connected peer(s)",
+                                                    "Failed to publish transaction to gossipsub with NoPeersSubscribedToTopic despite {} connected peer(s)",
                                                     connected_peers
                                                 );
-                                                Err(PublishError::InsufficientPeers.into())
+                                                Err(PublishError::NoPeersSubscribedToTopic.into())
                                             }
                                         }
                                         Err(e) => {
@@ -454,12 +453,12 @@ impl StryiNetworkManager {
                         // -- PublishChainTip command --
                         Some(NetworkCommand::PublishChainTip { announcement, respond_to }) => {
                             debug!("NetworkManager: Got PublishChainTip command.");
-                            let result = match bincode::serde::encode_to_vec(&announcement, standard()) {
+                            let result = match postcard::to_stdvec(&announcement) {
                                 Ok(encoded) => {
                                     let topic = IdentTopic::new(TIPS_TOPIC_NAME);
                                     if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, encoded) {
                                         match &e {
-                                            PublishError::InsufficientPeers => {
+                                            PublishError::NoPeersSubscribedToTopic => {
                                                 debug!("Skipping chain tip publish: no gossipsub peers connected yet (we are bootstrapping!");
                                             }
                                             _ => warn!("Failed to publish chain tip to gossipsub: {e:?}"),

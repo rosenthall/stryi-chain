@@ -2,7 +2,6 @@
 
 use crate::ed25519::PublicKey;
 use crate::{Keypair, Multiaddr, PeerId, StryiEvent, StryiNetworkError};
-use bincode::config::standard;
 use libp2p::core::SignedEnvelope;
 use libp2p::identity;
 use libp2p::request_response::Event as ReqRespEvent;
@@ -102,8 +101,8 @@ impl SignedServiceRecord {
         peer_keypair: identity::ed25519::Keypair,
         service_record: ServiceRecord,
     ) -> Result<Self, StryiNetworkError> {
-        let bincode_payload = bincode::serde::encode_to_vec(service_record, standard())
-            .map_err(|e| StryiNetworkError::other(format!("bincode: {e}")))?;
+        let payload = postcard::to_stdvec(&service_record)
+            .map_err(|e| StryiNetworkError::other(format!("{e}")))?;
 
         let kp: Keypair = peer_keypair.clone().into();
 
@@ -111,7 +110,7 @@ impl SignedServiceRecord {
             &kp,
             SIGNED_SERVICE_RECORD_DOMAIN.to_string(),
             SIGNED_SERVICE_PAYLOAD_TYPE.to_vec(),
-            bincode_payload,
+            payload,
         )
         .map_err(StryiNetworkError::SigningError)?;
 
@@ -136,9 +135,8 @@ impl SignedServiceRecord {
             _ => return Err(StryiNetworkError::other("signing key mismatch")),
         }
 
-        let (rec, _len): (ServiceRecord, _) =
-            bincode::serde::decode_from_slice(payload, standard())
-                .map_err(|e| StryiNetworkError::other(format!("bincode : {e}")))?;
+        let rec: ServiceRecord = postcard::from_bytes(payload)
+            .map_err(|e| StryiNetworkError::other(format!("{e}")))?;
 
         let expected_peer = PeerId::from_public_key(&expected_pk.clone().into());
         if rec.owner != expected_peer {
@@ -288,10 +286,8 @@ mod tests {
         let rec = sample_record_for_owner(owner);
         let signed = SignedServiceRecord::sign(kp, rec).expect("sign");
 
-        let vec = bincode::serde::encode_to_vec(&signed, standard()).unwrap();
-        let de: SignedServiceRecord = bincode::serde::decode_from_slice(&vec, standard())
-            .unwrap()
-            .0;
+        let vec = postcard::to_stdvec(&signed).unwrap();
+        let de: SignedServiceRecord = postcard::from_bytes(&vec).unwrap();
 
         assert_eq!(Vec::<u8>::from(signed.clone()), Vec::<u8>::from(de));
     }

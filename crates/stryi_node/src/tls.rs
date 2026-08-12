@@ -1,8 +1,8 @@
 use crate::error::StryiNodeError;
 use pem::Pem;
 use pkcs8::der::Encode;
-use pkcs8::spki::AlgorithmIdentifier;
-use pkcs8::{ObjectIdentifier, PrivateKeyInfo};
+use pkcs8::spki::AlgorithmIdentifierRef;
+use pkcs8::{ObjectIdentifier, PrivateKeyInfoRef};
 use rcgen::{CertificateParams, DistinguishedName, KeyPair, PKCS_ED25519, date_time_ymd};
 use rustls_pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use stryi_network::Keypair;
@@ -20,22 +20,24 @@ pub struct NodeTlsIdentity {
 
 /// Wrap a 32-byte Ed25519 seed in a valid PKCS-8 OneAsymmetricKey.
 fn pkcs8_from_seed(seed: &[u8; 32]) -> Result<PrivateKeyDer<'static>, pkcs8::Error> {
-    // generate inner octet string of `04 20` + <seed>
-    let inner = pkcs8::der::asn1::OctetStringRef::new(seed)?.to_der()?;
+    // Ring expects the privateKey OCTET STRING to contain a DER-encoded OCTET STRING of the seed.
+    let inner = pkcs8::der::asn1::OctetStringRef::new(seed.as_slice())?;
+    let inner_der = inner.to_der()?;
+    let key_octet = pkcs8::der::asn1::OctetStringRef::new(&inner_der)?;
 
     // Outer structure
     let ed25519_oid: ObjectIdentifier = ObjectIdentifier::new("1.3.101.112").unwrap();
 
-    let info = PrivateKeyInfo {
-        algorithm: AlgorithmIdentifier {
+    let info = PrivateKeyInfoRef {
+        algorithm: AlgorithmIdentifierRef {
             oid: ed25519_oid,
             parameters: None,
         },
-        private_key: &inner,
+        private_key: &key_octet,
         public_key: None,
     };
 
-    let der = info.to_der()?;
+    let der = pkcs8::der::Encode::to_der(&info)?;
     Ok(PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(der)))
 }
 

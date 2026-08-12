@@ -15,17 +15,10 @@ impl StryiStorage {
         block_hash: &stryi_core::block::BlockHash,
         index_data: &BlockIndexData,
     ) -> Result<(), StryiStorageError> {
-        let mut tx = self.keyspace.write_tx();
-
-        // Serialize
-        let encoded = bincode::serde::encode_to_vec(index_data, bincode::config::standard())?;
-        tx.insert(
-            &self.block_index_partition,
-            fjall::Slice::from(&block_hash.data),
-            fjall::Slice::from(encoded),
-        );
-
-        tx.commit().map_err(StryiStorageError::FjallError)?;
+        let encoded = postcard::to_stdvec(index_data)?;
+        self.block_index_partition
+            .insert(fjall::Slice::from(&block_hash.data), fjall::Slice::from(encoded))
+            .map_err(StryiStorageError::FjallError)?;
         Ok(())
     }
 
@@ -49,10 +42,8 @@ impl StryiStorage {
             }
         };
 
-        let (decoded, _) = bincode::serde::decode_from_slice::<BlockIndexData, _>(
-            &raw,
-            bincode::config::standard(),
-        )?;
+        let decoded = postcard::from_bytes::<BlockIndexData>(&raw)
+            .map_err(StryiStorageError::DeserializationError)?;
         Ok(decoded)
     }
 
@@ -74,12 +65,9 @@ impl StryiStorage {
         &mut self,
         block_hash: &stryi_core::block::BlockHash,
     ) -> Result<(), StryiStorageError> {
-        let mut tx = self.keyspace.write_tx();
-        tx.remove(
-            &self.block_index_partition,
-            fjall::Slice::from(&block_hash.data),
-        );
-        tx.commit().map_err(StryiStorageError::FjallError)?;
+        self.block_index_partition
+            .remove(fjall::Slice::from(&block_hash.data))
+            .map_err(StryiStorageError::FjallError)?;
         Ok(())
     }
 }

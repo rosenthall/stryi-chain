@@ -13,21 +13,22 @@ path = "src/main.rs"
 
 [dependencies]
 stryi_core = { path = "../stryi_core" }
-tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
-clap = { version = "4.5.48", features = ["derive"] }
-reqwest = { version = "0.12", features = ["json"] }
-serde = { version = "1.0.226", features = ["derive"] }
-serde_json = "1.0.145"
-bincode = { version = "2.0.0-rc.3", features = ["serde"] }
-base64 = "0.22.1"
-k256 = { version = "0.13", features = ["serde", "ecdsa"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
+clap = { version = "4.6.4", features = ["derive"] }
+reqwest = { version = "0.13", features = ["json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+postcard = { version = "1", features = ["use-std"] }
+base64 = "0.23.0"
+k256 = { version = "0.14", features = ["serde", "ecdsa"] }
 hex = "0.4.3"
+rand = "0.10.2"
 dirs = "6"
 anyhow = "1"
-rustyline = "15"
+rustyline = "18"
 colored = "3"
 strsim = "0.11"
 
 [dev-dependencies]
-tokio = { version = "1.47.1", features = ["rt", "macros"] }
+tokio = { version = "1.53.1", features = ["rt", "macros"] }
 tempfile = "3"

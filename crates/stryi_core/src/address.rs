@@ -29,13 +29,13 @@ mod tests {
     use crate::address::{AccountAddress, AddressHasher};
     use crate::hash::HashKind;
     use k256::ecdsa::SigningKey;
-    use k256::elliptic_curve::rand_core::OsRng;
+    use rand::rng;
 
     #[test]
     fn test_create_multiple_account_addresses() {
         for i in 0..15 {
             // Generate a random ECDSA keypair
-            let signing_key = SigningKey::random(&mut OsRng);
+            let signing_key = SigningKey::random(&mut rng());
             let verifying_key = signing_key.verifying_key();
 
             // Create AccountAddress from the secp256k1 public key
@@ -81,7 +81,7 @@ mod tests {
     #[ignore]
     #[test]
     fn generate_key_and_address() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::random(&mut rng());
         let s_pk = PrivateKey::new(signing_key.clone());
 
         let verifying_key = signing_key.verifying_key();

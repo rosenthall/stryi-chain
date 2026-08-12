@@ -1,4 +1,6 @@
 #![allow(incomplete_features)]
+#![cfg_attr(test, allow(deprecated))]
+
 #![feature(generic_const_exprs)]
 
 /// `hash` module contains some higher-level abstractions for typed hashing

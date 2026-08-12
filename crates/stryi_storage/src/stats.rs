@@ -1,5 +1,4 @@
 use crate::{StryiStorage, StryiStorageError};
-use bincode::config::standard;
 use fjall::{UserKey, UserValue};
 use futures::future;
 use futures::future::BoxFuture;
@@ -22,8 +21,9 @@ impl TryFrom<&UserValue> for StorageStateInformation {
     type Error = StryiStorageError;
 
     fn try_from(value: &UserValue) -> Result<Self, Self::Error> {
-        let (storage_state, _): (StorageStateInformation, _) =
-            bincode::serde::decode_from_slice(value, standard())?;
+        let storage_state: StorageStateInformation =
+            postcard::from_bytes(value)
+                .map_err(StryiStorageError::DeserializationError)?;
 
         Ok(storage_state)
     }
@@ -33,7 +33,7 @@ impl TryInto<UserValue> for StorageStateInformation {
     type Error = StryiStorageError;
 
     fn try_into(self) -> Result<UserValue, Self::Error> {
-        let buf = bincode::serde::encode_to_vec(self, standard())?;
+        let buf = postcard::to_stdvec(&self)?;
 
         Ok(UserValue::new(&buf))
     }

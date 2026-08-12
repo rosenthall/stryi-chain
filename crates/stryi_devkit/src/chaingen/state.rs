@@ -198,37 +198,13 @@ impl GenerationState {
             start_height as u32
         });
 
-        // Create a wrapper that bridges rand::StdRng to k256's rand_core
-        struct StdRngWrapper(rand::rngs::StdRng);
-
-        impl k256::elliptic_curve::rand_core::RngCore for StdRngWrapper {
-            fn next_u32(&mut self) -> u32 {
-                rand::RngCore::next_u32(&mut self.0)
-            }
-            fn next_u64(&mut self) -> u64 {
-                rand::RngCore::next_u64(&mut self.0)
-            }
-            fn fill_bytes(&mut self, dest: &mut [u8]) {
-                rand::RngCore::fill_bytes(&mut self.0, dest)
-            }
-            fn try_fill_bytes(
-                &mut self,
-                dest: &mut [u8],
-            ) -> Result<(), k256::elliptic_curve::rand_core::Error> {
-                rand::RngCore::fill_bytes(&mut self.0, dest);
-                Ok(())
-            }
-        }
-
-        impl k256::elliptic_curve::rand_core::CryptoRng for StdRngWrapper {}
-
         let mut accounts = IndexMap::new();
 
         for i in 0..amount {
             // Create a deterministic seed for each account by combining base seed with index
             let account_seed = base_seed.wrapping_add(i as u64);
 
-            let mut rng = StdRngWrapper(rand::rngs::StdRng::seed_from_u64(account_seed));
+            let mut rng = rand::rngs::StdRng::seed_from_u64(account_seed);
 
             // Generate a random signing key
             let signing_key = SigningKey::random(&mut rng);

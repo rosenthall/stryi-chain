@@ -1,6 +1,8 @@
+#![allow(deprecated)]
+
 use anyhow::{Context, Result};
 use k256::ecdsa::SigningKey;
-use k256::elliptic_curve::rand_core::OsRng;
+use rand::rng;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -20,7 +22,7 @@ pub struct WalletFile {
 }
 
 pub fn generate_keypair(label: &str) -> KeyEntry {
-    let signing_key = SigningKey::random(&mut OsRng);
+    let signing_key = SigningKey::random(&mut rng());
     let address = AccountAddress::from_public_key(signing_key.verifying_key());
 
     KeyEntry {

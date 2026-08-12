@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng, random_range};
+use rand::{Rng, RngExt, SeedableRng, random_range};
 use tempfile::TempDir;
 use tokio::test;
 
