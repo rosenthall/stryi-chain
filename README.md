@@ -225,9 +225,12 @@ connect via gRPC directly.
 
 ### Performance
 
-On average, the Node (and the StryiConsensusEngine) fully validates and applies ~180 blocks/sec on GHA free shared
+On average, the Node (and the StryiConsensusEngine) fully validates and applies ~403 blocks/sec on GHA free shared
 runner (4 vCPU cores) when performing Initial-Block-Download/reorg on **250 blocks** with total ~3700 transactions
 (~15 txs/block, 1-to-8 inputs and outputs per tx.)
+
+A ~2.2x boost over the previous ~180 blocks/sec, an unexpected side effect of migrating the serialization layer
+from `bincode` to `postcard`.
 
 <a href="https://bencher.dev/perf/stryichain?branches=9b14b8a6-2243-4e11-8280-b59b52165d96&testbeds=627aa475-6e11-4f51-820e-7c8dc150724c%2Ce35664cc-adc7-4c6a-99e0-18220707ee04&benchmarks=ad177bc0-2a92-4a5f-8136-d9162b22f752&measures=8613913e-2bb2-40ec-9457-3cb09e68f66b&x_axis=version&lower_value=false&upper_value=false&key=true">
   <picture>
