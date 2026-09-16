@@ -1,6 +1,5 @@
 use crate::hash::{Hash, HashKind};
 
-/// A specific hash kind for transactions.
 #[derive(Default, Eq, PartialEq, Debug, Clone, Copy, Hash)]
 pub struct TransactionHasher;
 
@@ -14,5 +13,4 @@ impl HashKind for TransactionHasher {
     // NOTE: using default hash() implementation, based on blake3
 }
 
-/// A hash of a transaction.
 pub type TransactionHash = Hash<TransactionHasher>;

@@ -32,7 +32,6 @@ use tracing::warn;
 pub type UtxoLookup =
     Box<dyn Fn(&OutPoint) -> Pin<Box<dyn Future<Output = Option<UTXO>> + Send>> + Send + Sync>;
 
-/// Mempool state and the helpers needed to maintain it.
 pub struct MemPool {
     storage: TransactionStorage,
     dependency_tracker: DependencyTracker,

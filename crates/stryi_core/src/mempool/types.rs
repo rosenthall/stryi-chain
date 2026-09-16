@@ -11,7 +11,6 @@ pub struct MemPoolSyncData {
     pub timestamp: u64,
 }
 
-/// Serialized form of one mempool entry.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MemPoolSyncEntry {
     pub transaction: Transaction,
@@ -19,7 +18,6 @@ pub struct MemPoolSyncEntry {
     pub timestamp: u64,
 }
 
-/// Configuration for mempool limits and policies.
 #[derive(Clone, Debug)]
 pub struct MemPoolConfig {
     /// Maximum number of transactions in the pool.
@@ -60,7 +58,6 @@ impl MemPoolConfig {
     }
 }
 
-/// Transaction plus mempool metadata.
 #[derive(Debug)]
 pub struct MemPoolTx {
     pub(crate) transaction: Transaction,

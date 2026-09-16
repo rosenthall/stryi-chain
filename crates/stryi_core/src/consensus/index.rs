@@ -15,7 +15,6 @@ struct TipInfo {
     work: u128,
 }
 
-/// In-memory index of the active chain.
 #[derive(Clone, PartialEq, Debug)]
 pub struct ChainIndex {
     entries: HashMap<BlockHash, ChainIndexEntry>,

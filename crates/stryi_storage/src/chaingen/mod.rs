@@ -12,7 +12,6 @@ use stryi_core::transactions::{OutPoint, UTXO};
 /// Structure: `Address -> (OutPoint -> UTXO)`
 pub type AccountUtxoMap = HashMap<AccountAddress, HashMap<OutPoint, UTXO>>;
 
-/// Extension trait for chain generation operations.
 pub trait StryiStorageChaingenExt: Send + Sync {
     /// Retrieves all existing UTXOs from storage.
     ///

@@ -5,13 +5,10 @@ use crate::{
 };
 use tracing::debug;
 
-/// Block-level validation helpers.
 pub mod block;
 
-/// Header-level consensus checks.
 mod header;
 
-/// Per transaction validation helpers
 pub mod tx;
 
 /// Validates a block against the supplied consensus rules.

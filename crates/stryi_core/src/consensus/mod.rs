@@ -1,20 +1,11 @@
-//! The consensus module defines interfaces and structures for the consensus mechanism,
-//! including consensus rules and the consensus engine responsible for block validation,
-//! forks management, difficulty adjustment, and chain selection.
-
-/// [`StryiConsensusEngine`] lives here.
 mod engine;
 
-/// [`ChainIndex`] implementation.
 mod index;
 
-/// Static consensus rules definition.
 mod rules;
 
-/// Fork utilities.
 mod forks;
 
-/// Helper for the block disposition detection logic
 mod classify;
 
 /// Block validator implementation.

@@ -49,7 +49,6 @@ pub trait ForksWrite: ForksRead {
 }
 
 #[derive(Default)]
-// Storage of all the competing forks.
 pub struct ForkRegistry {
     inner: DashMap<BlockHash, ForkEntry>,
 }

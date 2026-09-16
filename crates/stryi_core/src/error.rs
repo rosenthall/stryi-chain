@@ -21,7 +21,6 @@ pub enum StorageLayer {
     Other,
 }
 
-/// Common, unified error type for `stryi_core` crate.
 #[derive(Debug, Clone, Error, PartialEq)]
 pub enum StryiCoreError {
     #[error(

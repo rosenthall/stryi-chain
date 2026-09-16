@@ -42,7 +42,6 @@ fn disconnect_addr_from_endpoint(
 }
 
 impl StryiNetworkManager {
-    /// Process a single event from the swarm, handling it according to its type.
     /// This function is called by the main event loop of the network manager.
     pub(crate) async fn process_event(
         &self,

@@ -31,7 +31,6 @@ mod util;
 /// High-level http api for users of the node.
 mod http;
 
-/// An implementation of node's mining service.
 mod miner;
 
 /// Simple estimation of the node's hashrate

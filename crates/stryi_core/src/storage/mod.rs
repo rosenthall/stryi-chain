@@ -89,7 +89,6 @@ pub trait UtxoStorage: Send + Sync {
     }
 }
 
-/// Common type for incorrect ranges
 #[derive(Debug)]
 pub enum RangeError {
     InvalidRange { start: usize, end: usize },

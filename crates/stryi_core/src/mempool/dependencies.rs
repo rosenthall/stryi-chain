@@ -4,7 +4,6 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-/// Tracks parent-child relationships between mempool transactions.
 #[derive(Default)]
 pub struct DependencyTracker {
     graph: DiGraph<TransactionHash, ()>,

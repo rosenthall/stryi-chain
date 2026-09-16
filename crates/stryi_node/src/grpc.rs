@@ -116,7 +116,6 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
 
         let storage = self.storage.clone();
 
-        // Build a stream using `futures_util::stream::unfold(...)`
         let header_stream = stream::unfold(start_height, move |current_height| {
             let storage = storage.clone();
 
@@ -189,7 +188,7 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
 
         // 2) Build a stream using `futures_util::stream::unfold(...)`
         let block_stream = stream::unfold(start_height, move |current_height| {
-            let storage = storage.clone(); // cloning arc
+            let storage = storage.clone();
             async move {
                 if current_height > actual_end {
                     // Reached the end, so no more items

@@ -14,37 +14,24 @@ mod hash;
 mod error;
 pub use error::StryiCoreError;
 
-/// Implementation of the Block primitive for the blockchain.
-/// Includes high-level APIs and parallel CPU mining module.
 pub mod block;
 
-/// Account addresses and utilities for deriving them from public keys.
 pub mod address;
 
-/// Simple implementation of the [Merkle Tree](https://en.wikipedia.org/wiki/Merkle_tree)
-/// Provides simple api for constructing trees, generating and checking proofs
 pub mod merkletree;
 
-/// Definition of [`Transaction`], [`TransactionHash`], utilities for signing and validating the authority, and
-/// module for checking and performing UTXOs logic.
 pub mod transactions;
 
-/// Definitions of traits that we use as abstract layer for storing data.
 pub mod storage;
 
-/// The consensus model of StryiChain.
-/// Provides a convenient way for all the nodes to follow the same, strict rules of consensus
 pub mod consensus;
 
-/// Primitives for tracking transaction dependencies within a block.
 /// Uses a directed acyclic graph ([DAG](https://en.wikipedia.org/wiki/Directed_acyclic_graph)) to model dependency order.
 mod dependencies;
 
-/// Definitions of BlockUndo and related logic for the reorganization system.
 mod undo;
 pub use undo::BlockUndo;
 
-/// Implementation of the [Memory Pool](https://learnmeabitcoin.com/technical/mining/memory-pool/)
 pub mod mempool;
 
 // public export of common libraries across the project

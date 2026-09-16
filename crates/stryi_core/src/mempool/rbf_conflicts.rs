@@ -4,7 +4,6 @@ use crate::transactions::{Transaction, TransactionHash};
 use std::collections::HashSet;
 use thiserror::Error;
 
-/// Errors returned while applying RBF rules.
 #[derive(Debug, Error)]
 pub enum RbfConflictError {
     #[error(
@@ -16,7 +15,6 @@ pub enum RbfConflictError {
     Other(String),
 }
 
-/// Replace-by-fee policy.
 #[derive(Debug, Clone)]
 pub struct RbfPolicy {
     /// Minimum absolute fee
@@ -65,7 +63,6 @@ impl RbfPolicy {
     }
 }
 
-/// Finds and resolves conflicts between mempool transactions.
 pub struct RbfConflictResolver {
     policy: RbfPolicy,
 }

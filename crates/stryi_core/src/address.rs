@@ -1,7 +1,6 @@
 use crate::hash::{Hash, HashKind};
 use k256::ecdsa::VerifyingKey;
 
-/// Specific hash kind for account addresses (20 bytes).
 #[derive(Default, PartialEq, Debug, Clone, Copy, Eq, Hash)]
 pub struct AddressHasher;
 

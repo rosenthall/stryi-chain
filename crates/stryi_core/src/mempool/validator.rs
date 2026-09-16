@@ -4,7 +4,6 @@ use crate::mempool::storage::TransactionStorage;
 use crate::transactions::{OutPoint, Transaction, TransactionKind, UTXO};
 use thiserror::Error;
 
-/// Errors that can arise during mempool validation of transactions.
 #[derive(Debug, Error)]
 pub enum MempoolValidationError {
     #[error("Missing UTXO for outpoint: {0:?}")]
@@ -35,7 +34,6 @@ pub enum MempoolValidationError {
     NonPaymentTx(String),
 }
 
-/// Validates transactions before they enter the mempool.
 pub struct MempoolTxValidator {
     utxo_lookup: UtxoLookup,
 }

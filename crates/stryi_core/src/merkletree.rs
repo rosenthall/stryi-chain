@@ -15,7 +15,6 @@ impl HashKind for MerkleRootHashKind {
     // not overriding default hash() implementation
 }
 
-/// A 32-byte merkle  hash
 pub type MerkleHash = Hash<MerkleRootHashKind>;
 
 impl MerkleHash {
@@ -29,7 +28,6 @@ impl MerkleHash {
     }
 }
 
-/// Represents a Merkle Tree with its levels and root.
 #[derive(Debug, Clone)]
 pub struct MerkleTree {
     /// All levels of the tree, with level 0 being the leaves.

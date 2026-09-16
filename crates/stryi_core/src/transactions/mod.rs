@@ -1,23 +1,17 @@
-/// Basic primitives of transactions such as UTXO, OutPoint, etc.
 mod utxo;
 pub use crate::transactions::utxo::{OutPoint, TransactionIn, TransactionOut, UTXO};
 
-/// Custom hash format for transactions
 mod hash;
 pub use crate::transactions::hash::{TransactionHash, TransactionHasher};
 
 mod utxo_processor;
 pub use crate::transactions::utxo_processor::UtxoProcessor;
 
-/// high-level abstractions for k256-based signatures of transactions
 mod signature;
 pub use crate::transactions::signature::StryiSignature;
 
-/// FeePolicy and FeeCalculator for estimating the required fee for any transaction
 mod fee_policy;
 
-/// Provides logic for estimating and computing the actual size of transactions,  
-/// including inputs, outputs, and signatures, to ensure accurate fee calculation.
 mod size;
 pub use crate::transactions::size::*;
 

@@ -1,5 +1,3 @@
-//! Node HTTP API client.
-
 use anyhow::{Context, Result};
 use reqwest::Response;
 use serde::{Deserialize, Serialize};

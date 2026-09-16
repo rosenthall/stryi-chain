@@ -5,7 +5,6 @@ use stryi_core::mempool::MemPoolError;
 use thiserror::Error;
 use tokio::sync::broadcast::error::SendError;
 
-/// Our custom error type for networking logic.
 #[derive(Debug, Error)]
 pub enum StryiNetworkError {
     /// Some transport-related or I/O error.

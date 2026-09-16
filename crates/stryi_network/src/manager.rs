@@ -47,9 +47,9 @@ pub struct StryiNetworkManager {
     // Event channel. network manager broadcasts events (e.g., peer events) to subscribers
     pub(crate) event_tx: broadcast::Sender<NetworkEvent>,
 
-    /// Thread-safe, mutable registry of this node's active services.
-    /// Wrapped in an `RwLock` to allow concurrent reads and real-time updates
-    /// (for instance, when a service starts, stops, or changes its listening port).
+    /// Registry of this node's active services, wrapped in an `RwLock` for concurrent
+    /// reads and real-time updates (for instance, when a service starts, stops, or
+    /// changes its listening port).
     pub(crate) own_services_registry: Arc<RwLock<Vec<SignedServiceRecord>>>,
 
     /// Connected peers tracking
@@ -229,7 +229,6 @@ impl StryiNetworkManager {
         Ok(transport)
     }
 
-    /// Runs the main event loop of the StryiNetworkManager.
     /// This loop handles incoming network events, processes commands, and manages subscriptions.
     pub async fn run_loop(&mut self) {
         let mut swarm = self.swarm.lock().await;

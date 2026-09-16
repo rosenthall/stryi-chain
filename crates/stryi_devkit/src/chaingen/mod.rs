@@ -2,35 +2,26 @@ use crate::chaingen::state::GenerationState;
 pub use config::*;
 use std::sync::Arc;
 
-/// Configuration struct for ChainGen.
 mod config;
 
-/// Transaction generation helpers.
 mod txgen;
 
-/// Definition and helpers for Seed struct used in ChainGen.
 mod seed;
 
-/// UTXO tracking and selection helpers.
 mod utxo;
 
 /// Seed schedule: mapping from height to active seed.
 /// Used to create ChaCha8Rng instances for block synthesis.
 mod seed_schedule;
 
-/// Generation state: accounts, UTXOs, etc.
 mod state;
 
-/// Structures/functionality related to funding accounts.
 mod funding_account;
 
-/// Initialization helpers
 mod init;
 
-/// Defines `TxGenerationStrategy`, a helper for choosing how to generate transactions.
 mod strategy;
 
-/// Block generation logic.
 mod blockgen;
 
 use crate::chaingen::seed_schedule::SeedSchedule;

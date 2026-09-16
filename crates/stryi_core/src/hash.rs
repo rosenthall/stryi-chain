@@ -12,7 +12,6 @@ mod sealed {
     impl<const N: usize> ValidSize for [u8; N] {}
 }
 
-/// Trait defines how a specific object in the blockchain should be hashed.
 pub trait HashKind: Default {
     /// Size of the hash in bytes.
     const SIZE: usize;
@@ -34,7 +33,6 @@ pub trait HashKind: Default {
     }
 }
 
-/// Generic `Hash` struct parameterized by a `HashKind`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Hash<K: HashKind>
 where

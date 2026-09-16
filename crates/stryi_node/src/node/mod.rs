@@ -22,7 +22,6 @@ use tracing::info;
 /// Simple abstraction for ConsensusEngine <-> Miner communication.
 pub(crate) mod miner_bridge;
 
-/// Cool implementation of the algorithm that finds the Last Common Ancestor.
 mod lca;
 
 /// Provides high-level helpers for interacting with remote peers

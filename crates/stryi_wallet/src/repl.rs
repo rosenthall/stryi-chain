@@ -1,5 +1,3 @@
-//! Interactive REPL for the wallet.
-
 use anyhow::{Context, Result};
 use colored::Colorize;
 use rustyline::completion::{Completer, Pair};

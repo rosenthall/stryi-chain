@@ -1,4 +1,3 @@
-//! Utils to deal with funding accounts.
 use indexmap::IndexMap;
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;

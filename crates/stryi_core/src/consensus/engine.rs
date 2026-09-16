@@ -18,7 +18,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, trace, warn};
 
-// StryiConsensusEngine is responsible for validating and processing blocks according to the consensus rules.
 pub struct StryiConsensusEngine<DB>
 where
     DB: FullNodeStorage,
@@ -34,11 +33,6 @@ where
     // TODO: consider renaming it later, e.g. in TransactionsProcessor? Current name is a little weird
     pub(crate) utxo_processor: UtxoProcessor,
 
-    /// Shared handle to the underlying storage wrapped in an `RwLock`.
-    /// The `Arc` allows cheap cloning across subsystems, while the
-    /// `RwLock` lets concurrent readers proceed without blocking each
-    /// other and still grants exclusive access for writes when the
-    /// consensus engine needs it.
     pub(crate) db: Arc<RwLock<DB>>,
 
     /// Fork registry that tracks all the known forks in the chain.

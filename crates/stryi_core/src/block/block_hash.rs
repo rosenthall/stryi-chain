@@ -74,7 +74,6 @@ impl HashKind for BlockHashKind {
     }
 }
 
-/// A hash of a block.
 pub type BlockHash = crate::hash::Hash<BlockHashKind>;
 
 impl BlockHash {

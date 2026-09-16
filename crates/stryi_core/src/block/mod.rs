@@ -20,7 +20,6 @@ pub struct BlockData {
     pub transactions: Vec<Transaction>,
 }
 
-/// Block header contains essential metadata for a blockchain block.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BlockHeader {
     /// Protocol/format version
@@ -88,7 +87,6 @@ pub struct GenesisState {
     // TODO: Some Additional fields in genesis_state? We may add any configurations/kill switches in here. Or maybe just string with info about the block?
 }
 
-/// Block ties together BlockHeader and BlockData.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Block {
     /// The block header

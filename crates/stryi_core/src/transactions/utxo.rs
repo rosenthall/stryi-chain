@@ -3,8 +3,6 @@ use crate::transactions::hash::TransactionHash;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
-/// OutPoint identifies which UTXO is being referenced.
-/// Basically it's a handle for the UTXOs
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, Eq, Hash, PartialEq)]
 pub struct OutPoint {
     /// Transaction hash that created the output.
@@ -37,8 +35,6 @@ impl Display for TransactionIn {
     }
 }
 
-/// TransactionOut represents an output of the transaction.
-/// It includes an amount (value) and a recipient address.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct TransactionOut {
     /// Amount assigned to this output.

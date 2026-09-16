@@ -3,7 +3,6 @@
 
 #![feature(generic_const_exprs)]
 
-/// Implementation of ChainGen tool.
 mod chaingen;
 /// Exit codes used by the CLI.
 mod codes;
@@ -23,7 +22,6 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
 
-/// Command-line interface definition.
 #[derive(Parser, Debug)]
 #[command(
     name = "stryi-devkit",

@@ -2,7 +2,6 @@ use crate::mempool::validator::MempoolValidationError;
 use crate::transactions::{OutPoint, TransactionHash};
 use thiserror::Error;
 
-/// Errors returned by the mempool.
 #[derive(Debug, Error)]
 pub enum MemPoolError {
     #[error("Pool is full ({size} transactions)")]

@@ -19,7 +19,6 @@ use std::ops::RangeInclusive;
 use thiserror::Error;
 use tokio::sync::RwLock;
 
-/// Fine-grained errors returned by in-memory storage.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum InMemoryStorageError {
     // UTXO layer

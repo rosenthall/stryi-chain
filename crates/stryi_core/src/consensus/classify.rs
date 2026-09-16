@@ -26,7 +26,6 @@ pub(in crate::consensus) enum BlockDisposition {
     Orphan { parent: BlockHash },
 }
 
-/// Describes where a block is known to be already stored: either main chain or fork tree.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::consensus) enum KnownLocation {
     CanonicalChain,
