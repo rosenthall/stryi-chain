@@ -25,6 +25,8 @@ pub use crate::storage::{BlockStorage, StorageStats, UndoStorage, UtxoStorage};
 pub use engine::StryiConsensusEngine;
 pub use rules::ConsensusConsts;
 pub use validator::BlockValidator;
+#[cfg(test)]
+pub(crate) use validator::block::validate_block_structure;
 
 /// Reply message type for ConsensusEngine.
 /// See [`ConsensusEngine::on_block`] method for more implementation details.

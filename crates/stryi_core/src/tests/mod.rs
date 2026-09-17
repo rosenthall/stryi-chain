@@ -69,6 +69,19 @@ pub(crate) fn make_payment_tx(
     data.sign(signing_key)
 }
 
+/// Creates an unsigned Genesis transaction with the specified outputs.
+pub(crate) fn make_genesis_tx(outputs: Vec<(u64, AccountAddress)>) -> Transaction {
+    Transaction::new_unsigned(TransactionData {
+        version: 1,
+        kind: TransactionKind::Genesis,
+        inputs: vec![],
+        outputs: outputs
+            .into_iter()
+            .map(|(value, recipient)| TransactionOut { value, recipient })
+            .collect(),
+    })
+}
+
 /// Creates a genesis block with specified balances and returns both the block
 /// and an initialized `StryiInMemoryStorage`.
 pub(crate) fn make_test_genesis(

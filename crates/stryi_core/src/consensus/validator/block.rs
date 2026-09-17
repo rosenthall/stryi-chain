@@ -13,7 +13,7 @@ use tokio::task::JoinSet;
 /// Performs all the cheap checks that do **not** touch the UTXO set.
 pub fn validate_block_structure(block: &Block) -> Result<(), StryiCoreError> {
     ensure_unique_txs(block)?;
-    ensure_coinbase_first(block)?;
+    ensure_transaction_composition(block)?;
     ensure_unique_inputs(&block.data)?;
     Ok(())
 }
@@ -29,17 +29,55 @@ fn ensure_unique_txs(block: &Block) -> Result<(), StryiCoreError> {
     Ok(())
 }
 
-/// Ensures the very first tx is Coinbase (except for genesis).
-fn ensure_coinbase_first(block: &Block) -> Result<(), StryiCoreError> {
+/// Non-genesis blocks must start with exactly one Coinbase, followed only by Payments.
+fn ensure_transaction_composition(block: &Block) -> Result<(), StryiCoreError> {
     if block.header.is_genesis() {
         return Ok(());
     }
-    match block.data.transactions.first() {
-        Some(tx) if tx.data.kind == TransactionKind::Coinbase => Ok(()),
-        _ => Err(StryiCoreError::ConsensusValidationFailed {
-            details: "First transaction must be a Coinbase transaction".into(),
-        }),
+
+    let (first, rest) = match block.data.transactions.split_first() {
+        Some(pair) => pair,
+        None => {
+            return Err(StryiCoreError::ConsensusValidationFailed {
+                details: "Block transaction list cannot be empty".into(),
+            });
+        }
+    };
+
+    if first.data.kind == TransactionKind::Genesis {
+        return Err(StryiCoreError::ConsensusValidationFailed {
+            details: "Genesis transaction is forbidden in non-genesis blocks".into(),
+        });
     }
+
+    if first.data.kind != TransactionKind::Coinbase {
+        return Err(StryiCoreError::ConsensusValidationFailed {
+            details: "First transaction must be a Coinbase transaction".into(),
+        });
+    }
+
+    for (offset, tx) in rest.iter().enumerate() {
+        let idx = offset + 1;
+        match tx.data.kind {
+            TransactionKind::Payment => {}
+            TransactionKind::Coinbase => {
+                return Err(StryiCoreError::ConsensusValidationFailed {
+                    details: format!(
+                        "Block cannot contain multiple Coinbase transactions (extra Coinbase at index {idx})"
+                    ),
+                });
+            }
+            TransactionKind::Genesis => {
+                return Err(StryiCoreError::ConsensusValidationFailed {
+                    details: format!(
+                        "Genesis transaction is forbidden in non-genesis blocks (found at index {idx})"
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Fails if any input is used twice *inside* the same block.
