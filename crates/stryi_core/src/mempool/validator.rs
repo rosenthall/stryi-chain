@@ -50,7 +50,6 @@ impl MempoolTxValidator {
         tx: &Transaction,
         storage: &TransactionStorage,
     ) -> Result<Vec<UTXO>, MempoolValidationError> {
-        // Check if the transaction kind is not payment
         if !matches!(tx.data.kind, TransactionKind::Payment) {
             return Err(MempoolValidationError::NonPaymentTx(
                 tx.data.hash().to_string(),
@@ -64,8 +63,7 @@ impl MempoolTxValidator {
         };
         let recovered_addr = AccountAddress::from_public_key(&rec_key);
 
-        // Gather input UTXOs
-        let mut total_input_value = 0u64; // accumulator value
+        let mut total_input_value = 0u64;
         let mut utxos = Vec::with_capacity(tx.data.inputs.len());
         let mut potential_rbf = false;
 
@@ -102,7 +100,6 @@ impl MempoolTxValidator {
                     .ok_or(MempoolValidationError::MissingOutPoint(*outpoint))?
             };
 
-            // Check ownership
             if utxo.owner != recovered_addr {
                 return Err(MempoolValidationError::OwnershipMismatch {
                     input_index: i,
@@ -115,7 +112,6 @@ impl MempoolTxValidator {
             utxos.push(utxo);
         }
 
-        // Check total_input_value >= sum of outputs
         let outputs_sum: u64 = tx.data.outputs.iter().map(|o| o.value).sum();
         if total_input_value < outputs_sum {
             return Err(MempoolValidationError::InsufficientSum {

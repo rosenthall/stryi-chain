@@ -76,21 +76,16 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
     /// Prints a welcome message with the current consensus engine state and some settings.
     /// Meant to be called once on startup.
     pub fn startup_message(&self) {
-        // print some info about consensus engine state
         info!("Welcome from Stryi Consensus Engine!");
-
-        // print some info about consensus engine state
         info!("Current consensus engine state:");
 
         let mut table = Table::new();
         table.load_preset(ASCII_FULL);
         table.set_header(vec!["Key", "Value"]);
 
-        // Database implementation
         let database_impl = std::any::type_name::<DB>();
         table.add_row(vec!["Database implementation", &database_impl]);
 
-        // tip info
         let (tip_height, tip_hash, tip_work) = match self.chain_index.tip() {
             Some((h, hh, w)) => (h.to_string(), hh.to_string(), w.to_string()),
             None => ("N/A".to_string(), "N/A".to_string(), "0".to_string()),
@@ -100,7 +95,6 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         table.add_row(vec!["Tip hash", &tip_hash]);
         table.add_row(vec!["Tip cumulative work", &tip_work]);
 
-        // consensus consts (separately one by one)
         let (adjustment_interval_blocks, initial_subsidy, decay_interval, decay_step) = (
             self.consensus_consts.difficulty_adjustment_interval_blocks,
             self.consensus_consts.initial_subsidy,
@@ -116,7 +110,6 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         table.add_row(vec!["Decay interval (blocks)", &decay_interval.to_string()]);
         table.add_row(vec!["Decay step", &decay_step.to_string()]);
 
-        // Print table as a single info log
         info!("\n{}", table);
     }
 
@@ -127,13 +120,11 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
     /// Walks from the stored tip back to genesis and fills `ChainIndex`.
     /// May return an error if chain refers to unknown block, or if refers to block that has no BlockUndo saved
     async fn build_chain_index(db: Arc<RwLock<DB>>) -> Result<ChainIndex, StryiCoreError> {
-        // hold lock on db
         let db = db.read().await;
         info!("Starting collecting chain index!");
 
         let mut blocks = Vec::new();
 
-        // try to get the latest block
         let (_, mut cursor_hash) = db.tip().await.map_err(|e| {
             StryiCoreError::storage(
                 StorageLayer::Block,
@@ -141,28 +132,23 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
             )
         })?;
 
-        // iterate from the tip to the genesis
         loop {
             let block = match db.get_block_by_hash(cursor_hash).await {
-                // Error
                 Err(e) => Err(StryiCoreError::storage(
                     StorageLayer::Block,
                     format!(
                         "Unexpected error while trying to get block {cursor_hash} in storage: {e}"
                     ),
                 )),
-                // No error but no such block found
                 Ok(None) => Err(StryiCoreError::storage(
                     StorageLayer::Block,
                     format!("Cannot find block {cursor_hash} in persistent storage"),
                 )),
-                // OK
                 Ok(Some(block)) => Ok(block),
             }?;
 
             blocks.push(block.clone());
 
-            // Check if this block has undo
             // NOTE: Maybe I should cache UNDOs at this point to avoid repeated storage reads ?
             if block.header.height != 0 {
                 let _undo = match db.get_block_undo(block.block_hash()).await {
@@ -180,7 +166,6 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
                 }?;
             }
 
-            // Stop when genesis
             if block.header.height == 0 {
                 break;
             }
@@ -190,10 +175,8 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
 
         blocks.reverse();
 
-        // initialize index
         let mut index = ChainIndex::new();
 
-        // calculate cumulative work and insert entries to the index
         let mut cumulative_work: u128 = 0;
         for block in blocks {
             cumulative_work += 1u128 << block.header.difficulty_bits;
@@ -232,18 +215,15 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         let (_tip_height, tip_hash, tip_work) = self.chain_index.tip().expect("Must be a tip");
         assert_eq!(tip_hash, parent);
 
-        // validate
         let read_db = self.db.read().await;
         if let Err(e) = self.block_validator.validate(&block, &*read_db).await {
             return Ok(ConsensusVerdict::Rejected(e));
         }
         drop(read_db);
 
-        // compute work
         let block_work = 1u128 << block.header.difficulty_bits;
         let cumulative_work = tip_work + block_work;
 
-        // apply to storage
         {
             let mut write_db = self.db.write().await;
 
@@ -264,7 +244,6 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
                 .map_err(|e| StryiCoreError::storage(StorageLayer::Undo, e.to_string()))?;
         }
 
-        // update index
         self.chain_index.insert(&block, cumulative_work);
 
         Ok(ConsensusVerdict::Applied {
@@ -287,7 +266,6 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
     ) -> Result<ForkDbOverlay<'a, DB>, StryiCoreError> {
         let mut overlay = ForkDbOverlay::new(db, lca_work);
 
-        // collect block hashes from tip down to (but not including) the LCA
         let mut to_rewind = Vec::new();
         let (_, mut cursor, _) = self.chain_index.tip().expect("Must have a tip");
         while cursor != lca {
@@ -332,7 +310,6 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
             StryiCoreError::consensus_chain_selection("LCA not found in chain index")
         })?;
 
-        // build overlay rewound to LCA state, then validate against it
         {
             let read_db = self.db.read().await;
             let overlay = self.build_fork_overlay(&*read_db, lca, lca_work).await?;
@@ -380,7 +357,6 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
             hash, fork_root, parent
         );
 
-        // look up the existing fork by its current tip (= this block's parent)
         let entry = self.forks.get(&parent).ok_or_else(|| {
             StryiCoreError::consensus_chain_selection("Fork entry not found for parent")
         })?;
@@ -390,7 +366,6 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
             StryiCoreError::consensus_chain_selection("Fork LCA not found in chain index")
         })?;
 
-        // build overlay rewound to LCA, replay existing fork blocks, then validate new block
         {
             let read_db = self.db.read().await;
             let mut overlay = self.build_fork_overlay(&*read_db, lca, lca_work).await?;
@@ -412,15 +387,12 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
             }
         }
 
-        // compute updated fork work
         let block_work = 1u128 << block.header.difficulty_bits;
         let fork_work = entry.cumulative_work + block_work;
 
-        // build updated blocks list
         let mut fork_blocks = entry.blocks.clone();
         fork_blocks.push(block.clone());
 
-        // remove old entry, check reorg
         self.forks.remove(&parent);
 
         let (_, _, canonical_work) = self.chain_index.tip().expect("Must have a tip");

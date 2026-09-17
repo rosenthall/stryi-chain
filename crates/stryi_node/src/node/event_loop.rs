@@ -55,7 +55,6 @@ pub struct EventLoop {
 impl EventLoop {
     /// Start The Main Loop Of The Node
     pub async fn run(self) -> Result<(), StryiNodeError> {
-        // Destruct it
         let EventLoop {
             storage,
             mempool,
@@ -74,23 +73,19 @@ impl EventLoop {
             cancellation_token: cancel_token,
         } = self;
 
-        // Node is synced at this point, we have to mark services as ready
         *grpc_is_ready.write().await = true;
         *http_is_ready.write().await = true;
         info!("Node synchronized. HTTP and gRPC services are now ready.");
 
         let peer_id = http_service_config.peer_id;
 
-        // unpack miner bridge
         let mut mined_blocks_receiver = miner_bridge.map(|mb| mb.mined_blocks_receiver);
 
-        // clone once per task
         let storage_for_http = Arc::clone(&storage);
         let storage_for_grpc = Arc::clone(&storage);
         let grpc_cert_pem = tls_identity.cert_pem.clone();
         let grpc_key_pem = tls_identity.key_pem.clone();
 
-        // http server future
         let tx_broadcaster = crate::http::TxBroadcaster::new(net_cmd.clone());
         let http_cancel = cancel_token.child_token();
         let http_fut = async {
@@ -105,7 +100,6 @@ impl EventLoop {
             .await
         };
 
-        // gRPC server future
         let grpc_cancel = cancel_token.child_token();
         let grpc_fut = async {
             let service_impl = StryiSyncService {
@@ -138,7 +132,6 @@ impl EventLoop {
                 .await
         };
 
-        // Register gRPC and HTTP service in ServiceRecords
         {
             let grpc_record = ServiceRecord::new(
                 grpc_advertise_address,
@@ -164,7 +157,6 @@ impl EventLoop {
                 let (respond_to, receive_here) =
                     oneshot::channel::<Result<(), StryiNetworkError>>();
 
-                // call NetworkCommand::AddService
                 net_cmd
                     .send(NetworkCommand::AddService {
                         service: service.clone(),
@@ -226,7 +218,6 @@ impl EventLoop {
             }
         };
 
-        // create some clones
         let sync_semaphore = Arc::new(Semaphore::new(1));
         let event_cancel = cancel_token.child_token();
         let mempool_for_events = Arc::clone(&mempool);
@@ -274,7 +265,6 @@ impl EventLoop {
                         info!("Transactions: {}", mined_block.data.transactions.len());
                         info!("=========================================");
 
-                        // Try to apply locally mined block
                         let mut engine = consensus_engine.lock().await;
                         match engine.on_block(mined_block.clone()).await {
                             Ok(verdict) => {
@@ -286,8 +276,6 @@ impl EventLoop {
                                     _ => None,
                                 };
 
-
-                                // If the block was accepted - propagate it to other nodes and send a tip announcement
                                 if matches!(verdict,ConsensusVerdict::Applied { .. } | ConsensusVerdict::CausedReorganization { .. }) {
                                     let is_reorg = matches!(verdict, ConsensusVerdict::CausedReorganization { .. });
                                     let tip_ann = if is_reorg { build_tip_announcement(&engine) } else { None };
@@ -305,7 +293,6 @@ impl EventLoop {
                                     pool.update_on_block(mined_block.data.clone());
                                     drop(pool);
 
-                                    // wrap it to BroadCastBlock
                                     let wrapped = BroadcastBlock::new(mined_block, peer_id);
                                     let (respond_to, rx) = oneshot::channel();
                                     let _ = net_cmd.send(NetworkCommand::PublishBlock { block: wrapped, respond_to }).await;
@@ -435,8 +422,6 @@ impl EventLoop {
                                         ann.cumulative_work, local_work
                                     );
                                 } else {
-
-                                    // acquire lock
                                     let permit = match Arc::clone(&sync_semaphore).try_acquire_owned() {
                                         Ok(p) => p,
                                         Err(_) => {
