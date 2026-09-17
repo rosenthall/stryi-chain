@@ -131,7 +131,7 @@ impl Block {
 
     /// Creates a genesis block from the provided initial balances.
     /// `wanted_balances` maps each `AccountAddress` to its starting balance.
-    /// The balances are converted into transaction outputs and sorted in descending order.
+    /// Outputs are sorted by descending balance, then ascending address bytes for ties.
     /// The Merkle root is computed from the resulting genesis transaction.
     pub fn new_genesis(
         version: u16,
@@ -141,11 +141,10 @@ impl Block {
         // convert balances to TxOuts
         let mut tx_outs: Vec<TransactionOut> = vec![];
 
-        // sort by highest balance
         let mut wanted_balances_vec: Vec<(AccountAddress, u64)> =
             wanted_balances.into_iter().collect();
 
-        wanted_balances_vec.sort_by(|a, b| b.1.cmp(&a.1));
+        wanted_balances_vec.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.data.cmp(&b.0.data)));
 
         for (account_address, balance) in wanted_balances_vec {
             tx_outs.push(TransactionOut {
