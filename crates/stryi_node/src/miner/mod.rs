@@ -196,7 +196,10 @@ impl StryiMiner {
         let subsidy = self.backend.block_subsidy(next_height);
         let coinbase_tx = Transaction::new_unsigned(TransactionData {
             version: self.cfg.block_version,
-            kind: TransactionKind::Coinbase,
+            kind: TransactionKind::Coinbase {
+                height: next_height,
+                parent: latest_block_hash,
+            },
             inputs: vec![],
             outputs: vec![TransactionOut {
                 value: subsidy,

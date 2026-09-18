@@ -43,7 +43,7 @@ impl UtxoProcessor {
 
         for tx in &block.data.transactions {
             match tx.data.kind {
-                TransactionKind::Genesis | TransactionKind::Coinbase => {
+                TransactionKind::Genesis | TransactionKind::Coinbase { .. } => {
                     created_outpoints.extend(self.put_outputs(tx, utxo_storage).await?);
                 }
                 TransactionKind::Payment => {

@@ -623,7 +623,10 @@ mod tests {
         let coinbase_tx = Transaction {
             data: TransactionData {
                 version: 1,
-                kind: TransactionKind::Coinbase,
+                kind: TransactionKind::Coinbase {
+                    height: 1,
+                    parent: BlockHash::empty(),
+                },
                 inputs: vec![],
                 outputs: vec![TransactionOut {
                     value: 50,

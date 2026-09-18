@@ -32,10 +32,12 @@ pub(crate) fn make_coinbase_tx(
     signing_key: &SigningKey,
     reward: u64,
     recipient: AccountAddress,
+    height: u64,
+    parent: BlockHash,
 ) -> Transaction {
     let data = TransactionData {
         version: 1,
-        kind: TransactionKind::Coinbase,
+        kind: TransactionKind::Coinbase { height, parent },
         inputs: vec![],
         outputs: vec![TransactionOut {
             value: reward,

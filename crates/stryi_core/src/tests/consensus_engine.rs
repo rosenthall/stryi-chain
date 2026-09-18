@@ -30,7 +30,13 @@ async fn test_on_block_rejects_block_with_overspending_transaction() {
     let (genesis, db) = make_test_genesis(&[(alice_addr, 1_000)], consts);
     let mut engine = make_engine(db, consts).await;
 
-    let coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(1), miner_addr);
+    let coinbase = make_coinbase_tx(
+        &miner_key,
+        consts.block_subsidy(1),
+        miner_addr,
+        1,
+        genesis.block_hash(),
+    );
     // Alice has 1000 but tries to send 1200
     let overspend_tx = make_payment_tx(
         &alice_key,
@@ -70,7 +76,13 @@ async fn test_on_block_rejects_block_with_wrong_owner() {
     let (genesis, db) = make_test_genesis(&[(alice_addr, 100_000)], consts);
     let mut engine = make_engine(db, consts).await;
 
-    let coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(1), miner_addr);
+    let coinbase = make_coinbase_tx(
+        &miner_key,
+        consts.block_subsidy(1),
+        miner_addr,
+        1,
+        genesis.block_hash(),
+    );
     // Bob tries to spend Alice's UTXO
     let theft_tx = make_payment_tx(
         &bob_key,
@@ -107,7 +119,7 @@ async fn test_on_block_buffers_weaker_fork() {
     // build a 3-block canonical chain
     let mut prev = genesis.block_hash();
     for h in 1..=3 {
-        let coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(h), miner_addr);
+        let coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(h), miner_addr, h, prev);
         let block = make_block_mined(
             vec![coinbase],
             h,
@@ -123,7 +135,13 @@ async fn test_on_block_buffers_weaker_fork() {
     }
 
     // submit a fork block at height 1 branching from genesis (weaker than the 3-block chain)
-    let fork_coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(1), miner_addr);
+    let fork_coinbase = make_coinbase_tx(
+        &miner_key,
+        consts.block_subsidy(1),
+        miner_addr,
+        1,
+        genesis.block_hash(),
+    );
     let fork_block = make_block_mined(
         vec![fork_coinbase],
         1,
@@ -143,7 +161,13 @@ async fn test_on_block_causes_reorganization_when_fork_is_heavier() {
     let mut engine = make_engine(db, consts).await;
 
     // build 1-block canonical chain
-    let canonical_coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(1), miner_addr);
+    let canonical_coinbase = make_coinbase_tx(
+        &miner_key,
+        consts.block_subsidy(1),
+        miner_addr,
+        1,
+        genesis.block_hash(),
+    );
     let canonical_block = make_block_mined(
         vec![canonical_coinbase],
         1,
@@ -155,7 +179,13 @@ async fn test_on_block_causes_reorganization_when_fork_is_heavier() {
     assert!(matches!(v, ConsensusVerdict::Applied { .. }));
 
     // build 2-block fork from genesis (total fork work > canonical work triggers reorg)
-    let fork1_coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(1), miner_addr);
+    let fork1_coinbase = make_coinbase_tx(
+        &miner_key,
+        consts.block_subsidy(1),
+        miner_addr,
+        1,
+        genesis.block_hash(),
+    );
     let fork1 = make_block_mined(
         vec![fork1_coinbase],
         1,
@@ -167,7 +197,13 @@ async fn test_on_block_causes_reorganization_when_fork_is_heavier() {
     let v = engine.on_block(fork1.clone()).await.unwrap();
     assert_eq!(v, ConsensusVerdict::Buffered);
 
-    let fork2_coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(2), miner_addr);
+    let fork2_coinbase = make_coinbase_tx(
+        &miner_key,
+        consts.block_subsidy(2),
+        miner_addr,
+        2,
+        fork1.block_hash(),
+    );
     let fork2 = make_block_mined(
         vec![fork2_coinbase],
         2,
@@ -213,6 +249,54 @@ fn make_test_block(
     panic!("Failed to mine test block within {MAX_ATTEMPTS} attempts for {difficulty_bits} difficulty bits");
 }
 
+#[tokio::test]
+async fn coinbase_rewards_remain_distinct_and_undo_preserves_previous_reward() {
+    use crate::storage::UndoStorage;
+    use crate::transactions::UtxoProcessor;
+
+    let consts = ConsensusConsts::default();
+    let (key, miner) = keypair_from_seed(0);
+    let (_, alice) = keypair_from_seed(1);
+    let (genesis, db) = make_test_genesis(&[(alice, 100_000)], consts);
+    let mut engine = make_engine(db, consts).await;
+    let mut parent = genesis.block_hash();
+    let mut reward_ids = Vec::new();
+    for height in 1..=2 {
+        let tx = make_coinbase_tx(&key, consts.block_subsidy(height), miner, height, parent);
+        reward_ids.push(tx.data.hash());
+        let block = make_test_block(
+            vec![tx],
+            height,
+            consts.difficulty_bits_for_height(height),
+            parent,
+        );
+        parent = block.block_hash();
+        assert!(matches!(
+            engine.on_block(block).await.unwrap(),
+            ConsensusVerdict::Applied { .. }
+        ));
+    }
+    assert_ne!(reward_ids[0], reward_ids[1]);
+    let mut db = engine.db.write().await;
+    let rewards = db.get_utxos_for_address(miner).await.unwrap();
+    assert_eq!(rewards.len(), 2);
+    assert_eq!(
+        rewards.values().map(|u| u.value).sum::<u64>(),
+        2 * consts.block_subsidy(1)
+    );
+    let undo = db.get_block_undo(parent).await.unwrap().unwrap();
+    UtxoProcessor::new()
+        .rewind_block(undo, &mut *db)
+        .await
+        .unwrap();
+    let remaining = db.get_utxos_for_address(miner).await.unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert!(remaining.contains_key(&OutPoint {
+        txid: reward_ids[0],
+        vout: 0
+    }));
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct EngineSnapshot {
     tip: Option<(u64, BlockHash, u128)>,
@@ -242,8 +326,8 @@ fn test_validate_block_structure_scenarios() {
     let (alice_key, _alice_addr) = keypair_from_seed(1);
     let (_, bob_addr) = keypair_from_seed(2);
 
-    let coinbase1 = make_coinbase_tx(&miner_key, 50_000, miner_addr);
-    let coinbase2 = make_coinbase_tx(&alice_key, 25_000, bob_addr);
+    let coinbase1 = make_coinbase_tx(&miner_key, 50_000, miner_addr, 1, BlockHash::empty());
+    let coinbase2 = make_coinbase_tx(&alice_key, 25_000, bob_addr, 1, BlockHash::empty());
     let dummy_op = OutPoint {
         txid: TransactionHash::new(&[0u8; 32]),
         vout: 0,
@@ -317,7 +401,7 @@ async fn test_on_block_rejects_canonical_blocks_with_extra_minting_txs() {
     let cases = [
         (
             "extra Coinbase transaction",
-            make_coinbase_tx(&alice_key, 1_000, alice_addr),
+            make_coinbase_tx(&alice_key, 1_000, alice_addr, 1, BlockHash::empty()),
             "Block cannot contain multiple Coinbase transactions (extra Coinbase at index 1)",
         ),
         (
@@ -332,7 +416,13 @@ async fn test_on_block_rejects_canonical_blocks_with_extra_minting_txs() {
         let mut engine = make_engine(db, consts).await;
         let snapshot_before = capture_snapshot(&engine, alice_addr, miner_addr).await;
 
-        let coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(1), miner_addr);
+        let coinbase = make_coinbase_tx(
+            &miner_key,
+            consts.block_subsidy(1),
+            miner_addr,
+            1,
+            genesis.block_hash(),
+        );
         let block = make_test_block(
             vec![coinbase, extra_tx],
             1,
@@ -366,7 +456,7 @@ async fn test_on_block_rejects_fork_block_with_additional_coinbase() {
 
     let mut prev = genesis.block_hash();
     for h in 1..=2 {
-        let coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(h), miner_addr);
+        let coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(h), miner_addr, h, prev);
         let block = make_test_block(
             vec![coinbase],
             h,
@@ -381,8 +471,14 @@ async fn test_on_block_rejects_fork_block_with_additional_coinbase() {
     let snapshot_before = capture_snapshot(&engine, alice_addr, miner_addr).await;
 
     // Fork block branches from genesis (known canonical ancestor that is not current tip).
-    let fork_coinbase1 = make_coinbase_tx(&miner_key, consts.block_subsidy(1), miner_addr);
-    let fork_coinbase2 = make_coinbase_tx(&alice_key, 1_000, alice_addr);
+    let fork_coinbase1 = make_coinbase_tx(
+        &miner_key,
+        consts.block_subsidy(1),
+        miner_addr,
+        1,
+        genesis.block_hash(),
+    );
+    let fork_coinbase2 = make_coinbase_tx(&alice_key, 1_000, alice_addr, 1, BlockHash::empty());
     let fork_block = make_test_block(
         vec![fork_coinbase1, fork_coinbase2],
         1,

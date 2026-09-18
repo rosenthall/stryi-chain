@@ -181,7 +181,7 @@ pub struct TransactionQueryResponse {
 impl From<TransactionKind> for TransactionKindResponse {
     fn from(value: TransactionKind) -> Self {
         match value {
-            TransactionKind::Coinbase => Self::Coinbase,
+            TransactionKind::Coinbase { .. } => Self::Coinbase,
             TransactionKind::Genesis => Self::Genesis,
             TransactionKind::Payment => Self::Payment,
         }

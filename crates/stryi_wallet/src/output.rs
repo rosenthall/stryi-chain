@@ -76,7 +76,7 @@ pub(crate) fn print_block_detail(hash: &str, block: &Block) {
     for (i, tx) in txs.iter().enumerate() {
         let tx_hash = tx.data.hash();
         let kind_label = match tx.data.kind {
-            TransactionKind::Coinbase => "Coinbase".yellow(),
+            TransactionKind::Coinbase { .. } => "Coinbase".yellow(),
             TransactionKind::Genesis => "Genesis".green(),
             TransactionKind::Payment => "Payment".white(),
         };

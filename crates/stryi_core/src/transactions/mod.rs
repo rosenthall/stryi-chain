@@ -32,7 +32,11 @@ pub enum TransactionKind {
     /// Coinbase is a type of transaction that is used to reward the miner of the last block.
     /// Coinbase transactions are always the very first in each block except for the Genesis block.
     /// It also forbids any inputs in the transaction and must contain exactly one output.
-    Coinbase,
+    /// Height and parent are hashed into the txid and must match the containing block.
+    Coinbase {
+        height: u64,
+        parent: crate::block::BlockHash,
+    },
 
     /// Genesis transaction is a unique transaction that happens only in the Genesis Block.
     /// It is used to define initial account balances.
@@ -99,7 +103,7 @@ impl Transaction {
     /// Genesis and coinbase are carried unsigned, so signature checks skip them.
     /// For payment-txs it may return (`StryiCoreError::InvalidSignature`)
     pub fn verify_signature(&self, verifying_key: &VerifyingKey) -> Result<(), StryiCoreError> {
-        if self.data.kind == Genesis || self.data.kind == Coinbase {
+        if matches!(self.data.kind, Genesis | Coinbase { .. }) {
             return Ok(());
         }
 

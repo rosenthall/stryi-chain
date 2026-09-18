@@ -235,10 +235,10 @@ impl Block {
         }
 
         let first_tx = self.data.transactions.first()?;
-        if first_tx.data.kind != TransactionKind::Coinbase {
+        if !matches!(first_tx.data.kind, TransactionKind::Coinbase { .. }) {
             return None;
         }
-        debug_assert_eq!(first_tx.data.kind, TransactionKind::Coinbase);
+        debug_assert!(matches!(first_tx.data.kind, TransactionKind::Coinbase { .. }));
 
         if first_tx.data.outputs.len() != 1 {
             return None;
@@ -332,7 +332,10 @@ mod tests {
         let miner = AccountAddress::new(&[7u8; 20]);
         let coinbase = Transaction::new_unsigned(TransactionData {
             version: 1,
-            kind: TransactionKind::Coinbase,
+            kind: TransactionKind::Coinbase {
+                height: 1,
+                parent: BlockHash::empty(),
+            },
             inputs: vec![],
             outputs: vec![TransactionOut {
                 value: 50,

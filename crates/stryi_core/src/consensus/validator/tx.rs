@@ -33,7 +33,7 @@ pub async fn validate_transaction(
 ) -> Result<(), StryiCoreError> {
     match tx.data.kind {
         TransactionKind::Genesis => validate_genesis_tx(tx),
-        TransactionKind::Coinbase => validate_coinbase_tx(tx),
+        TransactionKind::Coinbase { .. } => validate_coinbase_tx(tx),
         TransactionKind::Payment => validate_payment_tx(tx, managed, in_block, spent).await,
     }
 }

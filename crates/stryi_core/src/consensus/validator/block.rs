@@ -15,6 +15,26 @@ pub fn validate_block_structure(block: &Block) -> Result<(), StryiCoreError> {
     ensure_unique_txs(block)?;
     ensure_transaction_composition(block)?;
     ensure_unique_inputs(&block.data)?;
+    ensure_coinbase_context(block)?;
+    Ok(())
+}
+
+fn ensure_coinbase_context(block: &Block) -> Result<(), StryiCoreError> {
+    if block.header.is_genesis() {
+        return Ok(());
+    }
+
+    let (height, parent) = match block.data.transactions.first().map(|tx| &tx.data.kind) {
+        Some(TransactionKind::Coinbase { height, parent }) => (*height, *parent),
+        // Missing or misplaced Coinbase is rejected by ensure_transaction_composition.
+        _ => return Ok(()),
+    };
+
+    if height != block.header.height || parent != block.header.previous_block_hash {
+        return Err(StryiCoreError::ConsensusValidationFailed {
+            details: "Coinbase height and parent must match the block header".into(),
+        });
+    }
     Ok(())
 }
 
@@ -50,7 +70,7 @@ fn ensure_transaction_composition(block: &Block) -> Result<(), StryiCoreError> {
         });
     }
 
-    if first.data.kind != TransactionKind::Coinbase {
+    if !matches!(first.data.kind, TransactionKind::Coinbase { .. }) {
         return Err(StryiCoreError::ConsensusValidationFailed {
             details: "First transaction must be a Coinbase transaction".into(),
         });
@@ -60,7 +80,7 @@ fn ensure_transaction_composition(block: &Block) -> Result<(), StryiCoreError> {
         let idx = offset + 1;
         match tx.data.kind {
             TransactionKind::Payment => {}
-            TransactionKind::Coinbase => {
+            TransactionKind::Coinbase { .. } => {
                 return Err(StryiCoreError::ConsensusValidationFailed {
                     details: format!(
                         "Block cannot contain multiple Coinbase transactions (extra Coinbase at index {idx})"

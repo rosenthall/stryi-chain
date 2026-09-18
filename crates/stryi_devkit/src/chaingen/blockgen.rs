@@ -56,7 +56,10 @@ impl ChainGenerator {
 
         let coinbase_tx = Transaction::new_unsigned(TransactionData {
             version: 0,
-            kind: TransactionKind::Coinbase,
+            kind: TransactionKind::Coinbase {
+                height: distributor_chain_height,
+                parent: prev_block.block_hash(),
+            },
             inputs: vec![],
             outputs: vec![TransactionOut {
                 value: subsidy,
@@ -139,7 +142,10 @@ impl ChainGenerator {
         // Start with a coinbase transaction
         let coinbase_tx = Transaction::new_unsigned(TransactionData {
             version: 0,
-            kind: TransactionKind::Coinbase,
+            kind: TransactionKind::Coinbase {
+                height,
+                parent: prev.block_hash(),
+            },
             inputs: vec![],
             outputs: vec![TransactionOut {
                 value: subsidy,

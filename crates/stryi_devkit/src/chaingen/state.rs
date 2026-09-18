@@ -331,7 +331,7 @@ impl GenerationState {
         // Add outputs as new UTXOs
         for tx in txs.iter() {
             let tx_id = tx.data.hash();
-            let is_coinbase = tx.data.kind == TransactionKind::Coinbase;
+            let is_coinbase = matches!(tx.data.kind, TransactionKind::Coinbase { .. });
 
             for (idx, output) in tx.data.outputs.iter().enumerate() {
                 let owner: AccountAddress = output.recipient;

@@ -36,7 +36,13 @@ async fn test_apply_block_creates_utxos_and_returns_undo() {
     let (alice_key, alice_addr) = keypair_from_seed(1);
     let (genesis, mut db) = make_test_genesis(&[(alice_addr, 50_000)], consts);
 
-    let coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(1), miner_addr);
+    let coinbase = make_coinbase_tx(
+        &miner_key,
+        consts.block_subsidy(1),
+        miner_addr,
+        1,
+        genesis.block_hash(),
+    );
     let payment = make_payment_tx(
         &alice_key,
         vec![genesis_outpoint(&genesis)],
@@ -87,7 +93,13 @@ async fn test_rewind_block_restores_previous_state() {
 
     let alice_op = genesis_outpoint(&genesis);
 
-    let coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(1), miner_addr);
+    let coinbase = make_coinbase_tx(
+        &miner_key,
+        consts.block_subsidy(1),
+        miner_addr,
+        1,
+        genesis.block_hash(),
+    );
     let payment = make_payment_tx(&alice_key, vec![alice_op], vec![(40_000, miner_addr)]);
 
     let block = make_block_mined(
