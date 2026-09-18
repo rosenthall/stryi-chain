@@ -117,6 +117,20 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         self.chain_index.tip()
     }
 
+    fn validate_height(&self, block: &Block) -> bool {
+        let parent = block.header.previous_block_hash;
+        self.chain_index
+            .height(&parent)
+            .or_else(|| {
+                self.forks
+                    .get(&parent)?
+                    .blocks
+                    .last()
+                    .map(|b| b.header.height)
+            })
+            .is_none_or(|height| height.checked_add(1) == Some(block.header.height))
+    }
+
     /// Walks from the stored tip back to genesis and fills `ChainIndex`.
     /// May return an error if chain refers to unknown block, or if refers to block that has no BlockUndo saved
     async fn build_chain_index(db: Arc<RwLock<DB>>) -> Result<ChainIndex, StryiCoreError> {
@@ -556,6 +570,14 @@ impl<DB: FullNodeStorage> ConsensusEngine for StryiConsensusEngine<DB> {
                 block.block_hash(),
                 block_disposition
             );
+
+            if !self.validate_height(&block) {
+                return Ok(ConsensusVerdict::Rejected(
+                    StryiCoreError::ConsensusValidationFailed {
+                        details: "Block height must follow its parent".into(),
+                    },
+                ));
+            }
 
             match block_disposition {
                 BlockDisposition::Known { location } => self.handle_known(block, location).await,
