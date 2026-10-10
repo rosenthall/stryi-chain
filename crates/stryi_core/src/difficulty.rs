@@ -3,9 +3,156 @@ use crate::block::{Block, BlockHeader};
 use crate::consensus::ConsensusConsts;
 use crate::error::StorageLayer;
 use crate::storage::{BlockStorage, StorageStats};
+use crypto_bigint::{CheckedAdd, NonZero};
 use futures::future::{BoxFuture, ready};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+mod asert;
+pub use asert::asert_upper;
+
+pub use crypto_bigint::U256 as HashThreshold;
+pub use crypto_bigint::U512 as ChainWork;
+
+// H <= target accepts target + 1 hashes, so work is
+// floor(2^256 / (target + 1)), the inverse success probability.
+pub fn block_work(target: &HashThreshold) -> ChainWork {
+    let space = ChainWork::ONE.shl_vartime(256);
+    // Widen before adding one so HashThreshold::MAX + 1 does not wrap.
+    let target: ChainWork = target.resize();
+    let divisor = NonZero::<ChainWork>::new_unwrap(target + ChainWork::ONE);
+    space / divisor
+}
+
+pub fn add_work(parent: ChainWork, work: ChainWork) -> Result<ChainWork, StryiCoreError> {
+    parent
+        .checked_add(&work)
+        .into_option()
+        .ok_or_else(|| StryiCoreError::consensus_chain_selection("chain work overflow"))
+}
+
+// Numeric wire codecs stay little-endian, independently of the big-endian
+// raw hash digest used for the PoW comparison.
+pub fn threshold_from_bytes(bytes: &[u8]) -> Result<HashThreshold, &'static str> {
+    if bytes.len() != 32 {
+        return Err("hash_threshold must contain exactly 32 bytes");
+    }
+    Ok(HashThreshold::from_le_slice(bytes))
+}
+
+pub fn threshold_to_bytes(value: &HashThreshold) -> [u8; 32] {
+    value.to_le_bytes().into()
+}
+
+pub fn chain_work_from_bytes(bytes: &[u8]) -> Result<ChainWork, &'static str> {
+    if bytes.len() != 64 {
+        return Err("chain_work must contain exactly 64 bytes");
+    }
+    Ok(ChainWork::from_le_slice(bytes))
+}
+
+pub fn chain_work_to_bytes(value: &ChainWork) -> [u8; 64] {
+    value.to_le_bytes().into()
+}
+
+#[cfg(test)]
+mod pow_number_tests {
+    use super::*;
+
+    #[test]
+    fn test_block_work() {
+        let half = HashThreshold::ONE.shl_vartime(255);
+        let quarter = HashThreshold::ONE.shl_vartime(254);
+        for (target, expected) in [
+            (HashThreshold::ZERO, ChainWork::ONE.shl_vartime(256)),
+            (HashThreshold::ONE, ChainWork::ONE.shl_vartime(255)),
+            (
+                HashThreshold::from(2u64),
+                ChainWork::from_be_hex(concat!(
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                    "5555555555555555555555555555555555555555555555555555555555555555"
+                )),
+            ),
+            (quarter - HashThreshold::ONE, ChainWork::from(4u64)),
+            (quarter, ChainWork::from(3u64)),
+            (half - HashThreshold::ONE, ChainWork::from(2u64)),
+            (half, ChainWork::ONE),
+            (half + HashThreshold::ONE, ChainWork::ONE),
+            (HashThreshold::MAX - HashThreshold::ONE, ChainWork::ONE),
+            (HashThreshold::MAX, ChainWork::ONE),
+        ] {
+            assert_eq!(block_work(&target), expected, "target {target:?}");
+        }
+    }
+
+    #[test]
+    fn test_add_work() {
+        let work = ChainWork::ONE.shl_vartime(255);
+        assert_eq!(
+            add_work(work, work).unwrap(),
+            ChainWork::ONE.shl_vartime(256)
+        );
+        assert_eq!(
+            add_work(ChainWork::MAX, ChainWork::ZERO).unwrap(),
+            ChainWork::MAX
+        );
+        assert_eq!(
+            add_work(ChainWork::MAX, ChainWork::ONE),
+            Err(StryiCoreError::consensus_chain_selection(
+                "chain work overflow"
+            ))
+        );
+    }
+
+    #[test]
+    fn test_threshold_bytes() {
+        let value = HashThreshold::ONE.shl_vartime(255) + HashThreshold::from(258u64);
+        let mut bytes = [0; 32];
+        bytes[..2].copy_from_slice(&[2, 1]);
+        bytes[31] = 0x80;
+        for (value, bytes) in [
+            (HashThreshold::ZERO, [0; 32]),
+            (value, bytes),
+            (HashThreshold::MAX, [0xff; 32]),
+        ] {
+            assert_eq!(threshold_from_bytes(&bytes).unwrap(), value);
+            assert_eq!(threshold_to_bytes(&value), bytes);
+        }
+        for n in [0, 1, 31, 33, 64] {
+            assert_eq!(
+                threshold_from_bytes(&vec![0; n]),
+                Err("hash_threshold must contain exactly 32 bytes"),
+                "length {n}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_chain_work_bytes() {
+        let value = ChainWork::ONE.shl_vartime(511)
+            + ChainWork::ONE.shl_vartime(256)
+            + ChainWork::from(258u64);
+        let mut bytes = [0; 64];
+        bytes[..2].copy_from_slice(&[2, 1]);
+        bytes[32] = 1;
+        bytes[63] = 0x80;
+        for (value, bytes) in [
+            (ChainWork::ZERO, [0; 64]),
+            (value, bytes),
+            (ChainWork::MAX, [0xff; 64]),
+        ] {
+            assert_eq!(chain_work_from_bytes(&bytes).unwrap(), value);
+            assert_eq!(chain_work_to_bytes(&value), bytes);
+        }
+        for n in [0, 1, 32, 63, 65] {
+            assert_eq!(
+                chain_work_from_bytes(&vec![0; n]),
+                Err("chain_work must contain exactly 64 bytes"),
+                "length {n}"
+            );
+        }
+    }
+}
 
 /// Async difficulty calculator, returns required bits amount for specified height.
 /// Currently just wraps pure (in a functional programming way) `difficulty_bits_for_height`,

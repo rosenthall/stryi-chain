@@ -5053,6 +5053,7 @@ dependencies = [
  "blake3",
  "comfy-table",
  "criterion",
+ "crypto-bigint",
  "dashmap",
  "futures",
  "hashx",
