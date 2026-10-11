@@ -1,29 +1,30 @@
-use crate::difficulty::DifficultyCalc;
-use crate::storage::UtxoStorage;
-use crate::{
-    block::{Block, meets_difficulty},
-    error::StryiCoreError,
-};
+use crate::block::Block;
+use crate::difficulty::{DifficultyCalc, HashThreshold};
+use crate::error::StryiCoreError;
+use crate::storage::{BlockStorage, verify_genesis_work_shape};
 use tracing::trace;
 
 /// Runs all header-level consensus rules.
 /// NOTE:
 /// - This function is async because difficulty calculation may depend
 ///   on chain state and require async access.
-pub async fn validate_header<DB>(
+pub async fn validate_header<STATE>(
     block: &Block,
-    calc: &DifficultyCalc<DB>,
-    state: &DB,
+    calc: &DifficultyCalc,
+    state: &STATE,
 ) -> Result<(), StryiCoreError>
 where
-    DB: UtxoStorage + Send + Sync + 'static,
+    STATE: BlockStorage + Send + Sync,
 {
     let hash = block.block_hash().to_string();
     trace!("Validating header for block hash {}", hash);
 
-    verify_difficulty_bits(block, calc, state).await?;
+    verify_header_shape(block)?;
+    trace!("Block {} passed header shape verification", hash);
+
+    verify_hash_threshold(block, calc, state).await?;
     trace!(
-        "Block {} passed difficulty verification (the difficulty number is reasonable for current state)",
+        "Block {} passed hash threshold verification (matches the expected threshold for this parent)",
         hash
     );
 
@@ -35,22 +36,42 @@ where
     Ok(())
 }
 
-/// Verifies `header.difficulty_bits` equals to the expected value for the block height.
-async fn verify_difficulty_bits<STATE>(
+/// Verifies genesis shape and requires a positive threshold for normal blocks.
+fn verify_header_shape(block: &Block) -> Result<(), StryiCoreError> {
+    verify_genesis_work_shape(block)?;
+
+    if !block.header.is_genesis() && block.header.hash_threshold == HashThreshold::ZERO {
+        return Err(StryiCoreError::ConsensusValidationFailed {
+            details: "normal block must carry a positive hash threshold (ZERO is genesis-only)"
+                .into(),
+        });
+    }
+
+    Ok(())
+}
+
+/// Verifies `header.hash_threshold` equals the expected value for the block.
+async fn verify_hash_threshold<STATE>(
     block: &Block,
-    difficulty_calc: &DifficultyCalc<STATE>,
+    calc: &DifficultyCalc,
     state: &STATE,
 ) -> Result<(), StryiCoreError>
 where
-    STATE: Send + Sync,
+    STATE: BlockStorage + Send + Sync,
 {
-    let expected_bits = (difficulty_calc)(state, block.header.height).await?;
+    if block.header.is_genesis() {
+        return Ok(());
+    }
 
-    if block.header.difficulty_bits != expected_bits {
+    let expected = calc
+        .next_hash_threshold(state, block.header.previous_block_hash)
+        .await?;
+
+    if block.header.hash_threshold != expected {
         return Err(StryiCoreError::ConsensusValidationFailed {
             details: format!(
-                "Invalid difficulty bits: expected {}, got {}",
-                expected_bits, block.header.difficulty_bits,
+                "Invalid hash threshold: expected {}, got {}",
+                expected, block.header.hash_threshold,
             ),
         });
     }
@@ -58,15 +79,15 @@ where
     Ok(())
 }
 
-/// Ensures the block hash meets the declared target (genesis is always trusted).
+/// Ensures the block hash meets the declared threshold.
 fn verify_proof_of_work(block: &Block) -> Result<(), StryiCoreError> {
     if block.header.is_genesis() {
         return Ok(());
     }
     let hash = block.block_hash();
-    if !meets_difficulty(&hash, block.header.difficulty_bits) {
+    if !hash.meets_threshold(&block.header.hash_threshold) {
         return Err(StryiCoreError::ConsensusValidationFailed {
-            details: "Block does not meet required Proof-of-Work difficulty".into(),
+            details: "Block does not meet required Proof-of-Work threshold".into(),
         });
     }
     Ok(())

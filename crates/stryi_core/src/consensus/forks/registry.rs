@@ -1,4 +1,5 @@
 use crate::block::{Block, BlockHash};
+use crate::difficulty::ChainWork;
 use dashmap::{DashMap, mapref::one::RefMut};
 use tracing::debug;
 
@@ -12,7 +13,7 @@ pub struct ForkEntry {
     pub tip: BlockHash,
 
     /// Cumulative work at the tip
-    pub cumulative_work: u128,
+    pub cumulative_work: ChainWork,
 
     /// Lowest common ancestor with the canonical chain
     pub common_ancestor: BlockHash,

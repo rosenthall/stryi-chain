@@ -86,6 +86,8 @@ impl BlockHash {
         }
     }
 
+    /// Inclusive check: the block hash satisfies the threshold when its
+    /// big-endian integer value is less than or equal to it.
     pub fn meets_threshold(&self, threshold: &U256) -> bool {
         U256::from(*self) <= *threshold
     }
@@ -121,34 +123,31 @@ mod tests {
     }
 
     #[test]
-    fn test_threshold_matches_difficulty() {
-        let mut max = BlockHash::empty();
-        max.data.fill(0xff);
-        let hashes = [BlockHash::empty(), max, BlockHash::new(b"hello world")];
+    fn test_threshold_boundary_be_assertions() {
+        // The comparison reads the raw digest as a big-endian integer, so a
+        // digest equal to the threshold is accepted while threshold + 1 is not.
+        let thresholds = [
+            U256::ZERO,
+            U256::ONE,
+            U256::from(258u64),
+            U256::MAX >> 4,
+            U256::from_be_hex("8000000000000000000000000000000000000000000000000000000000000201"),
+            U256::MAX,
+        ];
 
-        for bits in 0..=u8::MAX {
-            let threshold = U256::MAX >> u32::from(bits);
-            for hash in &hashes {
-                assert_eq!(
-                    hash.meets_threshold(&threshold),
-                    crate::block::meets_difficulty(hash, bits),
-                    "bits = {bits}, hash = {hash}"
-                );
-            }
-
+        for threshold in thresholds {
             let boundary = BlockHash::try_from(threshold.to_be_bytes().as_slice()).unwrap();
-            assert!(boundary.meets_threshold(&threshold), "bits = {bits}");
             assert!(
-                crate::block::meets_difficulty(&boundary, bits),
-                "bits = {bits}"
+                boundary.meets_threshold(&threshold),
+                "boundary value must satisfy its own threshold: {threshold}"
             );
-            if bits > 0 {
+
+            if threshold < U256::MAX {
                 let above =
                     BlockHash::try_from((threshold + U256::ONE).to_be_bytes().as_slice()).unwrap();
-                assert!(!above.meets_threshold(&threshold), "bits = {bits}");
                 assert!(
-                    !crate::block::meets_difficulty(&above, bits),
-                    "bits = {bits}"
+                    !above.meets_threshold(&threshold),
+                    "threshold + 1 must not satisfy the threshold: {threshold}"
                 );
             }
         }

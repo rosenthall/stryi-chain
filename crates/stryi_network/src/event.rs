@@ -386,8 +386,9 @@ impl StryiNetworkManager {
                     }
 
                     manager::BLOCKS_TOPIC_NAME => {
-                        let broadcast_block: BroadcastBlock = postcard::from_bytes(&message.data)
-                            .map_err(StryiNetworkError::DecodeGossipsubMessageError)?;
+                        let broadcast_block: BroadcastBlock =
+                            postcard::from_bytes(&message.data)
+                                .map_err(StryiNetworkError::DecodeGossipsubMessageError)?;
                         debug!(
                             "Received block {} in gossipsub",
                             &broadcast_block.block.block_hash()
@@ -399,11 +400,12 @@ impl StryiNetworkManager {
                     }
 
                     manager::TIPS_TOPIC_NAME => {
-                        let announcement: ChainTipAnnouncement = postcard::from_bytes(&message.data)
-                            .map_err(StryiNetworkError::DecodeGossipsubMessageError)?;
+                        let announcement: ChainTipAnnouncement =
+                            postcard::from_bytes(&message.data)
+                                .map_err(StryiNetworkError::DecodeGossipsubMessageError)?;
                         debug!(
                             "Received chain tip announcement in gossipsub: height={}, work={}",
-                            announcement.height, announcement.cumulative_work
+                            announcement.height, announcement.chain_work
                         );
 
                         self.event_tx

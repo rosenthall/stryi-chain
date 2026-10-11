@@ -1,20 +1,19 @@
 use crate::error::StryiNodeError;
 use crate::grpc::{GRPC_SERVICE_TAG, StryiSyncServiceConfig};
-use crate::grpc_services::ChainInfo;
 use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
 use crate::node::ibd::ingest_ibd_batch;
 use crate::node::lca::find_lca;
-use crate::node::remote_peer::RemotePeer;
+use crate::node::remote_peer::{RemoteChainInfo, RemotePeer};
 use crate::node::{ConnectedNode, SyncedNode};
 use crate::util::extract_tls_verification_host;
 use multiaddr::{Multiaddr, Protocol};
 use std::sync::Arc;
 use std::time::Duration;
-use stryi_core::block::{Block, BlockHash};
+use stryi_core::block::Block;
 use stryi_core::consensus::{
     BlockStorage, BlockValidator, ConsensusConsts, StorageStats, StryiConsensusEngine, UtxoStorage,
 };
-use stryi_core::difficulty::difficulty_calculator_from_consts;
+use stryi_core::difficulty::{ChainWork, DifficultyCalc};
 use stryi_core::transactions::{OutPoint, UTXO, UtxoProcessor};
 use stryi_network::{NetworkCommand, PeerId, ServiceRecord, ServiceTransportSecurity};
 use stryi_storage::{StryiStorage, extract_utxos_from_block};
@@ -154,8 +153,8 @@ impl ConnectedNode {
             lca_height + 1
         };
 
-        let local_work = engine.tip().map(|(_, _, w)| w).unwrap_or(0);
-        let remote_work = remote_chain_info.total_difficulty as u128;
+        let local_work = engine.tip().map(|(_, _, w)| w).unwrap_or(ChainWork::ZERO);
+        let remote_work = remote_chain_info.chain_work;
 
         info!(
             "Local work={} vs remote work={} (heights: {} vs {})",
@@ -197,10 +196,9 @@ impl ConnectedNode {
         info!("Trying to instantize StryiConsensusEngine instance");
 
         let consensus_constants = build_consensus_constants(&self.storage).await?;
-        let difficulty_calculator =
-            difficulty_calculator_from_consts::<StryiStorage>(consensus_constants);
-        let block_validator =
-            BlockValidator::new(consensus_constants, difficulty_calculator.clone());
+        let difficulty_calculator = DifficultyCalc::new(consensus_constants.pow)
+            .map_err(|e| StryiNodeError::other(format!("invalid pow params in genesis: {e}")))?;
+        let block_validator = BlockValidator::new(consensus_constants, difficulty_calculator);
         let utxo_processor = UtxoProcessor::new();
 
         trace!(consensus_consts = ?consensus_constants);
@@ -283,8 +281,8 @@ impl ConnectedNode {
 
     /// Finds the best peer to sync from.
     /// The best peer must pass invariant checks and have more work than us.
-    /// Returns the peer with the highest total_difficulty, or an error if none qualify.
-    async fn find_best_peer(&self) -> Result<(RemotePeer, ChainInfo), StryiNodeError> {
+    /// Returns the peer with the highest chain work, or an error if none qualify.
+    async fn find_best_peer(&self) -> Result<(RemotePeer, RemoteChainInfo), StryiNodeError> {
         let peers_list = query_sync_peers(&self.net_cmd, &self.sync_service_config)
             .await
             .map_err(|e| StryiNodeError::other(format!("failed to discover peers: {e}")))?;
@@ -301,13 +299,13 @@ impl ConnectedNode {
             .storage
             .read()
             .await
-            .chain_difficulty()
+            .chain_work()
             .await
-            .unwrap_or(0);
+            .map_err(|e| StryiNodeError::other(format!("chain_work() failed: {e}")))?;
 
         info!("Local work: {}", local_work);
 
-        let mut candidates: Vec<(RemotePeer, ChainInfo)> = Vec::new();
+        let mut candidates: Vec<(RemotePeer, RemoteChainInfo)> = Vec::new();
 
         for (peer_id, svc) in peers_list {
             info!("Checking peer {}...", peer_id);
@@ -340,7 +338,7 @@ impl ConnectedNode {
             }
 
             // the MAIN check: do we even need to sync with this peer?
-            let remote_work = chain_info.total_difficulty as u128;
+            let remote_work = chain_info.chain_work;
             if remote_work <= local_work {
                 info!(
                     "Peer {} has no more work than us ({} <= {}) Skipping",
@@ -362,21 +360,24 @@ impl ConnectedNode {
             ));
         }
 
-        // Pick the peer with the highest total_difficulty
+        // Pick the peer with the highest chain work
         let best = candidates
             .into_iter()
-            .max_by_key(|(_, ci)| ci.total_difficulty as u128)
+            .max_by_key(|(_, ci)| ci.chain_work)
             .unwrap();
 
         info!(
             "Best peer selected: height={}, work={}",
-            best.1.height, best.1.total_difficulty
+            best.1.height, best.1.chain_work
         );
 
         Ok(best)
     }
 
-    async fn validate_peer_chain_invariants(&self, info: &ChainInfo) -> Result<(), StryiNodeError> {
+    async fn validate_peer_chain_invariants(
+        &self,
+        info: &RemoteChainInfo,
+    ) -> Result<(), StryiNodeError> {
         require_chain_info_eq(
             "protocol_version",
             self.sync_service_config.protocol_version as u64,
@@ -388,8 +389,7 @@ impl ConnectedNode {
             info.chain_name.as_str(),
         )?;
 
-        let remote_tip_hash = BlockHash::from_hash_string(&info.latest_block_hash)
-            .map_err(|e| StryiNodeError::other(format!("invalid remote tip hash: {e}")))?;
+        let remote_tip_hash = info.tip_hash;
 
         let (local_height, local_tip_hash) = {
             let s = self.storage.read().await;

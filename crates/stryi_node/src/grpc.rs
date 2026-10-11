@@ -16,6 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use stryi_core::StryiCoreError;
 use stryi_core::block::{Block, BlockHash, BlockHeader, GenesisState};
+use stryi_core::difficulty::{chain_work_to_bytes, threshold_from_bytes, threshold_to_bytes};
 use stryi_core::merkletree::MerkleHash;
 use stryi_core::storage::{BlockStorage, UtxoStorage};
 use stryi_storage::{StryiStorage, StryiStorageError};
@@ -91,7 +92,7 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
         let pb = PbChainInfo {
             height: chain_info.latest_block.0 as u64,
             latest_block_hash: chain_info.latest_block.1.to_string(),
-            total_difficulty: chain_info.chain_difficulty as u64,
+            chain_work: chain_work_to_bytes(&chain_info.chain_work).to_vec(),
             last_update_time: chain_info.last_update_time as u64,
             protocol_version: self.config.protocol_version as u32,
             chain_name: self.config.chain_name.clone(),
@@ -298,7 +299,7 @@ impl From<Block> for PbBlock {
             merkle_root_hash: block.header.merkle_root_hash.to_string(),
             previous_block_hash: block.header.previous_block_hash.to_string(),
             height: block.header.height,
-            difficulty_bits: block.header.difficulty_bits as u32,
+            hash_threshold: threshold_to_bytes(&block.header.hash_threshold).to_vec(),
             timestamp: block.header.timestamp,
             nonce: block.header.nonce,
             genesis_data: postcard::to_stdvec(&block.header.genesis_state)
@@ -306,8 +307,7 @@ impl From<Block> for PbBlock {
         };
 
         let body = SerializedBlockBody {
-            serialized: postcard::to_stdvec(&block.data)
-                .expect("I bet it won't ever happen 2"),
+            serialized: postcard::to_stdvec(&block.data).expect("I bet it won't ever happen 2"),
         };
 
         PbBlock {
@@ -334,11 +334,17 @@ impl TryFrom<PbBlock> for Block {
                     .map_err(StryiCoreError::other)?;
 
             BlockHeader {
-                version: grpc_header.version as u16,
+                version: u16::try_from(grpc_header.version).map_err(|_| {
+                    StryiCoreError::other(format!(
+                        "unsupported block version {} on the wire",
+                        grpc_header.version
+                    ))
+                })?,
                 merkle_root_hash: MerkleHash::from_hash_string(&grpc_header.merkle_root_hash)?,
                 previous_block_hash: BlockHash::from_hash_string(&grpc_header.previous_block_hash)?,
                 height: grpc_header.height,
-                difficulty_bits: grpc_header.difficulty_bits as u8,
+                hash_threshold: threshold_from_bytes(&grpc_header.hash_threshold)
+                    .map_err(StryiCoreError::other)?,
                 timestamp: grpc_header.timestamp,
                 nonce: grpc_header.nonce,
                 genesis_state: grpc_genesis_state,
@@ -350,8 +356,7 @@ impl TryFrom<PbBlock> for Block {
             let grpc_body = value
                 .body
                 .ok_or(StryiCoreError::other("Got block with no body!"))?;
-            postcard::from_bytes(&grpc_body.serialized)
-                .map_err(StryiCoreError::other)?
+            postcard::from_bytes(&grpc_body.serialized).map_err(StryiCoreError::other)?
         };
 
         // Construct the Block from header and body

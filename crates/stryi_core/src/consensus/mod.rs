@@ -14,6 +14,7 @@ mod classify;
 mod validator;
 
 use crate::block::{Block, BlockHash};
+use crate::difficulty::ChainWork;
 use crate::error::StryiCoreError;
 use futures::future::BoxFuture;
 use std::collections::HashMap;
@@ -34,8 +35,8 @@ pub(crate) use validator::block::validate_block_structure;
 pub enum ConsensusVerdict {
     /// Block was successfully applied to a canonical chain
     Applied {
-        /// New complexity of the chain including this new block.
-        new_chain_complexity: u64,
+        /// Cumulative work of the chain including this new block.
+        chain_work: ChainWork,
     },
 
     /// Block was successfully accepted but did not become part of the canonical chain

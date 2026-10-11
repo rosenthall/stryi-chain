@@ -30,6 +30,7 @@ use funding_account::FundAccount;
 use stryi_core::consensus::{
     ConsensusConsts, ConsensusEngine, ConsensusVerdict, StryiConsensusEngine,
 };
+use stryi_core::difficulty::DifficultyCalc;
 use stryi_core::storage::BlockStorage;
 use stryi_storage::StryiStorage;
 use tokio::sync::RwLock;
@@ -49,6 +50,10 @@ pub struct ChainGenerator {
 
     /// Consensus constants from genesis.
     consensus_consts: ConsensusConsts,
+
+    /// Difficulty calculator built from the genesis pow params.
+    /// Requests the next hash threshold for every generated block.
+    difficulty_calc: DifficultyCalc,
 
     /// Optional consensus engine instance.
     /// Only being initialized and used if config.blocks.persistence_mode == PersistenceMode::ConsensusEngine
@@ -145,12 +150,10 @@ impl ChainGenerator {
                 .map_err(|e| format!("Consensus engine failed: {:?}", e))?
             {
                 // Applied successfully
-                ConsensusVerdict::Applied {
-                    new_chain_complexity,
-                } => {
+                ConsensusVerdict::Applied { chain_work } => {
                     info!(
-                        "Distributor persisted via ConsensusEngine. new_chain_complexity={}",
-                        new_chain_complexity
+                        "Distributor persisted via ConsensusEngine. chain_work={}",
+                        chain_work
                     );
                 }
 
@@ -215,12 +218,10 @@ impl ChainGenerator {
                     .map_err(|e| format!("Consensus engine failed at height {}: {:?}", height, e))?
                 {
                     // Applied successfully
-                    ConsensusVerdict::Applied {
-                        new_chain_complexity,
-                    } => {
+                    ConsensusVerdict::Applied { chain_work } => {
                         debug!(
-                            "Block at height {} persisted via ConsensusEngine. new_chain_complexity={}",
-                            height, new_chain_complexity
+                            "Block at height {} persisted via ConsensusEngine. chain_work={}",
+                            height, chain_work
                         );
                     }
 

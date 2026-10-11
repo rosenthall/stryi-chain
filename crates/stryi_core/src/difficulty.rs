@@ -1,10 +1,10 @@
 use crate::StryiCoreError;
-use crate::block::{Block, BlockHeader};
+use crate::block::{Block, BlockHash, BlockHeader};
 use crate::consensus::ConsensusConsts;
 use crate::error::StorageLayer;
 use crate::storage::{BlockStorage, StorageStats};
 use crypto_bigint::{CheckedAdd, NonZero};
-use futures::future::{BoxFuture, ready};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -154,18 +154,122 @@ mod pow_number_tests {
     }
 }
 
-/// Async difficulty calculator, returns required bits amount for specified height.
-/// Currently just wraps pure (in a functional programming way) `difficulty_bits_for_height`,
-/// but takes generic `S` so it can be replaced by any better implementation later
-/// (that may consider network load, average new block arriving time, etc)
-pub type DifficultyCalc<S> = Arc<
-    dyn for<'a> Fn(&'a S, u64) -> BoxFuture<'a, Result<u8, StryiCoreError>> + Send + Sync + 'static,
->;
+/// Proof-of-work schedule parameters stored in genesis and fixed for the chain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PowParams {
+    /// Target interval between blocks, in seconds.
+    pub target_spacing_secs: u32,
+
+    /// Time in which the difficulty target doubles when a branch falls behind schedule.
+    pub half_life_secs: u32,
+
+    /// Hash threshold for the first normal blocks of a branch.
+    pub initial_hash_threshold: HashThreshold,
+
+    /// Easiest allowed hash threshold - the upper bound of the schedule domain.
+    pub max_hash_threshold: HashThreshold,
+}
+
+impl PowParams {
+    /// Rejects parameter sets that cannot drive a valid difficulty schedule.
+    pub fn validate(&self) -> Result<(), StryiCoreError> {
+        if self.target_spacing_secs == 0 {
+            return Err(StryiCoreError::InvalidDifficultyValue {
+                details: "target_spacing_secs must be positive".into(),
+            });
+        }
+        if self.half_life_secs == 0 {
+            return Err(StryiCoreError::InvalidDifficultyValue {
+                details: "half_life_secs must be positive".into(),
+            });
+        }
+        if self.initial_hash_threshold == HashThreshold::ZERO {
+            return Err(StryiCoreError::InvalidDifficultyValue {
+                details: "initial_hash_threshold must be positive".into(),
+            });
+        }
+        if self.max_hash_threshold == HashThreshold::ZERO {
+            return Err(StryiCoreError::InvalidDifficultyValue {
+                details: "max_hash_threshold must be positive".into(),
+            });
+        }
+        if self.initial_hash_threshold > self.max_hash_threshold {
+            return Err(StryiCoreError::InvalidDifficultyValue {
+                details: "initial_hash_threshold must not exceed max_hash_threshold".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Default for PowParams {
+    /// **Testing** defaults: 10s spacing, one hour half-life, easiest threshold `MAX >> 1`.
+    fn default() -> Self {
+        Self {
+            target_spacing_secs: 10,
+            half_life_secs: 3600,
+            initial_hash_threshold: HashThreshold::MAX >> 1,
+            max_hash_threshold: HashThreshold::MAX >> 1,
+        }
+    }
+}
+
+/// Difficulty calculator holding the proof-of-work parameters of the chain.
+///
+/// It returns the configured `initial_hash_threshold` for every normal
+/// candidate block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DifficultyCalc {
+    params: PowParams,
+}
+
+impl DifficultyCalc {
+    /// Builds a calculator from the provided proof-of-work parameters.
+    pub fn new(params: PowParams) -> Result<Self, StryiCoreError> {
+        params.validate()?;
+        Ok(Self { params })
+    }
+
+    /// Returns the hash threshold required for a candidate block whose parent is `parent_hash`.
+    ///
+    /// Missing parent/storage errors are errors, never defaults. ZERO applies only
+    /// to the genesis header and is handled by validation, never to a child of genesis.
+    pub async fn next_hash_threshold<S>(
+        &self,
+        state: &S,
+        parent_hash: BlockHash,
+    ) -> Result<HashThreshold, StryiCoreError>
+    where
+        S: BlockStorage + Send + Sync,
+    {
+        let parent = state.get_block_by_hash(parent_hash).await.map_err(|e| {
+            StryiCoreError::StorageError {
+                layer: StorageLayer::Block,
+                err: format!(
+                    "failed to read parent {} while computing the next hash threshold: {}",
+                    parent_hash, e
+                ),
+            }
+        })?;
+
+        if parent.is_none() {
+            return Err(StryiCoreError::ConsensusDifficultyAdjustmentFailed {
+                details: format!(
+                    "parent block {} not found while computing the next hash threshold",
+                    parent_hash
+                ),
+            });
+        }
+
+        Ok(self.params.initial_hash_threshold)
+    }
+}
 
 /// Reads consensus rules from genesis and returns a [`DifficultyCalc`].
 pub async fn load_rules_and_build_calc<DB>(
     db: Arc<RwLock<DB>>,
-) -> Result<DifficultyCalc<DB>, StryiCoreError>
+) -> Result<DifficultyCalc, StryiCoreError>
 where
     DB: BlockStorage + StorageStats + Send + Sync + 'static,
 {
@@ -201,7 +305,7 @@ where
             ..
         } => {
             let consts: ConsensusConsts = state.consensus_consts;
-            Ok(difficulty_calculator_from_consts::<DB>(consts))
+            DifficultyCalc::new(consts.pow)
         }
         Block {
             header:
@@ -217,31 +321,15 @@ where
     }
 }
 
-/// Height-only difficulty calculator from the given constants (ignores db state).
-#[inline]
-pub fn difficulty_calculator_from_consts<S>(consts: ConsensusConsts) -> DifficultyCalc<S>
-where
-    S: Send + Sync + 'static,
-{
-    Arc::new(move |_state: &S, height| {
-        let bits = consts.difficulty_bits_for_height(height);
-        Box::pin(ready::<Result<u8, StryiCoreError>>(Ok(bits)))
-    })
-}
-
 #[cfg(test)]
 mod difficulty_calc_tests {
     use super::*;
-    use crate::block::BlockHash;
+    use crate::address::AccountAddress;
+    use crate::block::{BlockData, GenesisState};
     use crate::storage::StryiInMemoryStorage;
-    use crate::{
-        address::AccountAddress,
-        block::{Block, BlockData, BlockHeader, GenesisState},
-        storage::BlockStorage,
-        transactions::{Transaction, TransactionData, TransactionKind, TransactionOut},
-    };
+    use crate::transactions::{Transaction, TransactionData, TransactionKind, TransactionOut};
 
-    // Minimal deterministic genesis builder for this test only.
+    // Minimal deterministic genesis builder for these tests only.
     fn make_genesis_for_calc() -> Block {
         let premine_owner = AccountAddress::new(&[0u8; 20]);
         let genesis_tx = Transaction {
@@ -263,9 +351,9 @@ mod difficulty_calc_tests {
                 merkle_root_hash: Block::compute_merkle_root(std::slice::from_ref(&genesis_tx)),
                 previous_block_hash: BlockHash::empty(),
                 height: 0,
-                // For genesis, difficulty_bits is conventionally 0; the validator should permit it.
-                difficulty_bits: 0,
-                timestamp: 1_700_000_000,
+                // Genesis carries the zero hash threshold; genesis work is zero.
+                hash_threshold: HashThreshold::ZERO,
+                timestamp: 0,
                 nonce: 0,
 
                 // Critical: genesis_state must be Some to carry ConsensusConsts from genesis.
@@ -278,7 +366,7 @@ mod difficulty_calc_tests {
     }
 
     #[tokio::test]
-    async fn load_rules_and_build_returns_height_linear_calc() {
+    async fn pow_v2_load_rules_builds_calc_from_genesis() {
         // Arrange: in-memory DB with a valid genesis carrying default ConsensusConsts.
         let db = StryiInMemoryStorage::new(make_genesis_for_calc());
         let db = Arc::new(RwLock::new(db));
@@ -288,52 +376,17 @@ mod difficulty_calc_tests {
             .await
             .expect("calculator");
 
-        // We know the genesis carried ConsensusConsts::default(); verify that the
-        // calculator follows `difficulty_bits_for_height` for several check points.
-        let consts = ConsensusConsts::default();
-
-        // Helper to evaluate the calc at a given height using a &DB snapshot.
-        async fn eval_at<DB>(calc: &DifficultyCalc<DB>, db: &Arc<RwLock<DB>>, h: u64) -> u8
-        where
-            DB: BlockStorage + StorageStats + Send + Sync + 'static,
-        {
-            let guard = db.read().await; // &DB for the calc (it ignores state in our builder)
-            (calc)(&*guard, h).await.expect("calc result")
-        }
-
-        // Assert: a few representative heights around the default interval boundary.
-        // The default interval is 100 (see ConsensusConsts::default).
-        let h0 = 0;
-        let h1 = 1;
-        let h100 = 100;
-        let h101 = 101;
-        let h250 = 250;
-
-        let got0 = eval_at(&calc, &db, h0).await;
-        let got1 = eval_at(&calc, &db, h1).await;
-        let got100 = eval_at(&calc, &db, h100).await;
-        let got101 = eval_at(&calc, &db, h101).await;
-        let got250 = eval_at(&calc, &db, h250).await;
-
-        assert_eq!(got0, consts.difficulty_bits_for_height(h0), "height {}", h0);
-        assert_eq!(got1, consts.difficulty_bits_for_height(h1), "height {}", h1);
+        // Assert: the calculator follows the genesis PowParams; the first normal
+        // candidate (child of genesis) gets the initial threshold, not ZERO.
+        let guard = db.read().await;
+        let child_of_genesis = calc
+            .next_hash_threshold(&*guard, BlockHash::empty())
+            .await
+            .expect("genesis parent exists");
         assert_eq!(
-            got100,
-            consts.difficulty_bits_for_height(h100),
-            "height {}",
-            h100
+            child_of_genesis,
+            ConsensusConsts::default().pow.initial_hash_threshold
         );
-        assert_eq!(
-            got101,
-            consts.difficulty_bits_for_height(h101),
-            "height {}",
-            h101
-        );
-        assert_eq!(
-            got250,
-            consts.difficulty_bits_for_height(h250),
-            "height {}",
-            h250
-        );
+        assert_ne!(child_of_genesis, HashThreshold::ZERO);
     }
 }

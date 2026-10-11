@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use stryi_core::address::AccountAddress;
+use stryi_core::difficulty::ChainWork;
 use stryi_core::transactions::TransactionHash;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,7 +25,8 @@ pub struct NodeStateResponse {
     pub api_version: u32,
     pub height: u64,
     pub latest_block_hash: String,
-    pub total_difficulty: u128,
+    /// Cumulative chain work, native serde as fixed-length LE hex.
+    pub chain_work: ChainWork,
     pub last_update_time: u64,
 }
 

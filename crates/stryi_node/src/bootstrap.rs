@@ -78,6 +78,12 @@ impl GenesisBootstrap {
             );
         }
 
+        // Validate the candidate before any durable effect, so an initialized
+        // datadir cannot turn the AlreadySaved shortcut into a validation skip.
+        validate_genesis(block).map_err(|e| {
+            StryiNodeError::other(format!("provided genesis candidate is invalid: {e}"))
+        })?;
+
         // If meta is already initialized, do nothing.
         match self.probe_meta()? {
             StorageStatus::Initialized { .. } => return Ok(SaveOutcome::AlreadySaved),
@@ -88,11 +94,6 @@ impl GenesisBootstrap {
             }
             StorageStatus::NoGenesis => { /* continue */ }
         }
-
-        // Validate candidate invariants before asking the user.
-        validate_genesis(block).map_err(|e| {
-            StryiNodeError::other(format!("provided genesis candidate is invalid: {e}"))
-        })?;
 
         // Present a concise summary
         self.print_block_summary(block);
@@ -157,8 +158,20 @@ impl GenesisBootstrap {
         table.set_width(73);
 
         table.add_row(vec![
-            "difficulty_adjustment_interval_blocks".into(),
-            cs.difficulty_adjustment_interval_blocks.to_string(),
+            "pow.target_spacing_secs".into(),
+            cs.pow.target_spacing_secs.to_string(),
+        ]);
+        table.add_row(vec![
+            "pow.half_life_secs".into(),
+            cs.pow.half_life_secs.to_string(),
+        ]);
+        table.add_row(vec![
+            "pow.initial_hash_threshold".into(),
+            cs.pow.initial_hash_threshold.to_string(),
+        ]);
+        table.add_row(vec![
+            "pow.max_hash_threshold".into(),
+            cs.pow.max_hash_threshold.to_string(),
         ]);
         table.add_row(vec![
             "initial_subsidy".into(),

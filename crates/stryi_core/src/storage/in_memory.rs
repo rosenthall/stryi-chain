@@ -4,8 +4,11 @@
 //! Should not be used in the real node, but during development and for testing other functionality
 
 use crate::block::{Block, BlockHash};
+use crate::difficulty::{ChainWork, add_work};
 use crate::error::StryiCoreError;
-use crate::storage::{BlockStorage, RangeError, StorageStats, UndoStorage, UtxoStorage};
+use crate::storage::{
+    BlockStorage, RangeError, StorageStats, UndoStorage, UtxoStorage, verified_block_work,
+};
 use crate::transactions::TransactionKind;
 use crate::{
     BlockUndo,
@@ -65,7 +68,7 @@ struct StryiInMemoryStorageState {
     pub latest_block: (u64, BlockHash),
     pub last_update_time: u64,
     pub blocks_count: u64,
-    pub chain_difficulty: u128,
+    pub chain_work: ChainWork,
 }
 
 impl Default for StryiInMemoryStorageState {
@@ -74,7 +77,7 @@ impl Default for StryiInMemoryStorageState {
             latest_block: (0, BlockHash::empty()),
             last_update_time: 0,
             blocks_count: 1,
-            chain_difficulty: 0,
+            chain_work: ChainWork::ZERO,
         }
     }
 }
@@ -87,7 +90,8 @@ impl StryiInMemoryStorageState {
             latest_block: (0, block.block_hash()),
             last_update_time: block.header.timestamp,
             blocks_count: 1,
-            chain_difficulty: 1u128 << block.header.difficulty_bits,
+            // Genesis contributes zero work to the chain.
+            chain_work: ChainWork::ZERO,
         }
     }
 }
@@ -253,13 +257,22 @@ impl BlockStorage for StryiInMemoryStorage {
         // Compute the block hash from the block
         let block_hash = block.block_hash();
         let block_height = block.header.height;
-        let block_bits = block.header.difficulty_bits;
+        let block_work = match verified_block_work(&block) {
+            Ok(work) => work,
+            Err(e) => return Box::pin(ready(Err(e.into()))),
+        };
 
         Box::pin(async move {
             // hash->block map
             let mut blocks_map = self.blocks.write().await;
             // height->hash map
             let mut heights_map = self.blocks_heights.write().await;
+
+            // Validate the new cumulative work before mutating anything, so an
+            // overflowing chain cannot leave a partially stored block behind.
+            let mut st = self.current_state.write().await;
+            let new_chain_work = add_work(st.chain_work, block_work)
+                .map_err(|e| InMemoryStorageError::Other(e.to_string()))?;
 
             // Map hash -> block
             blocks_map.insert(block_hash, block.to_owned());
@@ -272,19 +285,16 @@ impl BlockStorage for StryiInMemoryStorage {
                 block_height, block_hash
             );
 
-            {
-                let mut st = self.current_state.write().await;
-                st.latest_block = (block_height, block_hash);
-                st.last_update_time = block.header.timestamp;
-                st.blocks_count += 1;
-                st.chain_difficulty = st.chain_difficulty.wrapping_add(1u128 << block_bits);
+            st.latest_block = (block_height, block_hash);
+            st.last_update_time = block.header.timestamp;
+            st.blocks_count += 1;
+            st.chain_work = new_chain_work;
 
-                // diagnostic log
-                println!(
-                    "[test-storage] tip -> height={}, hash={}, total_blocks={}, chain_difficulty={}",
-                    st.latest_block.0, st.latest_block.1, st.blocks_count, st.chain_difficulty,
-                );
-            }
+            // diagnostic log
+            println!(
+                "[test-storage] tip -> height={}, hash={}, total_blocks={}, chain_work={}",
+                st.latest_block.0, st.latest_block.1, st.blocks_count, st.chain_work,
+            );
 
             Ok(())
         })
@@ -417,10 +427,10 @@ impl StorageStats for StryiInMemoryStorage {
         })
     }
 
-    fn chain_difficulty(&self) -> BoxFuture<'_, Result<u128, Self::StorageError>> {
+    fn chain_work(&self) -> BoxFuture<'_, Result<ChainWork, Self::StorageError>> {
         Box::pin(async move {
             let st = self.current_state.read().await;
-            Ok(st.chain_difficulty)
+            Ok(st.chain_work)
         })
     }
 }
@@ -464,6 +474,7 @@ impl UndoStorage for StryiInMemoryStorage {
 mod tests {
     use super::*;
     use crate::block::GenesisState;
+    use crate::difficulty::HashThreshold;
     use crate::{
         address::AccountAddress,
         block::{Block, BlockData, BlockHash, BlockHeader},
@@ -496,8 +507,8 @@ mod tests {
                 merkle_root_hash: Block::compute_merkle_root(std::slice::from_ref(&genesis_tx)),
                 previous_block_hash: BlockHash::empty(),
                 height: 0,
-                difficulty_bits: 1,
-                timestamp: 1_700_000_000,
+                hash_threshold: HashThreshold::ZERO,
+                timestamp: 0,
                 nonce: 0,
                 genesis_state: Some(GenesisState::default()),
             },
@@ -641,7 +652,7 @@ mod tests {
                 merkle_root_hash: Block::compute_merkle_root(std::slice::from_ref(&coinbase_tx)),
                 previous_block_hash: BlockHash::empty(),
                 height: 1,
-                difficulty_bits: 1,
+                hash_threshold: HashThreshold::MAX >> 1,
                 timestamp: 1_700_000_010,
                 nonce: 0,
                 genesis_state: None,
@@ -675,7 +686,8 @@ mod tests {
         // stats
         assert_eq!(store.tip().await.unwrap().0, 1);
         assert_eq!(store.block_count().await.unwrap(), 2);
-        assert_eq!(store.chain_difficulty().await.unwrap(), 4); // 2 blocks * 2^1
+        // Genesis contributes zero work; only the normal block adds its work.
+        assert_eq!(store.chain_work().await.unwrap(), ChainWork::from(2u64));
     }
 
     #[tokio::test]

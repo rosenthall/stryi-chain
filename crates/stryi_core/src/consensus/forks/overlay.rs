@@ -1,8 +1,9 @@
 use crate::BlockUndo;
 use crate::address::AccountAddress;
 use crate::block::{Block, BlockHash};
+use crate::difficulty::{ChainWork, add_work};
 use crate::error::{StorageLayer, StryiCoreError};
-use crate::storage::{BlockStorage, StorageStats, UndoStorage, UtxoStorage};
+use crate::storage::{BlockStorage, StorageStats, UndoStorage, UtxoStorage, verified_block_work};
 use crate::transactions::{OutPoint, UTXO};
 use dashmap::{DashMap, DashSet};
 use futures::future::BoxFuture;
@@ -22,7 +23,7 @@ where
     base: &'a DB,
 
     /// Cumulative work up to and including the fork point.
-    inherited_work: u128,
+    inherited_work: ChainWork,
 
     /// Fork-local UTXO writes and overrides.
     utxo_delta: DashMap<OutPoint, UTXO>,
@@ -108,7 +109,7 @@ impl<'a, DB> ForkDbOverlay<'a, DB>
 where
     DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
 {
-    pub fn new(base: &'a DB, work: u128) -> Self {
+    pub fn new(base: &'a DB, work: ChainWork) -> Self {
         Self {
             base,
             inherited_work: work,
@@ -473,26 +474,18 @@ where
         })
     }
 
-    fn chain_difficulty(&self) -> BoxFuture<'_, Result<u128, Self::StorageError>> {
+    fn chain_work(&self) -> BoxFuture<'_, Result<ChainWork, Self::StorageError>> {
         let delta = self.block_delta.clone();
-        let base = self.base;
         let base_work = self.inherited_work;
 
         Box::pin(async move {
             let mut sum = base_work;
 
-            for kv in delta.iter() {
-                let pow = 1u128 << kv.value().header.difficulty_bits;
-
-                if base
-                    .block_exists(*kv.key())
-                    .await
-                    .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?
-                {
-                    sum = sum.wrapping_sub(pow);
-                }
-
-                sum = sum.wrapping_add(pow);
+            for entry in delta.iter() {
+                // A delta block that also exists in the base storage is the very
+                // same block, so its work is added exactly once on top of the
+                // inherited LCA work - no compensation is subtracted.
+                sum = add_work(sum, verified_block_work(entry.value())?)?;
             }
 
             Ok(sum)

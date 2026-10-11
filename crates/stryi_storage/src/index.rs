@@ -1,11 +1,12 @@
 use crate::{StryiStorage, StryiStorageError};
 use serde::{Deserialize, Serialize};
+use stryi_core::difficulty::ChainWork;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockIndexData {
     pub parent_hash: stryi_core::block::BlockHash,
     pub height: u64,
-    pub chain_work: u128,
+    pub chain_work: ChainWork,
 }
 
 impl StryiStorage {
@@ -17,7 +18,10 @@ impl StryiStorage {
     ) -> Result<(), StryiStorageError> {
         let encoded = postcard::to_stdvec(index_data)?;
         self.block_index_partition
-            .insert(fjall::Slice::from(&block_hash.data), fjall::Slice::from(encoded))
+            .insert(
+                fjall::Slice::from(&block_hash.data),
+                fjall::Slice::from(encoded),
+            )
             .map_err(StryiStorageError::FjallError)?;
         Ok(())
     }

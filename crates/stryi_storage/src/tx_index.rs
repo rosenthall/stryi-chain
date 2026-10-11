@@ -91,6 +91,7 @@ mod tests {
     use crate::blocks::tests::create_test_storage;
     use stryi_core::address::AccountAddress;
     use stryi_core::block::Block;
+    use stryi_core::difficulty::HashThreshold;
     use stryi_core::transactions::{Transaction, TransactionData, TransactionKind, TransactionOut};
 
     fn make_unsigned_payment(value: u64, recipient_seed: u8) -> Transaction {
@@ -143,7 +144,7 @@ mod tests {
             vec![shared_tx.clone(), stale_tx.clone()],
             BlockHash::empty(),
             1,
-            1,
+            HashThreshold::MAX >> 1,
             1_700_000_010,
             1,
         );
@@ -151,7 +152,7 @@ mod tests {
             vec![shared_tx.clone(), fresh_tx.clone()],
             BlockHash::empty(),
             1,
-            1,
+            HashThreshold::MAX >> 1,
             1_700_000_020,
             1,
         );

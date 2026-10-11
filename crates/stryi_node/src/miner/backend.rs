@@ -1,7 +1,9 @@
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
+use stryi_core::StryiCoreError;
 use stryi_core::block::BlockHash;
 use stryi_core::consensus::ConsensusConsts;
+use stryi_core::difficulty::{DifficultyCalc, HashThreshold};
 use stryi_core::storage::StorageStats;
 use stryi_storage::{StryiStorage, StryiStorageError};
 use tokio::sync::RwLock;
@@ -13,8 +15,13 @@ pub trait MinerBackend: Send + Sync {
     /// Current chain tip: (height, block_hash).
     fn tip(&self) -> BoxFuture<'_, Result<(u64, BlockHash), StryiStorageError>>;
 
-    /// Difficulty bits for a given block height.
-    fn difficulty_bits(&self, height: u64) -> u8;
+    /// Required hash threshold for the next block on top of `parent_hash`.
+    /// Derived from the node's own storage view, so the miner and the
+    /// validator compute the same target for the same candidate parent.
+    fn next_hash_threshold(
+        &self,
+        parent_hash: BlockHash,
+    ) -> BoxFuture<'_, Result<HashThreshold, StryiCoreError>>;
 
     /// Block subsidy (reward) for a given height.
     fn block_subsidy(&self, height: u64) -> u64;
@@ -36,8 +43,15 @@ impl MinerBackend for NodeMinerBackend {
         Box::pin(async { self.storage.read().await.tip().await })
     }
 
-    fn difficulty_bits(&self, height: u64) -> u8 {
-        self.consensus_consts.difficulty_bits_for_height(height)
+    fn next_hash_threshold(
+        &self,
+        parent_hash: BlockHash,
+    ) -> BoxFuture<'_, Result<HashThreshold, StryiCoreError>> {
+        Box::pin(async move {
+            let calc = DifficultyCalc::new(self.consensus_consts.pow)?;
+            let storage = self.storage.read().await;
+            calc.next_hash_threshold(&*storage, parent_hash).await
+        })
     }
 
     fn block_subsidy(&self, height: u64) -> u64 {

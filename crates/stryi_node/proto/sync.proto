@@ -28,10 +28,12 @@ import "google/protobuf/empty.proto";
 message ChainInfo {
   uint64 height = 1; // Current main chain height
   string latest_block_hash = 2; // Hash of the chain's head block
-  uint64 total_difficulty = 3; // Summed chain work (PoW difficulty)
+  reserved 3; // was uint64 total_difficulty, which could not carry full work
+  reserved "total_difficulty";
   uint64 last_update_time = 4; // Unix timestamp of last chain update
   uint32 protocol_version = 5; // Protocol version for compatibility
   string chain_name = 6; // E.g. "Testnet", "Mainnet", or custom
+  bytes chain_work = 7; // Exactly 64 LE bytes of accumulated chain work
 }
 
 //---------------------------------------------
@@ -70,12 +72,14 @@ message BlockHeader {
   string previous_block_hash = 3;
 
   uint64 height = 4;
-  uint32 difficulty_bits = 5;
+  reserved 5; // was uint32 difficulty_bits
+  reserved "difficulty_bits";
   uint64 timestamp = 6;
   uint32 nonce = 7;
 
   // Optional postcard-serialized genesis state; present only for the genesis block
   bytes  genesis_data = 9;
+  bytes hash_threshold = 10; // Exactly 32 LE bytes
 }
 
 //---------------------------------------------

@@ -38,19 +38,19 @@ where
         // Collect diagnostic context before on_block so we can always log it
         let height: u64 = b.header.height;
         let prev: BlockHash = b.header.previous_block_hash;
-        let bits: u8 = b.header.difficulty_bits;
+        let threshold = b.header.hash_threshold;
         let is_genesis: bool = b.header.is_genesis();
         let tx_count: usize = b.data.transactions.len();
         let hash: BlockHash = b.block_hash();
 
         debug!(
-            "IBD[{}/{}] on_block -> height={}, hash={}, prev={}, bits={}, is_genesis={}, txs={}",
+            "IBD[{}/{}] on_block -> height={}, hash={}, prev={}, threshold={}, is_genesis={}, txs={}",
             i + 1,
             batch_len,
             height,
             hash,
             prev,
-            bits,
+            threshold,
             is_genesis,
             tx_count
         );
@@ -60,13 +60,11 @@ where
             .await
             .map_err(|e| StryiNodeError::other(format!("IBD consensus failed: {e}")))?
         {
-            ConsensusVerdict::Applied {
-                new_chain_complexity,
-            } => {
+            ConsensusVerdict::Applied { chain_work } => {
                 cnt_applied += 1;
                 info!(
-                    "APPLIED: height={}, hash={}, new_chain_complexity={}",
-                    height, hash, new_chain_complexity
+                    "APPLIED: height={}, hash={}, chain_work={}",
+                    height, hash, chain_work
                 );
             }
 

@@ -52,7 +52,7 @@ async fn test_apply_block_creates_utxos_and_returns_undo() {
     let block = make_block_mined(
         vec![coinbase.clone(), payment.clone()],
         1,
-        consts.difficulty_bits_for_height(1),
+        consts.pow.initial_hash_threshold,
         genesis.block_hash(),
     );
 
@@ -105,7 +105,7 @@ async fn test_rewind_block_restores_previous_state() {
     let block = make_block_mined(
         vec![coinbase.clone(), payment.clone()],
         1,
-        consts.difficulty_bits_for_height(1),
+        consts.pow.initial_hash_threshold,
         genesis.block_hash(),
     );
 

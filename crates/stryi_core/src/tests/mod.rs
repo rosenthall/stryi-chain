@@ -6,7 +6,7 @@ use crate::address::AccountAddress;
 use crate::block::mining::mine_block_memcpy;
 use crate::block::{Block, BlockHash, GenesisState};
 use crate::consensus::{BlockValidator, ConsensusConsts, StryiConsensusEngine};
-use crate::difficulty::difficulty_calculator_from_consts;
+use crate::difficulty::{DifficultyCalc, HashThreshold};
 use crate::mempool::UtxoLookup;
 use crate::storage::StryiInMemoryStorage;
 use crate::transactions::{
@@ -103,11 +103,11 @@ pub(crate) fn make_test_genesis(
 }
 
 /// Creates a block and mines it. Panics if mining fails within 2_000_000 attempts
-/// (should never happen for bits <= 2).
+/// (should never happen for the easy test thresholds).
 pub(crate) fn make_block_mined(
     txs: Vec<Transaction>,
     height: u64,
-    difficulty_bits: u8,
+    hash_threshold: HashThreshold,
     previous_block_hash: BlockHash,
 ) -> Block {
     let timestamp = 1_700_000_000 + height * 10;
@@ -115,13 +115,13 @@ pub(crate) fn make_block_mined(
         txs,
         previous_block_hash,
         height,
-        difficulty_bits,
+        hash_threshold,
         timestamp,
         1,
     );
     assert!(
         mine_block_memcpy(&mut block, || false),
-        "Mining failed - this should not happen for difficulty_bits <= 2"
+        "Mining failed - this should not happen for the easy test thresholds"
     );
     block
 }
@@ -131,8 +131,8 @@ pub(crate) async fn make_engine(
     db: StryiInMemoryStorage,
     consts: ConsensusConsts,
 ) -> StryiConsensusEngine<StryiInMemoryStorage> {
-    let diff_calc = difficulty_calculator_from_consts::<StryiInMemoryStorage>(consts);
-    let validator = BlockValidator::new(consts, diff_calc.clone());
+    let diff_calc = DifficultyCalc::new(consts.pow).expect("test pow params must be valid");
+    let validator = BlockValidator::new(consts, diff_calc);
     let utxo_proc = UtxoProcessor::new();
     let db = Arc::new(RwLock::new(db));
 
