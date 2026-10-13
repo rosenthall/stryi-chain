@@ -1,15 +1,16 @@
-use crate::chaingen::ChainGenerator;
 use crate::chaingen::state::GenerationState;
 use crate::chaingen::strategy::TxGenerationStrategy;
 use crate::chaingen::txgen::{
     TransactionGenerationParams, generate_distributing_transaction, generate_transaction,
 };
 use crate::chaingen::utxo::UtxoInfo;
+use crate::chaingen::{ChainGenerator, check_generation_deadline};
 use indexmap::IndexSet;
 use rand::RngExt;
 use rand_chacha::ChaCha8Rng;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::collections::HashSet;
+use std::time::Instant;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::consensus::BlockStorage;
 use stryi_core::difficulty::{MAX_FUTURE_BLOCK_TIME_SECS, median_time_past};
@@ -90,7 +91,6 @@ impl ChainGenerator {
 
         let dist_tx = generate_distributing_transaction(state)
             .map_err(|e| format!("Failed to generate distributing transaction: {}", e))?;
-
         info!(
             "Distribution transaction created with {} inputs and {} outputs",
             dist_tx.data.inputs.len(),
@@ -111,7 +111,7 @@ impl ChainGenerator {
             version,
         );
 
-        mine_block_parallel_ordered(&mut block, MINING_ATTEMPT_CAP)?;
+        mine_block_parallel_ordered(&mut block, MINING_ATTEMPT_CAP, self.generation_deadline)?;
 
         Ok(block)
     }
@@ -217,6 +217,7 @@ impl ChainGenerator {
         let mut spent_in_block: HashSet<OutPoint> = HashSet::new();
 
         while strategy.should_continue() {
+            check_generation_deadline(self.generation_deadline, Some(height - 1))?;
             strategy.record_fail();
 
             // Get accounts with UTXOs
@@ -224,6 +225,7 @@ impl ChainGenerator {
                 state.get_top_accounts_with_utxos(strategy.target_txs - strategy.successful_txs);
 
             for (_sender_addr, sender_key, sender_utxos) in top_accounts {
+                check_generation_deadline(self.generation_deadline, Some(height - 1))?;
                 if !strategy.should_continue() {
                     break;
                 }
@@ -292,7 +294,7 @@ impl ChainGenerator {
         );
 
         // Mine nonce in parallel using ordered scan for a deterministic result between runs.
-        mine_block_parallel_ordered(&mut block, MINING_ATTEMPT_CAP)?;
+        mine_block_parallel_ordered(&mut block, MINING_ATTEMPT_CAP, self.generation_deadline)?;
 
         Ok(block)
     }
@@ -337,13 +339,23 @@ const MINING_ATTEMPT_CAP: u32 = 50_000_000;
 
 /// Parallel, ordered nonce search using rayon.
 /// Scans `0..max_attempts` in increasing order; the first matching nonce is chosen (deterministic).
-fn mine_block_parallel_ordered(block: &mut Block, max_attempts: u32) -> Result<(), String> {
+fn mine_block_parallel_ordered(
+    block: &mut Block,
+    max_attempts: u32,
+    generation_deadline: Option<Instant>,
+) -> Result<(), String> {
+    let last_saved_height = Some(block.header.height.saturating_sub(1));
+    check_generation_deadline(generation_deadline, last_saved_height)?;
     let threshold = block.header.hash_threshold;
 
     // Take a snapshot of the header without changing the shared `block` during the search.
     let base_header = block.header;
 
     let found = (0u32..max_attempts).into_par_iter().find_first(|&nonce| {
+        // The post-search deadline check rejects this stop signal before assigning a nonce.
+        if generation_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return true;
+        }
         let mut hdr = base_header;
         hdr.nonce = nonce;
 
@@ -352,6 +364,7 @@ fn mine_block_parallel_ordered(block: &mut Block, max_attempts: u32) -> Result<(
         h.meets_threshold(&threshold)
     });
 
+    check_generation_deadline(generation_deadline, last_saved_height)?;
     if let Some(nonce) = found {
         block.header.nonce = nonce;
         return Ok(());

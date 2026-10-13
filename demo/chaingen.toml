@@ -1,5 +1,7 @@
 [chain]
 num_blocks = 20
+# Optional generation time limit in seconds; omit for no limit.
+# max_generation_time_secs = 300
 seed = 20260324
 output_path = "/tmp/stryi-demo/chain"
 genesis_path = "genesis.json"

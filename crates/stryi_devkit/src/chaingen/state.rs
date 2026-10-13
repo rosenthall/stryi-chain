@@ -1,3 +1,4 @@
+use crate::chaingen::check_generation_deadline;
 use crate::chaingen::funding_account::FundAccount;
 use crate::chaingen::utxo::{UtxoInfo, UtxoSelectionCriteria};
 use indexmap::{IndexMap, IndexSet};
@@ -7,6 +8,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::Instant;
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
 use stryi_core::block::Block;
@@ -47,12 +49,13 @@ impl GenerationState {
         fund_account: FundAccount,
         base_seed: u64,
         start_height: u64,
-    ) -> Self {
-        Self {
-            accounts: Self::generate_accounts(n, base_seed, start_height),
+        generation_deadline: Option<Instant>,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            accounts: Self::generate_accounts(n, base_seed, start_height, generation_deadline)?,
             fund_account,
             account_utxos: Default::default(),
-        }
+        })
     }
 
     /// Print some stats about currently existing UTXOs
@@ -190,7 +193,9 @@ impl GenerationState {
         amount: usize,
         base_seed: u64,
         start_height: u64,
-    ) -> IndexMap<AccountAddress, SigningKey> {
+        generation_deadline: Option<Instant>,
+    ) -> Result<IndexMap<AccountAddress, SigningKey>, String> {
+        check_generation_deadline(generation_deadline, Some(start_height))?;
         // Add start height to the base seed
         let base_seed = base_seed.wrapping_pow(if start_height == 0 {
             1
@@ -201,6 +206,7 @@ impl GenerationState {
         let mut accounts = IndexMap::new();
 
         for i in 0..amount {
+            check_generation_deadline(generation_deadline, Some(start_height))?;
             // Create a deterministic seed for each account by combining base seed with index
             let account_seed = base_seed.wrapping_add(i as u64);
 
@@ -213,7 +219,8 @@ impl GenerationState {
             let account_address = AccountAddress::from_public_key(verifying_key);
             accounts.insert(account_address, signing_key);
         }
-        accounts
+        check_generation_deadline(generation_deadline, Some(start_height))?;
+        Ok(accounts)
     }
 
     /// Saves accounts in a provided dir, in file `CHAINGEN_ACCOUNTS_{start_height}_{end_height}.txt`
@@ -368,8 +375,8 @@ mod tests {
     #[test]
     fn test_generate_accounts_deterministic() {
         // Generate accounts with the same seed and start_height twice
-        let accounts1 = GenerationState::generate_accounts(10, 42, 0);
-        let accounts2 = GenerationState::generate_accounts(10, 42, 0);
+        let accounts1 = GenerationState::generate_accounts(10, 42, 0, None).unwrap();
+        let accounts2 = GenerationState::generate_accounts(10, 42, 0, None).unwrap();
 
         // Check we get exactly 10 accounts
         assert_eq!(accounts1.len(), 10, "Should generate exactly 10 accounts");

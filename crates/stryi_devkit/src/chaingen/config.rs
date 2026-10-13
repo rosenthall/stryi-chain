@@ -2,6 +2,7 @@ use crate::chaingen::seed;
 use crate::chaingen::seed::SeedValue;
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
 use tracing::trace;
@@ -67,6 +68,9 @@ pub struct ChainSettings {
     /// Total number of blocks to generate after genesis, including distributor block.
     pub num_blocks: u64,
 
+    /// Maximum generation time in seconds. Omitted means no limit.
+    pub max_generation_time_secs: Option<u64>,
+
     /// Seed strategy: either a single seed (`42`) or multiple ranges.
     pub seed: SeedValue,
 
@@ -131,6 +135,19 @@ impl ChainGenConfig {
             return Err(
                 "`num_blocks` must be at least 2 blocks for proper generation.".to_string(),
             );
+        }
+
+        if let Some(seconds) = self.chain.max_generation_time_secs {
+            if seconds == 0 {
+                return Err("max_generation_time_secs must be > 0".to_string());
+            }
+
+            if Instant::now()
+                .checked_add(Duration::from_secs(seconds))
+                .is_none()
+            {
+                return Err("max_generation_time_secs is too large to form a deadline".to_string());
+            }
         }
 
         if self.blocks.average_block_time_secs == 0 {
@@ -214,6 +231,7 @@ mod tests {
         ChainGenConfig {
             chain: ChainSettings {
                 num_blocks: 10,
+                max_generation_time_secs: None,
                 seed: SeedValue::Single(42),
                 output_path: std::env::temp_dir(),
                 genesis_path,

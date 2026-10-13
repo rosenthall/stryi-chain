@@ -1,6 +1,7 @@
 use crate::chaingen::state::GenerationState;
 pub use config::*;
 use std::sync::Arc;
+use std::time::Instant;
 
 mod config;
 
@@ -42,6 +43,8 @@ pub struct ChainGenerator {
     /// Config for this run.
     config: ChainGenConfig,
 
+    generation_deadline: Option<Instant>,
+
     /// Fund account
     pub(crate) fund_account: FundAccount,
 
@@ -65,6 +68,7 @@ pub struct ChainGenerator {
 
 impl ChainGenerator {
     pub async fn start(mut self) -> Result<(), String> {
+        check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
         info!("Starting chain generation and persistence...");
 
         // Number of post-genesis blocks to generate.
@@ -100,7 +104,8 @@ impl ChainGenerator {
             self.fund_account.clone(),
             current_seed,
             self.pre_generation_height,
-        );
+            self.generation_deadline,
+        )?;
 
         // log current top addresses and some stuff
         {
@@ -114,17 +119,26 @@ impl ChainGenerator {
         }
 
         // print all generated accounts
-        generation_state
-            .accounts
-            .iter()
-            .map(|acc| acc.0) // only iterate addresses
-            .enumerate()
-            .for_each(|(idx, address)| info!("[{}] {address}", idx + 1));
+        for (idx, address) in generation_state.accounts.keys().enumerate() {
+            check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
+            info!("[{}] {address}", idx + 1);
+        }
 
         info!(
             "Generated {} deterministic accounts",
             &generation_state.accounts.len()
         );
+
+        // Back up keys before any generated balances can be persisted.
+        if self.generation_deadline.is_some() {
+            check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
+            generation_state.save_accounts(
+                self.config.chain.output_path.clone(),
+                self.pre_generation_height,
+                end_height,
+            )?;
+            check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
+        }
 
         // Insert block that distributes balances
         // distributing block always will be first after the pre-generation state.
@@ -137,6 +151,8 @@ impl ChainGenerator {
 
         let distributor = self.build_distributing_block(&mut generation_state).await?;
         debug!("Distributor block : {:#?}", distributor);
+
+        check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
 
         // Persist distribution block with a short-lived write lock
         // If the consensus engine is configured -> call on_block (do not hold storage lock).
@@ -176,11 +192,14 @@ impl ChainGenerator {
         } else {
             // direct insert (keep a short-lived lock)
             let mut storage_guard = self.storage.write().await;
+            check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
             storage_guard
                 .put_block(&distributor)
                 .await
                 .map_err(|e| format!("Cannot insert distribution block : {:?}", e))?;
         }
+
+        check_generation_deadline(self.generation_deadline, Some(distributor_height))?;
 
         // Apply the block to update the state
         generation_state.apply_block(&distributor);
@@ -195,6 +214,7 @@ impl ChainGenerator {
 
         // Main generation loop
         for height in normal_blocks..=end_height {
+            check_generation_deadline(self.generation_deadline, Some(height - 1))?;
             debug!("Building block at height {}...", height);
 
             // If this exact chain height is a switch point, reseed before building the block.
@@ -208,6 +228,8 @@ impl ChainGenerator {
                 .build_block(height, &mut rng, &mut generation_state)
                 .await
                 .map_err(|e| format!("failed to build block at chain height {} : {}", height, e))?;
+
+            check_generation_deadline(self.generation_deadline, Some(height - 1))?;
 
             // Persist block depending on persistence mode.
             if let Some(engine) = &mut self.consensus_engine {
@@ -246,11 +268,14 @@ impl ChainGenerator {
             else {
                 // Acquire write lock only for the short duration required to persist the block
                 let mut storage_guard = self.storage.write().await;
+                check_generation_deadline(self.generation_deadline, Some(height - 1))?;
                 storage_guard
                     .put_block(&block)
                     .await
                     .map_err(|e| format!("put_block failed at height {}: {}", height, e))?;
             }
+
+            check_generation_deadline(self.generation_deadline, Some(height))?;
 
             // log current utxos state
             let utxos_amount = |s: &GenerationState| {
@@ -305,11 +330,14 @@ impl ChainGenerator {
             }
         }
 
-        generation_state.save_accounts(
-            self.config.chain.output_path.clone(),
-            self.pre_generation_height,
-            end_height,
-        )?;
+        check_generation_deadline(self.generation_deadline, Some(end_height))?;
+        if self.generation_deadline.is_none() {
+            generation_state.save_accounts(
+                self.config.chain.output_path.clone(),
+                self.pre_generation_height,
+                end_height,
+            )?;
+        }
 
         // log current top addresses and some stuff
         {
@@ -325,6 +353,22 @@ impl ChainGenerator {
             );
         }
 
+        check_generation_deadline(self.generation_deadline, Some(end_height))?;
         Ok(())
     }
+}
+
+fn check_generation_deadline(
+    deadline: Option<Instant>,
+    last_saved_height: Option<u64>,
+) -> Result<(), String> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(match last_saved_height {
+            Some(height) => {
+                format!("generation time limit exceeded; last successfully saved height: {height}")
+            }
+            None => "generation time limit exceeded during initialization".into(),
+        });
+    }
+    Ok(())
 }

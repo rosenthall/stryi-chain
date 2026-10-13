@@ -1,10 +1,11 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::chaingen::funding_account::FundAccount;
-use crate::chaingen::{ChainGenConfig, ChainGenerator, PersistenceMode};
+use crate::chaingen::{ChainGenConfig, ChainGenerator, PersistenceMode, check_generation_deadline};
 
 use stryi_core::PrivateKey;
 use stryi_core::block::Block;
@@ -23,12 +24,26 @@ impl ChainGenerator {
     /// - Genesis UTXOs are validated ONLY if chain height == 0.
     /// - Safe to run multiple times against the same storage (resume-friendly).
     pub async fn initialize(config: ChainGenConfig) -> Result<Self, String> {
+        let generation_deadline = config
+            .chain
+            .max_generation_time_secs
+            .map(|seconds| {
+                Instant::now()
+                    .checked_add(Duration::from_secs(seconds))
+                    .ok_or_else(|| {
+                        "max_generation_time_secs exceeds the monotonic clock range".to_string()
+                    })
+            })
+            .transpose()?;
+        check_generation_deadline(generation_deadline, None)?;
         info!("Initializing ChainGenerator...");
 
         std::fs::create_dir_all(&config.chain.output_path)
             .map_err(|e| format!("Failed to create output directory: {e}"))?;
 
+        check_generation_deadline(generation_deadline, None)?;
         let genesis_config = read_genesis_config(&config.chain.genesis_path)?;
+        check_generation_deadline(generation_deadline, None)?;
         info!("Successfully read and parsed genesis config.");
 
         // open or initialize storage, then wrap in Arc<RwLock<_>> for shared usage
@@ -36,11 +51,15 @@ impl ChainGenerator {
             open_storage(&config.chain.output_path, &genesis_config).await?,
         ));
 
+        check_generation_deadline(generation_deadline, None)?;
         info!("Storage initialized.");
 
         let (chain_height, genesis, consensus_consts) = read_chain_state(&storage).await?;
+        check_generation_deadline(generation_deadline, Some(chain_height))?;
         debug!("Chain height from tip() is {chain_height}");
-        validate_genesis_utxos_if_needed(&storage, &genesis, chain_height).await?;
+        validate_genesis_utxos_if_needed(&storage, &genesis, chain_height, generation_deadline)
+            .await?;
+        check_generation_deadline(generation_deadline, Some(chain_height))?;
 
         // Genesis pow params are the single source of truth for the difficulty
         // calc; building it here also validates the params before generation starts.
@@ -51,6 +70,8 @@ impl ChainGenerator {
         let fund_account =
             load_funding_account(storage.clone(), config.blocks.funding_key.clone()).await?;
 
+        check_generation_deadline(generation_deadline, Some(chain_height))?;
+
         // initialize consensus engine
         let consensus_engine = init_consensus_engine(
             &config.chain.persistence_mode,
@@ -59,9 +80,11 @@ impl ChainGenerator {
             difficulty_calc,
         )
         .await?;
+        check_generation_deadline(generation_deadline, Some(chain_height))?;
 
         Ok(Self {
             config,
+            generation_deadline,
             fund_account,
             pre_generation_height: chain_height,
             consensus_consts,
@@ -156,6 +179,7 @@ async fn validate_genesis_utxos_if_needed(
     storage: &Arc<RwLock<StryiStorage>>,
     genesis: &Block,
     chain_height: u64,
+    generation_deadline: Option<Instant>,
 ) -> Result<(), String> {
     if chain_height != 0 {
         info!(
@@ -180,6 +204,7 @@ async fn validate_genesis_utxos_if_needed(
     let s = storage.read().await;
 
     for (vout, _) in genesis_tx.data.outputs.iter().enumerate() {
+        check_generation_deadline(generation_deadline, Some(chain_height))?;
         let outpoint = OutPoint {
             txid,
             vout: vout as u32,
