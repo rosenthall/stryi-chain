@@ -32,7 +32,6 @@ use stryi_core::consensus::{
     ConsensusConsts, ConsensusEngine, ConsensusVerdict, StryiConsensusEngine,
 };
 use stryi_core::difficulty::DifficultyCalc;
-use stryi_core::storage::BlockStorage;
 use stryi_storage::StryiStorage;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
@@ -58,9 +57,8 @@ pub struct ChainGenerator {
     /// Requests the next hash threshold for every generated block.
     difficulty_calc: DifficultyCalc,
 
-    /// Optional consensus engine instance.
-    /// Only being initialized and used if config.blocks.persistence_mode == PersistenceMode::ConsensusEngine
-    consensus_engine: Option<StryiConsensusEngine<StryiStorage>>,
+    /// Validates and applies generated blocks as a real node would.
+    consensus_engine: StryiConsensusEngine<StryiStorage>,
 
     /// Storage instance.
     storage: Arc<RwLock<StryiStorage>>,
@@ -130,15 +128,13 @@ impl ChainGenerator {
         );
 
         // Back up keys before any generated balances can be persisted.
-        if self.generation_deadline.is_some() {
-            check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
-            generation_state.save_accounts(
-                self.config.chain.output_path.clone(),
-                self.pre_generation_height,
-                end_height,
-            )?;
-            check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
-        }
+        check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
+        generation_state.save_accounts(
+            self.config.chain.output_path.clone(),
+            self.pre_generation_height,
+            end_height,
+        )?;
+        check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
 
         // Insert block that distributes balances
         // distributing block always will be first after the pre-generation state.
@@ -155,48 +151,37 @@ impl ChainGenerator {
         check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
 
         // Persist distribution block with a short-lived write lock
-        // If the consensus engine is configured -> call on_block (do not hold storage lock).
-        // Otherwise -> direct insert into storage.
         let dist_utxo_count = distributor.data.transactions[1].data.outputs.len();
-        if let Some(engine) = &mut self.consensus_engine {
-            // try to apply the block
-            match engine
-                .on_block(distributor.clone())
-                .await
-                .map_err(|e| format!("Consensus engine failed: {:?}", e))?
-            {
-                // Applied successfully
-                ConsensusVerdict::Applied { chain_work } => {
-                    info!(
-                        "Distributor persisted via ConsensusEngine. chain_work={}",
-                        chain_work
-                    );
-                }
-
-                // Rejected by consensus
-                ConsensusVerdict::Rejected(err) => {
-                    return Err(format!(
-                        "Distributor block rejected by consensus: {:?}",
-                        err
-                    ));
-                }
-
-                other => {
-                    error!(
-                        "Unexpected ConsensusVerdict ({:?}) for distributor block: {:#?}",
-                        other, distributor
-                    );
-                    return Err("Unexpected ConsensusVerdict".to_string());
-                }
+        let engine = &mut self.consensus_engine;
+        // try to apply the block
+        match engine
+            .on_block(distributor.clone())
+            .await
+            .map_err(|e| format!("Consensus engine failed: {:?}", e))?
+        {
+            // Applied successfully
+            ConsensusVerdict::Applied { chain_work } => {
+                info!(
+                    "Distributor persisted via ConsensusEngine. chain_work={}",
+                    chain_work
+                );
             }
-        } else {
-            // direct insert (keep a short-lived lock)
-            let mut storage_guard = self.storage.write().await;
-            check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
-            storage_guard
-                .put_block(&distributor)
-                .await
-                .map_err(|e| format!("Cannot insert distribution block : {:?}", e))?;
+
+            // Rejected by consensus
+            ConsensusVerdict::Rejected(err) => {
+                return Err(format!(
+                    "Distributor block rejected by consensus: {:?}",
+                    err
+                ));
+            }
+
+            other => {
+                error!(
+                    "Unexpected ConsensusVerdict ({:?}) for distributor block: {:#?}",
+                    other, distributor
+                );
+                return Err("Unexpected ConsensusVerdict".to_string());
+            }
         }
 
         check_generation_deadline(self.generation_deadline, Some(distributor_height))?;
@@ -231,48 +216,36 @@ impl ChainGenerator {
 
             check_generation_deadline(self.generation_deadline, Some(height - 1))?;
 
-            // Persist block depending on persistence mode.
-            if let Some(engine) = &mut self.consensus_engine {
-                let blk_for_engine = block.clone();
-                match engine
-                    .on_block(blk_for_engine)
-                    .await
-                    .map_err(|e| format!("Consensus engine failed at height {}: {:?}", height, e))?
-                {
-                    // Applied successfully
-                    ConsensusVerdict::Applied { chain_work } => {
-                        debug!(
-                            "Block at height {} persisted via ConsensusEngine. chain_work={}",
-                            height, chain_work
-                        );
-                    }
-
-                    // Rejected by consensus
-                    ConsensusVerdict::Rejected(err) => {
-                        return Err(format!(
-                            "Block at height {} rejected by consensus: {:?}",
-                            height, err
-                        ));
-                    }
-
-                    other => {
-                        warn!(
-                            "Unexpected ConsensusVerdict ({:?}) for block at height {}: {:?}",
-                            other, height, block
-                        );
-                        return Err("Unexpected ConsensusVerdict".to_string());
-                    }
+            let engine = &mut self.consensus_engine;
+            let blk_for_engine = block.clone();
+            match engine
+                .on_block(blk_for_engine)
+                .await
+                .map_err(|e| format!("Consensus engine failed at height {}: {:?}", height, e))?
+            {
+                // Applied successfully
+                ConsensusVerdict::Applied { chain_work } => {
+                    debug!(
+                        "Block at height {} persisted via ConsensusEngine. chain_work={}",
+                        height, chain_work
+                    );
                 }
-            }
-            // DIRECT INSERT
-            else {
-                // Acquire write lock only for the short duration required to persist the block
-                let mut storage_guard = self.storage.write().await;
-                check_generation_deadline(self.generation_deadline, Some(height - 1))?;
-                storage_guard
-                    .put_block(&block)
-                    .await
-                    .map_err(|e| format!("put_block failed at height {}: {}", height, e))?;
+
+                // Rejected by consensus
+                ConsensusVerdict::Rejected(err) => {
+                    return Err(format!(
+                        "Block at height {} rejected by consensus: {:?}",
+                        height, err
+                    ));
+                }
+
+                other => {
+                    warn!(
+                        "Unexpected ConsensusVerdict ({:?}) for block at height {}: {:?}",
+                        other, height, block
+                    );
+                    return Err("Unexpected ConsensusVerdict".to_string());
+                }
             }
 
             check_generation_deadline(self.generation_deadline, Some(height))?;
@@ -307,16 +280,6 @@ impl ChainGenerator {
             let blocks_done = height - normal_blocks + 1;
             let avg_tx_count = tx_count as f64 / blocks_done as f64;
 
-            // insert undo if needed
-            // note: if config is set to PersistenceMode::ConsensusEngine, this will be done by consensus engine automatically.
-            // Undo + direct_insert is rejected at config validation time,
-            // so this branch is unreachable. Consensus-engine mode handles undo automatically.
-            debug_assert!(
-                !(self.config.blocks.need_undo
-                    && self.config.chain.persistence_mode == PersistenceMode::DirectInsert),
-                "need_undo + DirectInsert should have been rejected by config validation"
-            );
-
             if blocks_done.is_multiple_of(10) || height == end_height {
                 info!(
                     "|->  persisted {}/{} blocks (seed {}). Total transactions: {}, avg. per block: {:.2}",
@@ -331,14 +294,6 @@ impl ChainGenerator {
         }
 
         check_generation_deadline(self.generation_deadline, Some(end_height))?;
-        if self.generation_deadline.is_none() {
-            generation_state.save_accounts(
-                self.config.chain.output_path.clone(),
-                self.pre_generation_height,
-                end_height,
-            )?;
-        }
-
         // log current top addresses and some stuff
         {
             let s = self.storage.read().await;

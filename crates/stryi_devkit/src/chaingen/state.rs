@@ -6,7 +6,7 @@ use k256::ecdsa::SigningKey;
 use rand::SeedableRng;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::Write;
+use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 use stryi_core::PrivateKey;
@@ -223,8 +223,9 @@ impl GenerationState {
         Ok(accounts)
     }
 
-    /// Saves accounts in a provided dir, in file `CHAINGEN_ACCOUNTS_{start_height}_{end_height}.txt`
-    /// In this file, each line contains an account address and corresponding private key in hex format separated by colon (:)
+    /// Saves accounts in a provided dir, in file `CHAINGEN_ACCOUNTS_{start_height}_{end_height}.txt`.
+    /// Each line contains an account address and corresponding private key separated by colon (:).
+    /// Identical backups are reused. Different or partial files are preserved; new backups get a numbered suffix.
     pub fn save_accounts(
         &self,
         path: PathBuf,
@@ -238,42 +239,72 @@ impl GenerationState {
                 &path.to_str().unwrap_or("UNPRINTABLE PATH")
             ));
         }
-        let file_path = path.join(format!(
-            "CHAINGEN_ACCOUNTS_{}_{}.txt",
-            start_height, end_height
-        ));
-        debug!(
-            "Path to generate private key backup : {}",
-            file_path.to_str().unwrap()
-        );
-        let mut file = File::create_new(&file_path).map_err(|e| {
-            format!(
-                "Unable to create file for creating private keys backup, error: `{}`.",
-                e
-            )
-        })?;
 
-        info!("Backing up generated accounts in {:?}", path);
-
-        let pairs: Vec<(AccountAddress, PrivateKey)> = self
-            .accounts
-            .clone()
-            .iter()
-            .map(|(addr, signing_key)| (addr.to_owned(), PrivateKey::new(signing_key.clone())))
-            .collect();
-
-        // Create buffer before writing
-        let mut buffer = String::with_capacity(pairs.len() * 100);
-
-        // construct lines in our format
-        for (account_address, private_key) in pairs {
-            let line = format!("{}:{}\n", account_address, private_key);
-            buffer.push_str(&line);
+        // Build the complete backup before creating a file or comparing a previous attempt.
+        let mut buffer = String::with_capacity(self.accounts.len() * 100);
+        for (address, signing_key) in &self.accounts {
+            let private_key = PrivateKey::new(signing_key.clone());
+            buffer.push_str(&format!("{address}:{private_key}\n"));
         }
 
-        // write in file
-        file.write_all(buffer.as_bytes())
-            .map_err(|e| format!("Unable to write backup in file, error : {}", e))
+        let file_name = format!("CHAINGEN_ACCOUNTS_{start_height}_{end_height}");
+        let mut suffix = 0;
+
+        let (file, file_path) = loop {
+            let file_path = if suffix == 0 {
+                path.join(format!("{file_name}.txt"))
+            } else {
+                path.join(format!("{file_name}_{suffix}.txt"))
+            };
+
+            match File::create_new(&file_path) {
+                Ok(mut file) => {
+                    file.write_all(buffer.as_bytes()).map_err(|e| {
+                        format!("Unable to write key backup {}: {e}", file_path.display())
+                    })?;
+
+                    break (file, file_path);
+                }
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                    let mut file = File::open(&file_path).map_err(|e| {
+                        format!("Unable to open key backup {}: {e}", file_path.display())
+                    })?;
+                    let mut saved = Vec::new();
+                    file.read_to_end(&mut saved).map_err(|e| {
+                        format!("Unable to read key backup {}: {e}", file_path.display())
+                    })?;
+
+                    if saved == buffer.as_bytes() {
+                        break (file, file_path);
+                    }
+
+                    suffix += 1;
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "Unable to create key backup {}: {e}",
+                        file_path.display()
+                    ));
+                }
+            }
+        };
+
+        debug!(
+            "Path to generated private key backup: {}",
+            file_path.display()
+        );
+
+        // A retry must sync the matching file too, before balances can be persisted.
+        file.sync_all()
+            .map_err(|e| format!("Unable to sync key backup {}: {e}", file_path.display()))?;
+
+        File::open(&path)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| format!("Unable to sync backup directory {}: {e}", path.display()))?;
+
+        info!("Generated accounts backed up in {}", file_path.display());
+
+        Ok(())
     }
 
     /// Select multiple UTXOs based on the given criteria

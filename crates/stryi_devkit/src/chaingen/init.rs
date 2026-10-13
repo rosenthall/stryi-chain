@@ -2,10 +2,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::chaingen::funding_account::FundAccount;
-use crate::chaingen::{ChainGenConfig, ChainGenerator, PersistenceMode, check_generation_deadline};
+use crate::chaingen::{ChainGenConfig, ChainGenerator, check_generation_deadline};
 
 use stryi_core::PrivateKey;
 use stryi_core::block::Block;
@@ -73,13 +73,8 @@ impl ChainGenerator {
         check_generation_deadline(generation_deadline, Some(chain_height))?;
 
         // initialize consensus engine
-        let consensus_engine = init_consensus_engine(
-            &config.chain.persistence_mode,
-            storage.clone(),
-            consensus_consts,
-            difficulty_calc,
-        )
-        .await?;
+        let consensus_engine =
+            init_consensus_engine(storage.clone(), consensus_consts, difficulty_calc).await?;
         check_generation_deadline(generation_deadline, Some(chain_height))?;
 
         Ok(Self {
@@ -244,31 +239,15 @@ async fn load_funding_account(
     Ok(funder)
 }
 async fn init_consensus_engine(
-    mode: &PersistenceMode,
     storage: Arc<RwLock<StryiStorage>>,
     consts: ConsensusConsts,
     difficulty_calc: DifficultyCalc,
-) -> Result<Option<StryiConsensusEngine<StryiStorage>>, String> {
-    match mode {
-        PersistenceMode::ConsensusEngine => {
-            info!("PersistenceMode::ConsensusEngine selected.");
-
-            let validator = BlockValidator::new(consts, difficulty_calc);
-
-            let utxo_processor = UtxoProcessor::new();
-
-            let engine =
-                StryiConsensusEngine::new(consts, validator, utxo_processor, storage.clone())
-                    .await
-                    .map_err(|e| format!("Failed to initialize consensus engine: {e:?}"))?;
-
-            engine.startup_message();
-            Ok(Some(engine))
-        }
-
-        PersistenceMode::DirectInsert => {
-            warn!("PersistenceMode::DirectInsert selected.");
-            Ok(None)
-        }
-    }
+) -> Result<StryiConsensusEngine<StryiStorage>, String> {
+    let validator = BlockValidator::new(consts, difficulty_calc);
+    let utxo_processor = UtxoProcessor::new();
+    let engine = StryiConsensusEngine::new(consts, validator, utxo_processor, storage)
+        .await
+        .map_err(|e| format!("Failed to initialize consensus engine: {e:?}"))?;
+    engine.startup_message();
+    Ok(engine)
 }

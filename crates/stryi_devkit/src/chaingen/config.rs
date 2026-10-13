@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
-use tracing::trace;
 
 /// Top-level config for chain-generator tool.
 /// Includes two tables : `[chain]` and `[blocks]` for chain-wide and block-gen settings correspondingly.
@@ -19,46 +18,6 @@ pub struct ChainGenConfig {
 
     /// Block-generation settings.
     pub blocks: BlocksSettings,
-}
-
-/// How generated blocks are persisted/applied.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PersistenceMode {
-    ConsensusEngine,
-    DirectInsert,
-}
-
-impl std::str::FromStr for PersistenceMode {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "consensus_engine" => Ok(PersistenceMode::ConsensusEngine),
-            "direct_insert" => Ok(PersistenceMode::DirectInsert),
-            other => Err(format!(
-                "invalid persistence_mode: `{}`. Allowed values: \"consensus_engine\", \"direct_insert\"",
-                other
-            )),
-        }
-    }
-}
-
-impl TryFrom<String> for PersistenceMode {
-    type Error = String;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        value.as_str().parse()
-    }
-}
-
-impl<'de> Deserialize<'de> for PersistenceMode {
-    fn deserialize<D>(deserializer: D) -> Result<PersistenceMode, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        PersistenceMode::try_from(s).map_err(serde::de::Error::custom)
-    }
 }
 
 /// Chain-wide settings.
@@ -78,16 +37,6 @@ pub struct ChainSettings {
 
     /// Path to genesis JSON (same format as used by `stryi-node`).
     pub genesis_path: PathBuf,
-
-    /// How generated blocks are persisted/applied.
-    /// Allowed values: "consensus_engine", "direct_insert"
-    /// Default: "consensus_engine"
-    /// - "consensus_engine" - Build and feed blocks into StryiConsensusEngine;
-    ///   validates and applies blocks as a real node would.
-    /// - "direct_insert" - Write blocks directly to storage without consensus validation
-    ///   Faster, useful for low-level tests, but may create chains that real nodes reject.
-    ///   **Use only when you know what you are doing.**
-    pub persistence_mode: PersistenceMode,
 }
 
 /// Block-generation rules for timestamps, miner, and synthetic traffic.
@@ -110,11 +59,6 @@ pub struct BlocksSettings {
 
     /// Number of unique active addresses participating in transfers.
     pub active_addresses_count: u32,
-
-    /// Whether to insert undo data for each block.
-    /// This will increase the size of the generated chain but allows testing of reorg-related logic
-    /// NOTE: Ignored when using persistence_mode consensus_engine, because it does it anyway
-    pub need_undo: bool,
 }
 
 impl ChainGenConfig {
@@ -182,18 +126,6 @@ impl ChainGenConfig {
             );
         }
 
-        // undo + direct_insert is not supported - undo records are only produced
-        // by the consensus engine, so require consensus_engine mode when undo is requested.
-        if self.blocks.need_undo && self.chain.persistence_mode == PersistenceMode::DirectInsert {
-            return Err(
-                "need_undo=true requires persistence_mode=\"consensus_engine\". \
-                 Direct-insert mode cannot produce BlockUndo records."
-                    .to_string(),
-            );
-        }
-
-        trace!("Persistence mode set to {:?}", &self.chain.persistence_mode);
-
         // validate seed ranges via helper
         seed::validate(&self.chain.seed, self.chain.num_blocks)?;
 
@@ -235,7 +167,6 @@ mod tests {
                 seed: SeedValue::Single(42),
                 output_path: std::env::temp_dir(),
                 genesis_path,
-                persistence_mode: PersistenceMode::ConsensusEngine,
             },
             blocks: BlocksSettings {
                 funding_key: PrivateKey::try_from(
@@ -250,7 +181,6 @@ mod tests {
                 min_transactions_per_block: 2,
                 max_transactions_per_block: 6,
                 active_addresses_count: 10,
-                need_undo: false,
             },
         }
     }
