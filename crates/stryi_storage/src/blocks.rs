@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::ops::RangeInclusive;
 use stryi_core::block::{Block, BlockHash};
+use stryi_core::difficulty::add_work;
 use stryi_core::storage::BlockStorage;
 
 impl StryiStorage {
@@ -28,13 +29,11 @@ impl StryiStorage {
     }
 
     fn serialize_block(block: &Block) -> Result<Vec<u8>, StryiStorageError> {
-        postcard::to_stdvec(block)
-            .map_err(StryiStorageError::SerializationError)
+        postcard::to_stdvec(block).map_err(StryiStorageError::SerializationError)
     }
 
     fn deserialize_block(data: &[u8]) -> Result<Block, StryiStorageError> {
-        let block = postcard::from_bytes(data)
-            .map_err(StryiStorageError::DeserializationError)?;
+        let block = postcard::from_bytes(data).map_err(StryiStorageError::DeserializationError)?;
         Ok(block)
     }
 }
@@ -50,19 +49,30 @@ impl BlockStorage for StryiStorage {
             let height_key = Self::height_to_key(block.header.height as usize)?;
             let block_hash = block.block_hash();
             let current_state = self.get_current_storage_state()?;
-            let new_chain_diff =
-                current_state.chain_difficulty + (1 << block.header.difficulty_bits);
+
+            // Validate genesis before trusting its zero work.
+            if block.header.is_genesis() {
+                crate::validate_genesis(&block)
+                    .map_err(|e| StryiStorageError::InvalidGenesisBlock(e.to_string()))?;
+            }
+
+            let work = block.work();
+
+            // The checked sum fails here, before the batch below writes anything.
+            let new_chain_work = add_work(current_state.chain_work, work)
+                .map_err(|e| StryiStorageError::ChainWorkOverflow(e.to_string()))?;
+
             let new_state = StorageStateInformation {
                 latest_block: (block.header.height as usize, block_hash),
                 last_update_time: block.header.timestamp as usize,
                 blocks_count: current_state.blocks_count + 1,
-                chain_difficulty: new_chain_diff,
+                chain_work: new_chain_work,
             };
 
             let index_data = BlockIndexData {
                 parent_hash: block.header.previous_block_hash,
                 height: block.header.height,
-                chain_work: new_chain_diff as u128,
+                chain_work: new_chain_work,
             };
 
             let index_bytes = postcard::to_stdvec(&index_data)?;
@@ -231,23 +241,36 @@ impl BlockStorage for StryiStorage {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::GenesisInitConfig;
     use fjall::{Database, KeyspaceCreateOptions};
+    use stryi_core::address::AccountAddress;
     use stryi_core::block::{Block, BlockHeader, GenesisState};
+    use stryi_core::difficulty::{ChainWork, DifficultyCalc, HashThreshold};
     use stryi_core::merkletree::MerkleHash;
     use tempfile::TempDir;
 
-    /// Helper function to create a test block with given height
+    /// Helper function to create a test block with given height.
+    /// Height 0 is a real genesis block carrying the strict genesis shape.
     fn create_test_block(height: usize) -> Block {
+        if height == 0 {
+            return Block::new_genesis(
+                1,
+                HashMap::from([(AccountAddress::new(&[1u8; 20]), 1_000_000)]),
+                GenesisState::default(),
+            );
+        }
+
         Block {
             header: BlockHeader {
                 version: 1,
                 merkle_root_hash: MerkleHash::empty(),
                 previous_block_hash: BlockHash::empty(),
                 height: height as u64,
-                difficulty_bits: 1,
+                // Explicit easy threshold, work is 2.
+                hash_threshold: HashThreshold::MAX >> 1,
                 timestamp: 1234567,
                 nonce: height as u32,
-                genesis_state: (height == 0).then(GenesisState::default),
+                genesis_state: None,
             },
             data: stryi_core::block::BlockData {
                 transactions: vec![],
@@ -312,7 +335,7 @@ pub(crate) mod tests {
                 latest_block: (0, BlockHash::empty()),
                 last_update_time: 0,
                 blocks_count: 0,
-                chain_difficulty: 0,
+                chain_work: ChainWork::ZERO,
             };
 
             // Store initial state
@@ -380,6 +403,130 @@ pub(crate) mod tests {
         // Test: Range that includes gap
         let empty_range = storage.blocks_range(3usize..=5usize).await;
         assert!(empty_range.is_err()); // should return error because of a gap
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_chain_work_overflow_fails_before_writes() -> Result<(), StryiStorageError> {
+        let (mut storage, _temp_dir) = create_test_storage(true);
+
+        // Saturate the persisted work so the next block's work cannot be added.
+        let saturated = StorageStateInformation {
+            latest_block: (0, BlockHash::empty()),
+            last_update_time: 0,
+            blocks_count: 0,
+            chain_work: ChainWork::MAX,
+        };
+        storage.update_storage_state(saturated.clone())?;
+
+        let block = create_test_block(7);
+        let block_hash = block.block_hash();
+
+        let err = storage
+            .put_block(&block)
+            .await
+            .expect_err("chain work overflow must not be accepted");
+        assert!(
+            matches!(err, StryiStorageError::ChainWorkOverflow(_)),
+            "unexpected error: {err:?}"
+        );
+
+        // The checked sum fails before the batch: stats and all indexes stay intact.
+        assert_eq!(storage.get_current_storage_state()?, saturated);
+        assert!(!storage.block_exists(block_hash).await?);
+        assert!(!storage.has_block_index(&block_hash)?);
+        assert!(storage.get_block_by_height(7).await?.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_invalid_pow_params_rejected_before_writes_and_reopen_recovers()
+    -> Result<(), StryiStorageError> {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path().join("db");
+
+        let mut bad = GenesisInitConfig::new_test();
+        bad.genesis_state.consensus_consts.pow.target_spacing_secs = 0;
+
+        // A genesis with invalid PoW params must be rejected on admission.
+        let err = match StryiStorage::initialize_in_path(path.clone(), Some(bad.clone())).await {
+            Ok(_) => panic!("genesis with target_spacing_secs = 0 must be rejected"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, StryiStorageError::InvalidGenesisBlock(_)),
+            "unexpected error: {err:?}"
+        );
+
+        // The rejected attempt must have no durable effect: the corrected config
+        // initializes a valid genesis instead of being ignored.
+        let storage =
+            StryiStorage::initialize_in_path(path.clone(), Some(GenesisInitConfig::new_test()))
+                .await?;
+        let genesis = storage
+            .get_block_by_height(0)
+            .await?
+            .expect("corrected config must initialize genesis");
+        let pow = genesis
+            .header
+            .genesis_state
+            .expect("genesis carries state")
+            .consensus_consts
+            .pow;
+        assert_eq!(pow.target_spacing_secs, 10);
+        assert!(DifficultyCalc::new(pow).is_ok());
+
+        // A direct genesis initialization reports the same rejection without writes.
+        let mut fresh =
+            StryiStorage::initialize_in_path(temp_dir.path().join("fresh-db"), None).await?;
+        let err = fresh
+            .init_with_genesis(bad)
+            .await
+            .expect_err("direct genesis init must reject invalid PoW params");
+        assert!(
+            matches!(err, StryiStorageError::InvalidGenesisBlock(_)),
+            "unexpected error: {err:?}"
+        );
+        assert!(fresh.get_block_by_height(0).await?.is_none());
+        assert_eq!(fresh.get_current_storage_state()?.blocks_count, 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_malformed_genesis_shape_rejected_by_validate_and_put_block()
+    -> Result<(), StryiStorageError> {
+        let cfg = GenesisInitConfig::new_test();
+        let mut genesis = Block::new_genesis(
+            cfg.version,
+            HashMap::from_iter(cfg.wanted_balances),
+            cfg.genesis_state,
+        );
+        genesis.header.hash_threshold = HashThreshold::MAX;
+        genesis.header.timestamp = 12_345;
+        genesis.header.nonce = 7;
+
+        assert!(
+            crate::validate_genesis(&genesis).is_err(),
+            "a marker header without the genesis shape must fail validation"
+        );
+
+        let (mut storage, _temp_dir) = create_test_storage(true);
+        let err = storage
+            .put_block(&genesis)
+            .await
+            .expect_err("put_block must reject a malformed genesis marker");
+        assert!(
+            matches!(err, StryiStorageError::InvalidGenesisBlock(_)),
+            "unexpected error: {err:?}"
+        );
+
+        // The rejected write must not index, count or store the block.
+        assert!(!storage.block_exists(genesis.block_hash()).await?);
+        assert!(storage.get_block_by_height(0).await?.is_none());
+        assert_eq!(storage.get_current_storage_state()?.blocks_count, 0);
 
         Ok(())
     }

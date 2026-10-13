@@ -1,9 +1,10 @@
 use crate::address::AccountAddress;
-use crate::block::{Block, BlockHash, meets_difficulty};
+use crate::block::{Block, BlockHash, GenesisState};
 use crate::consensus::{
     ConsensusConsts, ConsensusEngine, ConsensusVerdict, StryiConsensusEngine, UtxoStorage,
     validate_block_structure,
 };
+use crate::difficulty::{ChainWork, HashThreshold};
 use crate::error::StryiCoreError;
 use crate::storage::StryiInMemoryStorage;
 use crate::tests::{
@@ -47,7 +48,7 @@ async fn test_on_block_rejects_block_with_overspending_transaction() {
     let block = make_block_mined(
         vec![coinbase, overspend_tx],
         1,
-        consts.difficulty_bits_for_height(1),
+        consts.pow.initial_hash_threshold,
         genesis.block_hash(),
     );
 
@@ -93,7 +94,7 @@ async fn test_on_block_rejects_block_with_wrong_owner() {
     let block = make_block_mined(
         vec![coinbase, theft_tx],
         1,
-        consts.difficulty_bits_for_height(1),
+        consts.pow.initial_hash_threshold,
         genesis.block_hash(),
     );
 
@@ -120,12 +121,7 @@ async fn test_on_block_buffers_weaker_fork() {
     let mut prev = genesis.block_hash();
     for h in 1..=3 {
         let coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(h), miner_addr, h, prev);
-        let block = make_block_mined(
-            vec![coinbase],
-            h,
-            consts.difficulty_bits_for_height(h),
-            prev,
-        );
+        let block = make_block_mined(vec![coinbase], h, consts.pow.initial_hash_threshold, prev);
         prev = block.block_hash();
         let v = engine.on_block(block).await.unwrap();
         assert!(
@@ -145,7 +141,7 @@ async fn test_on_block_buffers_weaker_fork() {
     let fork_block = make_block_mined(
         vec![fork_coinbase],
         1,
-        consts.difficulty_bits_for_height(1),
+        consts.pow.initial_hash_threshold,
         genesis.block_hash(),
     );
 
@@ -171,14 +167,21 @@ async fn test_on_block_causes_reorganization_when_fork_is_heavier() {
     let canonical_block = make_block_mined(
         vec![canonical_coinbase],
         1,
-        consts.difficulty_bits_for_height(1),
+        consts.pow.initial_hash_threshold,
         genesis.block_hash(),
     );
     let canonical_hash = canonical_block.block_hash();
     let v = engine.on_block(canonical_block).await.unwrap();
-    assert!(matches!(v, ConsensusVerdict::Applied { .. }));
+    match v {
+        ConsensusVerdict::Applied { chain_work } => {
+            // Genesis work is zero, so the first applied block carries only its own work.
+            assert_eq!(chain_work, ChainWork::from(2u64));
+        }
+        other => panic!("Expected Applied for the canonical block, got: {other:?}"),
+    }
 
-    // build 2-block fork from genesis (total fork work > canonical work triggers reorg)
+    // Build a 2-block fork from genesis. Equal per-block work means the longer
+    // fork is the heavier one and must trigger the reorg.
     let fork1_coinbase = make_coinbase_tx(
         &miner_key,
         consts.block_subsidy(1),
@@ -189,7 +192,7 @@ async fn test_on_block_causes_reorganization_when_fork_is_heavier() {
     let fork1 = make_block_mined(
         vec![fork1_coinbase],
         1,
-        consts.difficulty_bits_for_height(1),
+        consts.pow.initial_hash_threshold,
         genesis.block_hash(),
     );
 
@@ -207,7 +210,7 @@ async fn test_on_block_causes_reorganization_when_fork_is_heavier() {
     let fork2 = make_block_mined(
         vec![fork2_coinbase],
         2,
-        consts.difficulty_bits_for_height(2),
+        consts.pow.initial_hash_threshold,
         fork1.block_hash(),
     );
 
@@ -227,7 +230,7 @@ async fn test_on_block_causes_reorganization_when_fork_is_heavier() {
 fn make_test_block(
     txs: Vec<Transaction>,
     height: u64,
-    difficulty_bits: u8,
+    hash_threshold: HashThreshold,
     previous_block_hash: BlockHash,
 ) -> Block {
     const MAX_ATTEMPTS: u32 = 100_000;
@@ -236,17 +239,17 @@ fn make_test_block(
         txs,
         previous_block_hash,
         height,
-        difficulty_bits,
+        hash_threshold,
         timestamp,
         1,
     );
     for nonce in 0..MAX_ATTEMPTS {
         block.header.nonce = nonce;
-        if meets_difficulty(&block.block_hash(), difficulty_bits) {
+        if block.block_hash().meets_threshold(&hash_threshold) {
             return block;
         }
     }
-    panic!("Failed to mine test block within {MAX_ATTEMPTS} attempts for {difficulty_bits} difficulty bits");
+    panic!("Failed to mine test block within {MAX_ATTEMPTS} attempts for the given hash threshold");
 }
 
 #[tokio::test]
@@ -264,12 +267,7 @@ async fn coinbase_rewards_remain_distinct_and_undo_preserves_previous_reward() {
     for height in 1..=2 {
         let tx = make_coinbase_tx(&key, consts.block_subsidy(height), miner, height, parent);
         reward_ids.push(tx.data.hash());
-        let block = make_test_block(
-            vec![tx],
-            height,
-            consts.difficulty_bits_for_height(height),
-            parent,
-        );
+        let block = make_test_block(vec![tx], height, consts.pow.initial_hash_threshold, parent);
         parent = block.block_hash();
         assert!(matches!(
             engine.on_block(block).await.unwrap(),
@@ -299,7 +297,7 @@ async fn coinbase_rewards_remain_distinct_and_undo_preserves_previous_reward() {
 
 #[derive(Debug, PartialEq, Eq)]
 struct EngineSnapshot {
-    tip: Option<(u64, BlockHash, u128)>,
+    tip: Option<(u64, BlockHash, ChainWork)>,
     alice_utxos: HashMap<OutPoint, UTXO>,
     miner_utxos: HashMap<OutPoint, UTXO>,
 }
@@ -375,14 +373,18 @@ fn test_validate_block_structure_scenarios() {
     ];
 
     for (name, txs, expected) in cases {
-        let block = Block::new(txs, BlockHash::empty(), 1, 0, 1_700_000_000, 1);
+        let block = Block::new(
+            txs,
+            BlockHash::empty(),
+            1,
+            HashThreshold::MAX >> 1,
+            1_700_000_000,
+            1,
+        );
         let res = validate_block_structure(&block);
         match (res, expected) {
             (Ok(()), Ok(())) => {}
-            (
-                Err(StryiCoreError::ConsensusValidationFailed { details }),
-                Err(expected_msg),
-            ) => {
+            (Err(StryiCoreError::ConsensusValidationFailed { details }), Err(expected_msg)) => {
                 assert_eq!(details, expected_msg, "{name}: mismatch in failure details");
             }
             (actual, expected) => {
@@ -426,14 +428,17 @@ async fn test_on_block_rejects_canonical_blocks_with_extra_minting_txs() {
         let block = make_test_block(
             vec![coinbase, extra_tx],
             1,
-            consts.difficulty_bits_for_height(1),
+            consts.pow.initial_hash_threshold,
             genesis.block_hash(),
         );
 
         let verdict = engine.on_block(block).await.unwrap();
         match verdict {
             ConsensusVerdict::Rejected(StryiCoreError::ConsensusValidationFailed { details }) => {
-                assert_eq!(details, expected_error, "{name}: unexpected rejection reason");
+                assert_eq!(
+                    details, expected_error,
+                    "{name}: unexpected rejection reason"
+                );
             }
             other => panic!("{name}: expected Rejected(ConsensusValidationFailed), got: {other:?}"),
         }
@@ -457,12 +462,7 @@ async fn test_on_block_rejects_fork_block_with_additional_coinbase() {
     let mut prev = genesis.block_hash();
     for h in 1..=2 {
         let coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(h), miner_addr, h, prev);
-        let block = make_test_block(
-            vec![coinbase],
-            h,
-            consts.difficulty_bits_for_height(h),
-            prev,
-        );
+        let block = make_test_block(vec![coinbase], h, consts.pow.initial_hash_threshold, prev);
         prev = block.block_hash();
         let v = engine.on_block(block).await.unwrap();
         assert!(matches!(v, ConsensusVerdict::Applied { .. }));
@@ -482,7 +482,7 @@ async fn test_on_block_rejects_fork_block_with_additional_coinbase() {
     let fork_block = make_test_block(
         vec![fork_coinbase1, fork_coinbase2],
         1,
-        consts.difficulty_bits_for_height(1),
+        consts.pow.initial_hash_threshold,
         genesis.block_hash(),
     );
 
@@ -495,7 +495,9 @@ async fn test_on_block_rejects_fork_block_with_additional_coinbase() {
                 "Fork block rejection reason mismatch"
             );
         }
-        other => panic!("Expected Rejected(ConsensusValidationFailed) for fork block, got: {other:?}"),
+        other => {
+            panic!("Expected Rejected(ConsensusValidationFailed) for fork block, got: {other:?}")
+        }
     }
 
     let snapshot_after = capture_snapshot(&engine, alice_addr, miner_addr).await;
@@ -520,7 +522,8 @@ async fn test_genesis_initialization_succeeds() {
 
     let engine = make_engine(db, consts).await;
     let tip = engine.tip();
-    assert_eq!(tip, Some((0, genesis.block_hash(), 1)));
+    // Genesis contributes zero work to the chain.
+    assert_eq!(tip, Some((0, genesis.block_hash(), ChainWork::ZERO)));
     let alice_utxos = engine
         .db
         .read()
@@ -530,4 +533,51 @@ async fn test_genesis_initialization_succeeds() {
         .unwrap();
     assert_eq!(alice_utxos.len(), 1);
     assert_eq!(alice_utxos.values().next().unwrap().value, 50_000);
+}
+
+#[tokio::test]
+async fn test_on_block_rejects_genesis_marker_at_normal_height() {
+    let consts = ConsensusConsts::default();
+    let (_, alice_addr) = keypair_from_seed(1);
+    let (miner_key, miner_addr) = keypair_from_seed(0);
+    let (genesis, db) = make_test_genesis(&[(alice_addr, 100_000)], consts);
+    let mut engine = make_engine(db, consts).await;
+    let snapshot_before = capture_snapshot(&engine, alice_addr, miner_addr).await;
+
+    // A normal-height header carrying the genesis marker would hash to the zero
+    // block hash and claim zero genesis work while skipping proof of work.
+    let coinbase = make_coinbase_tx(
+        &miner_key,
+        consts.block_subsidy(1),
+        miner_addr,
+        1,
+        genesis.block_hash(),
+    );
+    let mut block = make_test_block(
+        vec![coinbase],
+        1,
+        consts.pow.initial_hash_threshold,
+        genesis.block_hash(),
+    );
+    block.header.genesis_state = Some(GenesisState::default());
+
+    let verdict = engine.on_block(block).await.unwrap();
+
+    match verdict {
+        ConsensusVerdict::Rejected(StryiCoreError::ConsensusValidationFailed { details }) => {
+            assert!(
+                details.contains("Genesis marker"),
+                "unexpected rejection reason: {details}"
+            );
+        }
+        other => panic!(
+            "Expected Rejected(ConsensusValidationFailed) for a genesis marker at normal height, got: {other:?}"
+        ),
+    }
+
+    let snapshot_after = capture_snapshot(&engine, alice_addr, miner_addr).await;
+    assert_eq!(
+        snapshot_before, snapshot_after,
+        "Canonical tip and UTXOs must remain unchanged after the rejected marker block"
+    );
 }

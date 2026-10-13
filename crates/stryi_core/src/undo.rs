@@ -82,6 +82,7 @@ mod tests {
     use super::*;
     use crate::address::AccountAddress;
     use crate::block::{BlockData, BlockHash, BlockHeader};
+    use crate::difficulty::HashThreshold;
     use crate::merkletree::MerkleHash;
     use crate::transactions::{
         TransactionData, TransactionHash, TransactionIn, TransactionKind, TransactionOut,
@@ -217,7 +218,7 @@ mod tests {
                 merkle_root_hash: MerkleHash::empty(),
                 previous_block_hash: BlockHash::empty(),
                 height: 0,
-                difficulty_bits: 1,
+                hash_threshold: HashThreshold::MAX >> 1,
                 timestamp: 0,
                 nonce: 0,
                 genesis_state: None,

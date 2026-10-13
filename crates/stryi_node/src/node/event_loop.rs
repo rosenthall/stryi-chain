@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::consensus::{ConsensusEngine, ConsensusVerdict, StryiConsensusEngine};
+use stryi_core::difficulty::ChainWork;
 use stryi_core::mempool::MemPool;
 use stryi_core::storage::StorageStats;
 use stryi_network::{
@@ -193,7 +194,7 @@ impl EventLoop {
             if let Some(ann) = build_tip_announcement(&engine) {
                 info!(
                     "Publishing initial chain tip: height={}, work={}",
-                    ann.height, ann.cumulative_work
+                    ann.height, ann.chain_work
                 );
                 let hash = ann.tip_hash;
                 let (respond_to, rx) = oneshot::channel();
@@ -237,7 +238,7 @@ impl EventLoop {
                         if let Some(ann) = build_tip_announcement(&engine)
                             && last_announced_tip.as_ref() != Some(&ann.tip_hash)
                         {
-                            trace!("Tip heartbeat: height={}, work={}", ann.height, ann.cumulative_work);
+                            trace!("Tip heartbeat: height={}, work={}", ann.height, ann.chain_work);
                             last_announced_tip = Some(ann.tip_hash);
                             let (respond_to, rx) = oneshot::channel();
                             let _ = net_cmd.send(NetworkCommand::PublishChainTip { announcement: ann, respond_to }).await;
@@ -413,13 +414,13 @@ impl EventLoop {
                             Ok(NetworkEvent::ChainTipAnnounced { announcement: ann, source }) => {
                                 let local_work = {
                                     let engine = consensus_engine.lock().await;
-                                    engine.tip().map(|(_, _, w)| w).unwrap_or(0)
+                                    engine.tip().map(|(_, _, w)| w).unwrap_or(ChainWork::ZERO)
                                 };
 
-                                if ann.cumulative_work <= local_work {
+                                if ann.chain_work <= local_work {
                                     trace!(
                                         "Remote tip (work={}) <= local (work={}), ignoring",
-                                        ann.cumulative_work, local_work
+                                        ann.chain_work, local_work
                                     );
                                 } else {
                                     let permit = match Arc::clone(&sync_semaphore).try_acquire_owned() {
@@ -432,7 +433,7 @@ impl EventLoop {
 
                                     info!(
                                         "Remote chain heavier (remote={}, local={}) from peer {}, starting sync",
-                                        ann.cumulative_work, local_work, source
+                                        ann.chain_work, local_work, source
                                     );
 
                                     let engine_for_sync = Arc::clone(&consensus_engine);
@@ -502,7 +503,7 @@ async fn publish_reorg_tip_announcement(
 ) {
     info!(
         "Reorg: announcing new tip height={}, work={}",
-        ann.height, ann.cumulative_work
+        ann.height, ann.chain_work
     );
     let tip_hash = ann.tip_hash;
     *last_announced_tip = Some(tip_hash);
@@ -531,7 +532,7 @@ fn build_tip_announcement(
         .map(|(height, hash, work)| ChainTipAnnouncement {
             height,
             tip_hash: hash,
-            cumulative_work: work,
+            chain_work: work,
         })
 }
 

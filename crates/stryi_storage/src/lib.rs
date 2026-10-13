@@ -39,7 +39,8 @@ use stryi_core::address::AccountAddress;
 
 use crate::stats::StorageStateInformation;
 use stryi_core::block::{Block, BlockHash, GenesisState};
-use stryi_core::storage::{BlockStorage, UtxoStorage};
+use stryi_core::difficulty::ChainWork;
+use stryi_core::storage::{BlockStorage, UtxoStorage, verify_genesis_work_shape};
 use stryi_core::transactions::{OutPoint, TransactionKind, UTXO};
 
 /// Storage handle over the Fjall database and its opened keyspaces.
@@ -97,28 +98,33 @@ impl GenesisInitConfig {
     }
 }
 
-/// Validate the storage-side invariants for a genesis block.
+/// Validates genesis shape, allocations and PoW parameters before storage.
 pub fn validate_genesis(block: &Block) -> Result<(), Box<dyn Error + Send + Sync>> {
     let h = &block.header;
 
     let invariant_err =
         |msg: &str| io::Error::other(format!("genesis invariant failed: {msg}")).into();
 
-    if h.height != 0 {
-        return Err(invariant_err("header.height must be 0"));
-    }
+    verify_genesis_work_shape(block)?;
 
     if !block.is_merkle_root_valid() {
         return Err(invariant_err("header.merkle_root must be valid"));
     }
 
-    if h.previous_block_hash != BlockHash::empty() {
-        return Err(invariant_err("header.previous_block_hash must be zero"));
-    }
-
     if !h.is_genesis() {
         return Err(invariant_err("header.is_genesis() must be true"));
     }
+
+    let genesis_state = h
+        .genesis_state
+        .as_ref()
+        .expect("is_genesis() means genesis_state is Some");
+
+    genesis_state
+        .consensus_consts
+        .pow
+        .validate()
+        .map_err(|e| invariant_err(&format!("genesis pow params must be valid: {e}")))?;
 
     if block.data.transactions.len() != 1 {
         return Err(invariant_err("exactly one transaction is required"));
@@ -207,18 +213,13 @@ impl StryiStorage {
         );
 
         // Open or create the eight keyspaces with default options
-        let blocks_partition =
-            db.keyspace("blocks", KeyspaceCreateOptions::default)?;
-        let heights_partition =
-            db.keyspace("heights", KeyspaceCreateOptions::default)?;
+        let blocks_partition = db.keyspace("blocks", KeyspaceCreateOptions::default)?;
+        let heights_partition = db.keyspace("heights", KeyspaceCreateOptions::default)?;
         let utxo_partition = db.keyspace("utxo", KeyspaceCreateOptions::default)?;
-        let addresses_partition =
-            db.keyspace("addresses", KeyspaceCreateOptions::default)?;
-        let stats_partition =
-            db.keyspace("stats", KeyspaceCreateOptions::default)?;
+        let addresses_partition = db.keyspace("addresses", KeyspaceCreateOptions::default)?;
+        let stats_partition = db.keyspace("stats", KeyspaceCreateOptions::default)?;
         let undo_partition = db.keyspace("undo", KeyspaceCreateOptions::default)?;
-        let block_index_partition =
-            db.keyspace("block_indexes", KeyspaceCreateOptions::default)?;
+        let block_index_partition = db.keyspace("block_indexes", KeyspaceCreateOptions::default)?;
         let transaction_index_partition =
             db.keyspace("transaction_indexes", KeyspaceCreateOptions::default)?;
 
@@ -239,11 +240,11 @@ impl StryiStorage {
         match storage.get_current_storage_state() {
             Ok(state) => {
                 info!(
-                    "Storage already initialized. Current chain state: latest block = {:?}, last update time = {}, blocks count = {}, chain difficulty = {}",
+                    "Storage already initialized. Current chain state: latest block = {:?}, last update time = {}, blocks count = {}, chain work = {}",
                     state.latest_block,
                     state.last_update_time,
                     state.blocks_count,
-                    state.chain_difficulty
+                    state.chain_work
                 );
                 // Storage is already initialized; return as-is.
                 return Ok(storage);
@@ -328,7 +329,7 @@ impl StryiStorage {
             latest_block: (0, BlockHash::empty()), // Empty is basically genesis block
             last_update_time: 0,
             blocks_count: 0,
-            chain_difficulty: 0,
+            chain_work: ChainWork::ZERO,
         };
 
         // Store initial state

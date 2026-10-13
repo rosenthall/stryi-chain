@@ -1,8 +1,9 @@
 use crate::BlockUndo;
 use crate::address::AccountAddress;
 use crate::block::{Block, BlockHash};
+use crate::difficulty::{ChainWork, add_work};
 use crate::error::{StorageLayer, StryiCoreError};
-use crate::storage::{BlockStorage, StorageStats, UndoStorage, UtxoStorage};
+use crate::storage::{BlockStorage, StorageStats, UndoStorage, UtxoStorage, verified_block_work};
 use crate::transactions::{OutPoint, UTXO};
 use dashmap::{DashMap, DashSet};
 use futures::future::BoxFuture;
@@ -22,7 +23,7 @@ where
     base: &'a DB,
 
     /// Cumulative work up to and including the fork point.
-    inherited_work: u128,
+    inherited_work: ChainWork,
 
     /// Fork-local UTXO writes and overrides.
     utxo_delta: DashMap<OutPoint, UTXO>,
@@ -108,7 +109,7 @@ impl<'a, DB> ForkDbOverlay<'a, DB>
 where
     DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
 {
-    pub fn new(base: &'a DB, work: u128) -> Self {
+    pub fn new(base: &'a DB, work: ChainWork) -> Self {
         Self {
             base,
             inherited_work: work,
@@ -473,26 +474,18 @@ where
         })
     }
 
-    fn chain_difficulty(&self) -> BoxFuture<'_, Result<u128, Self::StorageError>> {
+    fn chain_work(&self) -> BoxFuture<'_, Result<ChainWork, Self::StorageError>> {
         let delta = self.block_delta.clone();
-        let base = self.base;
         let base_work = self.inherited_work;
 
         Box::pin(async move {
             let mut sum = base_work;
 
-            for kv in delta.iter() {
-                let pow = 1u128 << kv.value().header.difficulty_bits;
-
-                if base
-                    .block_exists(*kv.key())
-                    .await
-                    .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?
-                {
-                    sum = sum.wrapping_sub(pow);
-                }
-
-                sum = sum.wrapping_add(pow);
+            for entry in delta.iter() {
+                // A delta block that also exists in the base storage is the very
+                // same block, so its work is added exactly once on top of the
+                // inherited LCA work - no compensation is subtracted.
+                sum = add_work(sum, verified_block_work(entry.value())?)?;
             }
 
             Ok(sum)
@@ -526,5 +519,81 @@ where
     fn delete_block_undo(&self, hash: BlockHash) -> BoxFuture<'_, Result<(), Self::StorageError>> {
         self.undo_delta.remove(&hash);
         Box::pin(ready(Ok(())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::consensus::ConsensusConsts;
+    use crate::difficulty::{DifficultyCalc, HashThreshold, PowParams};
+    use crate::tests::make_test_genesis;
+
+    #[tokio::test]
+    async fn asert_uses_parent_branch() {
+        let pow = PowParams {
+            target_spacing_secs: 3600,
+            half_life_secs: 3600,
+            initial_hash_threshold: HashThreshold::from(1_000_000u64),
+            max_hash_threshold: HashThreshold::from(10_000_000u64),
+        };
+        let consts = ConsensusConsts {
+            pow,
+            ..ConsensusConsts::default()
+        };
+        let (genesis, mut db) = make_test_genesis(&[], consts);
+        let calc = DifficultyCalc::new(pow).unwrap();
+        let initial = pow.initial_hash_threshold;
+        assert_eq!(
+            calc.next_hash_threshold(&db, genesis.block_hash())
+                .await
+                .unwrap(),
+            initial
+        );
+
+        let first = Block::new(vec![], genesis.block_hash(), 1, initial, 1000, 1);
+        db.put_block(&first).await.unwrap();
+        assert_eq!(
+            calc.next_hash_threshold(&db, first.block_hash())
+                .await
+                .unwrap(),
+            initial
+        );
+        let slow = Block::new(vec![], first.block_hash(), 2, initial, 8200, 1);
+        db.put_block(&slow).await.unwrap();
+        assert_eq!(
+            calc.next_hash_threshold(&db, slow.block_hash())
+                .await
+                .unwrap(),
+            HashThreshold::from(2_000_000u64)
+        );
+
+        let mut shared = ForkDbOverlay::new(&db, first.work());
+        let fast = Block::new(vec![], first.block_hash(), 2, initial, 2800, 1);
+        shared.put_block(&fast).await.unwrap();
+        assert_eq!(
+            calc.next_hash_threshold(&shared, fast.block_hash())
+                .await
+                .unwrap(),
+            HashThreshold::from(707_046u64)
+        );
+
+        let mut from_genesis = ForkDbOverlay::new(&db, ChainWork::ZERO);
+        let fork_first = Block::new(vec![], genesis.block_hash(), 1, initial, 100_000, 1);
+        from_genesis.put_block(&fork_first).await.unwrap();
+        assert_eq!(
+            calc.next_hash_threshold(&from_genesis, fork_first.block_hash())
+                .await
+                .unwrap(),
+            initial
+        );
+        let fork_second = Block::new(vec![], fork_first.block_hash(), 2, initial, 103_600, 1);
+        from_genesis.put_block(&fork_second).await.unwrap();
+        assert_eq!(
+            calc.next_hash_threshold(&from_genesis, fork_second.block_hash())
+                .await
+                .unwrap(),
+            initial
+        );
     }
 }

@@ -1,18 +1,19 @@
 use crate::block::{Block, BlockHash};
+use crate::difficulty::ChainWork;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq)]
 struct ChainIndexEntry {
     parent: BlockHash,
     height: u64,
-    work: u128, // cumulative work up to *this* block
+    work: ChainWork, // cumulative work up to *this* block
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct TipInfo {
     height: u64,
     hash: BlockHash,
-    work: u128,
+    work: ChainWork,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -31,8 +32,8 @@ impl ChainIndex {
     }
 
     /// Caller must guarantee that `cumulative_work` is
-    /// `work(parent) + 2^difficulty_bits`.
-    pub fn insert(&mut self, block: &Block, cumulative_work: u128) {
+    /// `work(parent) + block.work()`.
+    pub fn insert(&mut self, block: &Block, cumulative_work: ChainWork) {
         let hash = block.block_hash();
 
         self.entries.insert(
@@ -84,11 +85,11 @@ impl ChainIndex {
         self.entries.get(hash).map(|e| e.height)
     }
 
-    pub fn work(&self, hash: &BlockHash) -> Option<u128> {
+    pub fn work(&self, hash: &BlockHash) -> Option<ChainWork> {
         self.entries.get(hash).map(|e| e.work)
     }
 
-    pub fn tip(&self) -> Option<(u64, BlockHash, u128)> {
+    pub fn tip(&self) -> Option<(u64, BlockHash, ChainWork)> {
         self.tip.as_ref().map(|t| (t.height, t.hash, t.work))
     }
 
@@ -116,16 +117,17 @@ impl ChainIndex {
 mod tests {
     use super::*;
     use crate::block::{BlockData, BlockHeader, GenesisState};
+    use crate::difficulty::{HashThreshold, add_work, block_work};
     use crate::merkletree::MerkleHash;
 
-    fn make_block(parent: BlockHash, height: u64, difficulty_bits: u8) -> Block {
+    fn make_block(parent: BlockHash, height: u64, hash_threshold: HashThreshold) -> Block {
         let mut block = Block {
             header: BlockHeader {
                 version: 1,
                 merkle_root_hash: MerkleHash::empty(),
                 previous_block_hash: parent,
                 height,
-                difficulty_bits,
+                hash_threshold,
                 timestamp: 0,
                 nonce: 0,
                 genesis_state: (height == 0).then(GenesisState::default),
@@ -141,11 +143,16 @@ mod tests {
     #[test]
     fn chain_index_remove_recomputes_tip() {
         let mut idx = ChainIndex::new();
-        let g = make_block(BlockHash::empty(), 0, 4);
-        let w_g = 1u128 << 4;
+
+        // Genesis shape contributes zero work; the normal block adds its own.
+        let g = make_block(BlockHash::empty(), 0, HashThreshold::ZERO);
+        let w_g = ChainWork::ZERO;
         idx.insert(&g, w_g);
-        let a = make_block(g.block_hash(), 1, 6);
-        let w_a = w_g + (1u128 << 6);
+
+        let easy = HashThreshold::MAX >> 4;
+        let a = make_block(g.block_hash(), 1, easy);
+        let w_a = add_work(w_g, block_work(&easy)).unwrap();
+        assert_eq!(w_a, ChainWork::from(16u64));
         idx.insert(&a, w_a);
 
         // remove tip (a) -> tip should fall back to genesis

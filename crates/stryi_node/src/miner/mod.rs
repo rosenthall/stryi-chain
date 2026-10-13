@@ -2,17 +2,14 @@ mod backend;
 pub use backend::MinerBackend;
 pub use backend::NodeMinerBackend;
 
-
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use stryi_core::address::AccountAddress;
-#[cfg(test)]
-use stryi_core::block::meets_difficulty;
 use stryi_core::block::{Block, BlockHash, BlockHeader};
+use stryi_core::difficulty::MAX_FUTURE_BLOCK_TIME_SECS;
 use stryi_core::mempool::MemPool;
 use stryi_core::merkletree::{MerkleHash, calc_merkle_root};
 use stryi_core::transactions::{Transaction, TransactionData, TransactionKind, TransactionOut};
-use stryi_storage::StryiStorageError;
 use tokio::select;
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -61,7 +58,7 @@ pub struct StryiMiner {
     /// The node's mempool, used to collect transactions for mining.
     mempool: Arc<RwLock<MemPool>>,
 
-    /// Closure-based dependencies for storage, consensus, and difficulty.
+    /// Node-provided dependencies for storage, consensus, and difficulty.
     backend: Arc<dyn MinerBackend>,
 
     /// Channel to send accepted mined blocks to the node for broadcasting & cleanup.
@@ -163,26 +160,31 @@ impl StryiMiner {
     }
 
     /// build a candidate block from the best transactions in the mempool.
-    async fn build_candidate_block(
-        &self,
-        best_txs: Vec<Transaction>,
-    ) -> Result<Block, StryiStorageError> {
-        let (latest_block_height, latest_block_hash) = self.backend.tip().await?;
+    async fn build_candidate_block(&self, best_txs: Vec<Transaction>) -> Result<Block, String> {
+        let context = self
+            .backend
+            .mining_context()
+            .await
+            .map_err(|e| format!("cannot read mining context: {e}"))?;
 
-        let system_time = SystemTime::now();
-        let timestamp = system_time
+        let latest_block_hash = context.parent_hash;
+        let hash_threshold = context.hash_threshold;
+        let next_height = context
+            .parent_height
+            .checked_add(1)
+            .ok_or_else(|| "chain height overflow".to_string())?;
+
+        let now_secs = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("SystemTime before UNIX_EPOCH, this should never normally happen")
+            .map_err(|e| format!("cannot read local clock: {e}"))?
             .as_secs();
-
-        let next_height = latest_block_height + 1;
-        let difficulty_bits = self.backend.difficulty_bits(next_height);
+        let timestamp = mining_timestamp(now_secs, context.median_time_past)?;
 
         let mut header = BlockHeader {
             // -- dynamic values --
             previous_block_hash: latest_block_hash,
             height: next_height,
-            difficulty_bits,
+            hash_threshold,
             timestamp,
 
             // -- static values --
@@ -306,6 +308,19 @@ impl StryiMiner {
     }
 }
 
+fn mining_timestamp(now_secs: u64, median: u64) -> Result<u64, String> {
+    let minimum = median
+        .checked_add(1)
+        .ok_or_else(|| "median time past leaves no valid timestamp".to_string())?;
+    let timestamp = now_secs.max(minimum);
+
+    if timestamp > now_secs.saturating_add(MAX_FUTURE_BLOCK_TIME_SECS) {
+        return Err("chain time is too far ahead of the local clock".into());
+    }
+
+    Ok(timestamp)
+}
+
 /// Mine a block by finding a valid nonce.
 /// Delegates to `stryi_core::block::mine_block_memcpy` for the fixed-layout memcpy approach.
 fn mine_block(block: &mut Block, cancel: &CancellationToken) -> bool {
@@ -316,27 +331,39 @@ fn mine_block(block: &mut Block, cancel: &CancellationToken) -> bool {
 mod tests {
     use super::*;
     use stryi_core::block::BlockData;
+    use stryi_core::difficulty::HashThreshold;
     use tokio_util::sync::CancellationToken;
 
-    /// Require 6 leading zero *bits*
-    const EASY_BITS: u8 = 6;
+    #[test]
+    fn mining_timestamp_respects_validation_window() {
+        for (now, median, expected) in [
+            (100, 99, Some(100)),
+            (100, 100, Some(101)),
+            (100, 219, Some(220)),
+            (100, 220, None),
+            (100, u64::MAX, None),
+            (u64::MAX, u64::MAX - 1, Some(u64::MAX)),
+        ] {
+            assert_eq!(mining_timestamp(now, median).ok(), expected);
+        }
+    }
 
     #[test]
-    fn pow_finds_nonce_satisfying_leading_zero_bits() {
-        // minimal header
-        let header = BlockHeader {
-            version: 1,
-            previous_block_hash: BlockHash::empty(),
-            height: 1,
-            difficulty_bits: EASY_BITS,
-            timestamp: 0,
-            merkle_root_hash: MerkleHash::empty(),
-            nonce: 0,
-            genesis_state: None,
-        };
+    fn pow_finds_nonce_satisfying_hash_threshold() {
+        // Easy target: about one in sixty-four hashes passes.
+        let threshold = HashThreshold::MAX >> 6;
 
         let mut block = Block {
-            header,
+            header: BlockHeader {
+                version: 1,
+                previous_block_hash: BlockHash::empty(),
+                height: 1,
+                hash_threshold: threshold,
+                timestamp: 0,
+                merkle_root_hash: MerkleHash::empty(),
+                nonce: 0,
+                genesis_state: None,
+            },
             data: BlockData {
                 transactions: Vec::new(),
             },
@@ -348,13 +375,12 @@ mod tests {
 
         assert!(solved, "PoW should succeed for an easy target");
 
-        // Verify the resulting nonce really meets EASY_BITS
+        // Verify the resulting nonce really meets the header threshold
         let hash = block.block_hash();
 
         assert!(
-            meets_difficulty(&hash, EASY_BITS),
-            "nonce does not satisfy {} leading zero bits",
-            EASY_BITS
+            hash.meets_threshold(&threshold),
+            "nonce does not satisfy the header hash threshold"
         );
     }
 }

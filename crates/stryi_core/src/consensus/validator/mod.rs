@@ -1,8 +1,8 @@
+use crate::block::Block;
+use crate::consensus::ConsensusConsts;
 use crate::difficulty::DifficultyCalc;
-use crate::storage::StorageStats;
-use crate::{
-    block::Block, consensus::ConsensusConsts, error::StryiCoreError, storage::UtxoStorage,
-};
+use crate::error::StryiCoreError;
+use crate::storage::{BlockStorage, UtxoStorage};
 use tracing::debug;
 
 pub mod block;
@@ -17,20 +17,14 @@ pub mod tx;
 /// 1. Header checks (`header::validate_header`);
 /// 2. Static block structure (`block::validate_block_structure`);
 /// 3. Dynamic, UTXO-dependent (`block::validate_transactions`).
-pub struct BlockValidator<ST>
-where
-    ST: StorageStats + Send + Sync + 'static,
-{
+pub struct BlockValidator {
     pub consensus_consts: ConsensusConsts,
-    pub difficulty_calc: DifficultyCalc<ST>,
+    pub difficulty_calc: DifficultyCalc,
 }
 
-impl<DB> BlockValidator<DB>
-where
-    DB: StorageStats + UtxoStorage + Send + Sync + 'static,
-{
+impl BlockValidator {
     /// Creates a new block validator with the given consensus constants and difficulty calculator.
-    pub fn new(consensus_consts: ConsensusConsts, difficulty_calc: DifficultyCalc<DB>) -> Self {
+    pub fn new(consensus_consts: ConsensusConsts, difficulty_calc: DifficultyCalc) -> Self {
         Self {
             consensus_consts,
             difficulty_calc,
@@ -38,7 +32,10 @@ where
     }
 
     /// Runs the full consensus pipeline.
-    pub async fn validate(&self, block: &Block, db: &DB) -> Result<(), StryiCoreError> {
+    pub async fn validate<DB>(&self, block: &Block, db: &DB) -> Result<(), StryiCoreError>
+    where
+        DB: BlockStorage + UtxoStorage + Send + Sync,
+    {
         debug!(
             "Validating block {} that consists of {} transactions",
             block.block_hash(),
@@ -60,17 +57,16 @@ where
         Ok(())
     }
 
-    /// Validates a block for a fork: header is checked against canonical DB
-    /// (difficulty is height-based), while transactions are validated against
-    /// the fork-local UTXO state provided by `utxo_db`.
-    pub async fn validate_for_fork<US>(
+    /// Validates a block for a fork: header history and transactions are both
+    /// resolved against the fork-local view, which reads through to canonical
+    /// storage unless the fork overrides the entry.
+    pub async fn validate_for_fork<DB>(
         &self,
         block: &Block,
-        canonical_db: &DB,
-        utxo_db: &US,
+        view: &DB,
     ) -> Result<(), StryiCoreError>
     where
-        US: UtxoStorage + Send + Sync,
+        DB: BlockStorage + UtxoStorage + Send + Sync,
     {
         debug!(
             "Validating fork block {} that consists of {} transactions",
@@ -81,13 +77,13 @@ where
         let hash = block.block_hash();
         let short_hash = &hash.to_string()[..8];
 
-        header::validate_header(block, &self.difficulty_calc, canonical_db).await?;
+        header::validate_header(block, &self.difficulty_calc, view).await?;
         debug!("Fork block {short_hash} passed header validation");
 
         block::validate_block_structure(block)?;
         debug!("Fork block {short_hash} passed structure validation");
 
-        block::validate_transactions(block, &self.consensus_consts, utxo_db).await?;
+        block::validate_transactions(block, &self.consensus_consts, view).await?;
         debug!("Fork block {short_hash} passed transaction validation");
 
         Ok(())

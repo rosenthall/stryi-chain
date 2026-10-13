@@ -149,6 +149,9 @@ The PoW is built on
 Tor's [HashX](https://tpo.pages.torproject.net/core/doc/tor/md_ext_2equix_2hashx_2README.html)
 combined with BLAKE3.
 
+We use [ASERT](https://upgradespecs.bitcoincashnode.org/2020-11-15-asert/)-like algorithm to adjust
+difficulty based on block timing relative to the target block interval.
+
 **Why not just SHA-256 like Bitcoin?**
 
 - **Bitcoin's SHA-256 is trivially parallelizable**. Mining migrated from CPUs

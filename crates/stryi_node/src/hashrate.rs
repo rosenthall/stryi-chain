@@ -9,23 +9,27 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use stryi_core::block::{BlockHash, BlockHeader, meets_difficulty};
+use stryi_core::block::{BlockHash, BlockHeader};
+use stryi_core::difficulty::HashThreshold;
 use stryi_core::merkletree::MerkleHash;
 
 pub fn warm_up() {
     const SECS: u64 = 10;
     const STEPS: u64 = 40; // progress-bar resolution
     const BATCH: u64 = 10_000; // <= 100 ms on most CPUs
-    const DIFFICULTY: u32 = 1; // kept explicit
 
     println!("Starting hashrate benchmark for {} seconds...", SECS);
+
+    // A fixed easy target: only the raw hash throughput matters here,
+    // the comparison result is intentionally discarded.
+    let threshold = HashThreshold::MAX >> 1;
 
     // Static header template
     let header = BlockHeader {
         version: 1,
         previous_block_hash: BlockHash::empty(),
         height: 0,
-        difficulty_bits: DIFFICULTY as u8,
+        hash_threshold: threshold,
         timestamp: 0,
         merkle_root_hash: MerkleHash::empty(),
         nonce: 0,
@@ -69,7 +73,7 @@ pub fn warm_up() {
 
                         let bytes = hdr.to_hash_bytes();
                         let h = BlockHash::new(&bytes);
-                        let _ = meets_difficulty(&h, DIFFICULTY as u8);
+                        let _ = h.meets_threshold(&threshold);
                     });
                     counter.fetch_add(BATCH, Ordering::Relaxed);
                     nonce_base = nonce_base.wrapping_add(BATCH as u32);

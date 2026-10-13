@@ -1,6 +1,5 @@
 #![allow(incomplete_features)]
 #![cfg_attr(test, allow(deprecated))]
-
 #![feature(generic_const_exprs)]
 
 /// `hash` module contains some higher-level abstractions for typed hashing
@@ -44,6 +43,5 @@ pub mod difficulty;
 mod private_key;
 pub use private_key::*;
 
-// Some tests are present in the concrete modules, this module contains larger ones with more complex cases like integration tests
 #[cfg(test)]
 mod tests;

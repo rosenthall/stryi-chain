@@ -37,14 +37,14 @@ where
 
     let (height, hash) = fetch!(store.tip(), "tip");
     let last_update = fetch!(store.last_updated(), "last_updated");
-    let total_difficulty = fetch!(store.chain_difficulty(), "chain_difficulty");
+    let chain_work = fetch!(store.chain_work(), "chain_work");
 
     let body = NodeStateBody {
         chain_name: svc.config.chain_name.clone(),
         api_version: svc.config.api_version,
         height,
         latest_block_hash: hash.to_string(),
-        total_difficulty,
+        chain_work,
         last_update_time: last_update,
     };
 

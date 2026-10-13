@@ -48,6 +48,9 @@ pub enum StryiStorageError {
 
     #[error("Cannot construct undo object for the block: {msg}")]
     UndoCreationError { msg: String },
+
+    #[error("Chain work overflow while adding block work : {0}")]
+    ChainWorkOverflow(String),
 }
 
 impl From<RangeError> for StryiStorageError {

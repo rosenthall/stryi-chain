@@ -5,7 +5,9 @@ use crate::consensus::forks::registry::{ForkEntry, ForkRegistry, ForksRead, Fork
 use crate::consensus::index::ChainIndex;
 use crate::consensus::validator::BlockValidator;
 use crate::consensus::{BlockStorage, ConsensusVerdict, FullNodeStorage, UndoStorage};
+use crate::difficulty::{ChainWork, add_work};
 use crate::error::{StorageLayer, StryiCoreError};
+use crate::storage::{verified_block_work, verify_genesis_work_shape};
 use crate::transactions::UtxoProcessor;
 use crate::{
     block::Block,
@@ -22,12 +24,13 @@ pub struct StryiConsensusEngine<DB>
 where
     DB: FullNodeStorage,
 {
-    /// Consensus static rules object defining parameters like adjustment intervals.
+    /// Consensus static rules object defining parameters like the proof-of-work
+    /// schedule and reward emission.
     pub(crate) consensus_consts: ConsensusConsts,
 
     /// Block validator used to verify block-level properties such as proof-of-work, merkle root correctness,
     /// coinbase placement, transaction dependencies and ordering
-    pub(crate) block_validator: BlockValidator<DB>,
+    pub(crate) block_validator: BlockValidator,
 
     /// UTXO processor that applies transactions within a block to update the UTXO set.
     // TODO: consider renaming it later, e.g. in TransactionsProcessor? Current name is a little weird
@@ -52,7 +55,7 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
     /// * Leaves `forks` empty; side branches appear as `on_block` is called.
     pub async fn new(
         consensus_consts: ConsensusConsts,
-        block_validator: BlockValidator<DB>,
+        block_validator: BlockValidator,
         utxo_processor: UtxoProcessor,
         db: Arc<RwLock<DB>>,
     ) -> Result<Self, StryiCoreError> {
@@ -95,16 +98,27 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         table.add_row(vec!["Tip hash", &tip_hash]);
         table.add_row(vec!["Tip cumulative work", &tip_work]);
 
-        let (adjustment_interval_blocks, initial_subsidy, decay_interval, decay_step) = (
-            self.consensus_consts.difficulty_adjustment_interval_blocks,
+        let (initial_subsidy, decay_interval, decay_step) = (
             self.consensus_consts.initial_subsidy,
             self.consensus_consts.decay_interval,
             self.consensus_consts.decay_step,
         );
 
         table.add_row(vec![
-            "Difficulty adjustment interval (blocks)",
-            &adjustment_interval_blocks.to_string(),
+            "PoW target spacing (seconds)",
+            &self.consensus_consts.pow.target_spacing_secs.to_string(),
+        ]);
+        table.add_row(vec![
+            "PoW half-life (seconds)",
+            &self.consensus_consts.pow.half_life_secs.to_string(),
+        ]);
+        table.add_row(vec![
+            "PoW initial hash threshold",
+            &self.consensus_consts.pow.initial_hash_threshold.to_string(),
+        ]);
+        table.add_row(vec![
+            "PoW max hash threshold",
+            &self.consensus_consts.pow.max_hash_threshold.to_string(),
         ]);
         table.add_row(vec!["Initial subsidy", &initial_subsidy.to_string()]);
         table.add_row(vec!["Decay interval (blocks)", &decay_interval.to_string()]);
@@ -113,7 +127,7 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         info!("\n{}", table);
     }
 
-    pub fn tip(&self) -> Option<(u64, BlockHash, u128)> {
+    pub fn tip(&self) -> Option<(u64, BlockHash, ChainWork)> {
         self.chain_index.tip()
     }
 
@@ -191,9 +205,10 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
 
         let mut index = ChainIndex::new();
 
-        let mut cumulative_work: u128 = 0;
+        let mut cumulative_work = ChainWork::ZERO;
         for block in blocks {
-            cumulative_work += 1u128 << block.header.difficulty_bits;
+            let work = verified_block_work(&block)?;
+            cumulative_work = add_work(cumulative_work, work)?;
             index.insert(&block, cumulative_work);
         }
 
@@ -235,8 +250,7 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         }
         drop(read_db);
 
-        let block_work = 1u128 << block.header.difficulty_bits;
-        let cumulative_work = tip_work + block_work;
+        let cumulative_work = add_work(tip_work, verified_block_work(&block)?)?;
 
         {
             let mut write_db = self.db.write().await;
@@ -261,7 +275,7 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         self.chain_index.insert(&block, cumulative_work);
 
         Ok(ConsensusVerdict::Applied {
-            new_chain_complexity: cumulative_work as u64,
+            chain_work: cumulative_work,
         })
     }
 
@@ -276,7 +290,7 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         &self,
         db: &'a DB,
         lca: BlockHash,
-        lca_work: u128,
+        lca_work: ChainWork,
     ) -> Result<ForkDbOverlay<'a, DB>, StryiCoreError> {
         let mut overlay = ForkDbOverlay::new(db, lca_work);
 
@@ -330,15 +344,14 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
 
             if let Err(e) = self
                 .block_validator
-                .validate_for_fork(&block, &*read_db, &overlay)
+                .validate_for_fork(&block, &overlay)
                 .await
             {
                 return Ok(ConsensusVerdict::Rejected(e));
             }
         }
 
-        let block_work = 1u128 << block.header.difficulty_bits;
-        let fork_work = lca_work + block_work;
+        let fork_work = add_work(lca_work, verified_block_work(&block)?)?;
 
         let (_, _, canonical_work) = self.chain_index.tip().expect("Must have a tip");
 
@@ -384,25 +397,25 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
             let read_db = self.db.read().await;
             let mut overlay = self.build_fork_overlay(&*read_db, lca, lca_work).await?;
 
+            // Predecessors that live only in the fork must be visible to
+            // header history, so replay them into the overlay before validating.
             for fork_block in &entry.blocks {
+                overlay.put_block(fork_block).await?;
                 self.utxo_processor
                     .apply_block(fork_block, &mut overlay)
                     .await?;
             }
 
-            // header validated against canonical DB (difficulty is height-based),
-            // transactions validated against fork-local UTXO state
             if let Err(e) = self
                 .block_validator
-                .validate_for_fork(&block, &*read_db, &overlay)
+                .validate_for_fork(&block, &overlay)
                 .await
             {
                 return Ok(ConsensusVerdict::Rejected(e));
             }
         }
 
-        let block_work = 1u128 << block.header.difficulty_bits;
-        let fork_work = entry.cumulative_work + block_work;
+        let fork_work = add_work(entry.cumulative_work, verified_block_work(&block)?)?;
 
         let mut fork_blocks = entry.blocks.clone();
         fork_blocks.push(block.clone());
@@ -443,6 +456,15 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         let lca_work = self.chain_index.work(&lca).ok_or_else(|| {
             StryiCoreError::consensus_chain_selection("LCA work not found in chain index")
         })?;
+
+        // Sum the new branch before any write so an overflow cannot leave a
+        // half-applied reorganization behind.
+        let mut new_tip_work = lca_work;
+        let mut branch_work = Vec::with_capacity(fork_blocks.len());
+        for block in &fork_blocks {
+            new_tip_work = add_work(new_tip_work, verified_block_work(block)?)?;
+            branch_work.push(new_tip_work);
+        }
 
         let mut deleted_blocks: HashMap<u64, BlockHash> = HashMap::new();
         let mut to_rewind: Vec<BlockHash> = Vec::new();
@@ -521,10 +543,8 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
             self.chain_index.remove(hash);
         }
 
-        let mut cumulative_work = lca_work;
-        for block in &fork_blocks {
-            cumulative_work += 1u128 << block.header.difficulty_bits;
-            self.chain_index.insert(block, cumulative_work);
+        for (block, work) in fork_blocks.iter().zip(branch_work) {
+            self.chain_index.insert(block, work);
         }
 
         drop(write_db);
@@ -532,7 +552,7 @@ impl<DB: FullNodeStorage> StryiConsensusEngine<DB> {
         info!(
             "Reorg complete: applied {} fork block(s), new tip work={}",
             fork_blocks.len(),
-            cumulative_work
+            new_tip_work
         );
 
         Ok(ConsensusVerdict::CausedReorganization { deleted_blocks })
@@ -548,10 +568,10 @@ impl<DB: FullNodeStorage> ConsensusEngine for StryiConsensusEngine<DB> {
         let block = block.clone();
 
         debug!(
-            "Received new block {} at height {} with difficulty bits {}",
+            "Received new block {} at height {} with hash threshold {}",
             block.block_hash(),
             block.header.height,
-            block.header.difficulty_bits
+            block.header.hash_threshold
         );
         trace!(
             "on_block hash={} prev={} height={} | chain_has_parent={} fork_has_parent={} | chain_index_tip={:?}",
@@ -564,6 +584,13 @@ impl<DB: FullNodeStorage> ConsensusEngine for StryiConsensusEngine<DB> {
         );
 
         Box::pin(async move {
+            // A marker at normal height would hash to the zero block hash and
+            // claim zero genesis work; reject it before classification can
+            // match it with the canonical genesis.
+            if let Err(e) = verify_genesis_work_shape(&block) {
+                return Ok(ConsensusVerdict::Rejected(e));
+            }
+
             let block_disposition = self.classify_block(&block);
             debug!(
                 "Block {} is classified as {:?}",

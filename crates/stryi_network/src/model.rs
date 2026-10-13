@@ -1,6 +1,7 @@
 use crate::PeerId;
 use serde::{Deserialize, Serialize};
 use stryi_core::block::{Block, BlockHash};
+use stryi_core::difficulty::ChainWork;
 
 /// Represents a block optimized for network transmission.
 /// Contains additional metadata useful for block propagation, and the block itself
@@ -36,6 +37,6 @@ pub struct ChainTipAnnouncement {
     pub height: u64,
     /// Block hash of the tip
     pub tip_hash: BlockHash,
-    /// Cumulative work, so nodes that see this announcement can compare it to their own immediately
-    pub cumulative_work: u128,
+    /// Cumulative chain work, so nodes that see this announcement can compare it to their own immediately
+    pub chain_work: ChainWork,
 }

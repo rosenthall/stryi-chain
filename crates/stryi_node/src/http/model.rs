@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use stryi_core::address::AccountAddress;
 use stryi_core::block::BlockHash;
+use stryi_core::difficulty::ChainWork;
 use stryi_core::transactions::{
     OutPoint, Transaction, TransactionHash, TransactionIn, TransactionKind, TransactionOut,
 };
@@ -35,8 +36,13 @@ pub struct NodeStateBody {
     /// Hash of the current best block
     pub latest_block_hash: String,
 
-    /// Cumulative chain difficulty up to the best block.
-    pub total_difficulty: u128,
+    /// Cumulative chain work up to the best block.
+    /// Serialized by native crypto-bigint serde as fixed-length LE hex.
+    #[schema(
+        value_type = String,
+        example = "05000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000"
+    )]
+    pub chain_work: ChainWork,
 
     /// Last time the storage layer was updated (Unix epoch seconds).
     pub last_update_time: u64,

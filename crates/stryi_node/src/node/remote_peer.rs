@@ -1,11 +1,48 @@
 use crate::error::StryiNodeError;
 use crate::grpc_services::blockchain_sync_client::BlockchainSyncClient;
 use crate::grpc_services::{Block as PbBlock, BlockHeightRange};
-use crate::grpc_services::{BlockHashList, ChainInfo};
+use crate::grpc_services::{BlockHashList, ChainInfo as PbChainInfo};
 use futures_util::StreamExt;
 use stryi_core::block::{Block, BlockHash};
+use stryi_core::difficulty::{ChainWork, chain_work_from_bytes};
 use stryi_network::PeerId;
 use tonic::transport::Channel;
+
+/// A validated, typed view of a peer's on-wire [`PbChainInfo`].
+///
+/// The wire message carries raw protobuf types; decoding happens exactly once
+/// here so sync code compares typed [`ChainWork`] instead of re-parsing or
+/// truncating raw numbers at every use site.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteChainInfo {
+    pub height: u64,
+    pub tip_hash: BlockHash,
+    pub chain_work: ChainWork,
+    pub last_update_time: u64,
+    pub protocol_version: u32,
+    pub chain_name: String,
+}
+
+impl TryFrom<PbChainInfo> for RemoteChainInfo {
+    type Error = StryiNodeError;
+
+    fn try_from(pb: PbChainInfo) -> Result<Self, Self::Error> {
+        let tip_hash = BlockHash::from_hash_string(&pb.latest_block_hash)
+            .map_err(|e| StryiNodeError::other(format!("invalid remote tip hash: {e}")))?;
+
+        let chain_work = chain_work_from_bytes(&pb.chain_work)
+            .map_err(|e| StryiNodeError::other(format!("invalid remote chain_work: {e}")))?;
+
+        Ok(RemoteChainInfo {
+            height: pb.height,
+            tip_hash,
+            chain_work,
+            last_update_time: pb.last_update_time,
+            protocol_version: pb.protocol_version,
+            chain_name: pb.chain_name,
+        })
+    }
+}
 
 // An abstraction that represents a remote peer and provides comfy
 // methods to interact with it
@@ -26,17 +63,16 @@ impl RemotePeer {
         self.peer_id
     }
 
-    pub async fn request_chain_info(&mut self) -> Result<ChainInfo, StryiNodeError> {
-        self.grpc_client
+    pub async fn request_chain_info(&mut self) -> Result<RemoteChainInfo, StryiNodeError> {
+        let response = self
+            .grpc_client
             .get_chain_info(tonic::Request::new(()))
             .await
-            .map(|response| {
-                let chain_info = response.into_inner();
-                Ok(chain_info)
-            })
             .map_err(|e| {
                 StryiNodeError::other(format!("Failed to get chain info from gRPC service: {e}"))
-            })?
+            })?;
+
+        RemoteChainInfo::try_from(response.into_inner())
     }
 
     /// Simple helper requests the genesis block of a peer.

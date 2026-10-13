@@ -6,6 +6,8 @@ pub use in_memory::{InMemoryStorageError, StryiInMemoryStorage};
 use crate::BlockUndo;
 use crate::address::AccountAddress;
 use crate::block::{Block, BlockHash};
+use crate::difficulty::{ChainWork, HashThreshold};
+use crate::error::StryiCoreError;
 use crate::transactions::{OutPoint, UTXO};
 use futures::future::BoxFuture;
 use std::collections::HashMap;
@@ -200,8 +202,41 @@ pub trait StorageStats: Sync + Sync {
     /// Total number of blocks (equal to `tip.height + 1`).
     fn block_count(&self) -> BoxFuture<'_, Result<u64, Self::StorageError>>;
 
-    /// Cumulative chain difficulty.
-    fn chain_difficulty(&self) -> BoxFuture<'_, Result<u128, Self::StorageError>>;
+    /// Cumulative work of the canonical chain.
+    fn chain_work(&self) -> BoxFuture<'_, Result<ChainWork, Self::StorageError>>;
+}
+
+/// Verifies that a block carrying the genesis marker really has the genesis
+/// shape before its zero genesis work can be trusted.
+///
+/// `Block::block_hash()` and `Block::work()` treat every marker-carrying header
+/// as the zero-hash genesis, so a header with the marker but a normal block
+/// shape would otherwise slip past proof-of-work and work accounting. A marker
+/// is only valid at height 0 with an empty previous hash, zero threshold,
+/// zero timestamp and zero nonce.
+pub fn verify_genesis_work_shape(block: &Block) -> Result<(), StryiCoreError> {
+    let header = &block.header;
+
+    if header.is_genesis()
+        && (header.height != 0
+            || header.previous_block_hash != BlockHash::empty()
+            || header.hash_threshold != HashThreshold::ZERO
+            || header.timestamp != 0
+            || header.nonce != 0)
+    {
+        return Err(StryiCoreError::ConsensusValidationFailed {
+            details: "Genesis marker is only valid on a height-0 block with an empty previous hash, zero threshold, timestamp and nonce".into(),
+        });
+    }
+
+    Ok(())
+}
+
+/// Work contributed by a block to its branch, with the zero-work genesis
+/// shortcut guarded by [`verify_genesis_work_shape`].
+pub(crate) fn verified_block_work(block: &Block) -> Result<ChainWork, StryiCoreError> {
+    verify_genesis_work_shape(block)?;
+    Ok(block.work())
 }
 
 /// Storage contract for persisting and retrieving `BlockUndo`.

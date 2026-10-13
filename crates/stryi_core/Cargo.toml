@@ -22,6 +22,7 @@ futures = { workspace = true }
 tracing = { workspace = true }
 base64 = { workspace = true }
 comfy-table = { workspace = true }
+crypto-bigint = { version = "0.7.5", features = ["serde", "alloc"] }
 
 [dev-dependencies]
 serde_json = "1"

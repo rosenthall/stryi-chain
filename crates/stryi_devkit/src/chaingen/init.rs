@@ -9,7 +9,7 @@ use crate::chaingen::{ChainGenConfig, ChainGenerator, PersistenceMode};
 use stryi_core::PrivateKey;
 use stryi_core::block::Block;
 use stryi_core::consensus::{BlockValidator, ConsensusConsts, StryiConsensusEngine};
-use stryi_core::difficulty::difficulty_calculator_from_consts;
+use stryi_core::difficulty::DifficultyCalc;
 use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
 use stryi_core::transactions::{OutPoint, TransactionKind, UtxoProcessor};
 use stryi_storage::{GenesisInitConfig, StorageStatus, StryiStorage};
@@ -42,6 +42,11 @@ impl ChainGenerator {
         debug!("Chain height from tip() is {chain_height}");
         validate_genesis_utxos_if_needed(&storage, &genesis, chain_height).await?;
 
+        // Genesis pow params are the single source of truth for the difficulty
+        // calc; building it here also validates the params before generation starts.
+        let difficulty_calc = DifficultyCalc::new(consensus_consts.pow)
+            .map_err(|e| format!("Invalid pow params in genesis: {e}"))?;
+
         info!("Checking funding account.");
         let fund_account =
             load_funding_account(storage.clone(), config.blocks.funding_key.clone()).await?;
@@ -51,6 +56,7 @@ impl ChainGenerator {
             &config.chain.persistence_mode,
             storage.clone(),
             consensus_consts,
+            difficulty_calc,
         )
         .await?;
 
@@ -59,6 +65,7 @@ impl ChainGenerator {
             fund_account,
             pre_generation_height: chain_height,
             consensus_consts,
+            difficulty_calc,
             consensus_engine,
             storage,
         })
@@ -215,14 +222,13 @@ async fn init_consensus_engine(
     mode: &PersistenceMode,
     storage: Arc<RwLock<StryiStorage>>,
     consts: ConsensusConsts,
+    difficulty_calc: DifficultyCalc,
 ) -> Result<Option<StryiConsensusEngine<StryiStorage>>, String> {
     match mode {
         PersistenceMode::ConsensusEngine => {
             info!("PersistenceMode::ConsensusEngine selected.");
 
-            let difficulty_calc = difficulty_calculator_from_consts(consts);
-
-            let validator = BlockValidator::new(consts, difficulty_calc.clone());
+            let validator = BlockValidator::new(consts, difficulty_calc);
 
             let utxo_processor = UtxoProcessor::new();
 

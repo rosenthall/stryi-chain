@@ -44,7 +44,11 @@ pub(crate) fn print_block_detail(hash: &str, block: &Block) {
         "Height:".bold(),
         header.height.to_string().cyan()
     );
-    println!("  {:<20} {}", "Difficulty:".bold(), header.difficulty_bits);
+    println!(
+        "  {:<20} {}",
+        "Hash threshold:".bold(),
+        header.hash_threshold
+    );
     println!("  {:<20} {}", "Nonce:".bold(), header.nonce);
     println!("  {:<20} {}", "Timestamp:".bold(), header.timestamp);
 
@@ -59,9 +63,26 @@ pub(crate) fn print_block_detail(hash: &str, block: &Block) {
         );
         println!("    {:<18} {}", "Decay step:".dimmed(), c.decay_step);
         println!(
+            "    {:<18} {} {}",
+            "PoW spacing:".dimmed(),
+            c.pow.target_spacing_secs,
+            "seconds".dimmed()
+        );
+        println!(
+            "    {:<18} {} {}",
+            "PoW half-life:".dimmed(),
+            c.pow.half_life_secs,
+            "seconds".dimmed()
+        );
+        println!(
             "    {:<18} {}",
-            "Diff adj blocks:".dimmed(),
-            c.difficulty_adjustment_interval_blocks
+            "Init threshold:".dimmed(),
+            c.pow.initial_hash_threshold
+        );
+        println!(
+            "    {:<18} {}",
+            "Max threshold:".dimmed(),
+            c.pow.max_hash_threshold
         );
     }
 

@@ -2,12 +2,12 @@ mod block_hash;
 pub(crate) mod mining;
 
 pub use block_hash::BlockHash;
-pub use mining::meets_difficulty;
 pub use mining::mine_block_memcpy;
 use std::collections::HashMap;
 
 use crate::address::AccountAddress;
 use crate::consensus::ConsensusConsts;
+use crate::difficulty::{ChainWork, HashThreshold, block_work};
 use crate::merkletree::{MerkleHash, MerkleTree};
 use crate::transactions::{
     StryiSignature, Transaction, TransactionData, TransactionKind, TransactionOut,
@@ -34,9 +34,9 @@ pub struct BlockHeader {
     /// Block height (index in the chain)
     pub height: u64,
 
-    /// Difficulty parameter in bits
-    /// In genesis always must be 0.
-    pub difficulty_bits: u8,
+    /// Upper bound that the block hash must not exceed (inclusive).
+    /// ZERO in the genesis header, strictly positive in normal headers.
+    pub hash_threshold: HashThreshold,
 
     /// Unix timestamp
     pub timestamp: u64,
@@ -50,9 +50,9 @@ pub struct BlockHeader {
 }
 
 /// Size of the fixed-layout header encoding used for hashing.
-pub const HEADER_HASH_SIZE: usize = 88;
+pub const HEADER_HASH_SIZE: usize = 119;
 /// Offset of the 4-byte nonce in the fixed-layout encoding.
-pub const NONCE_OFFSET: usize = 83;
+pub const NONCE_OFFSET: usize = 114;
 
 impl BlockHeader {
     /// returns true if self.genesis_state is Some.
@@ -69,10 +69,10 @@ impl BlockHeader {
         buf[2..34].copy_from_slice(&self.merkle_root_hash.data);
         buf[34..66].copy_from_slice(&self.previous_block_hash.data);
         buf[66..74].copy_from_slice(&self.height.to_le_bytes());
-        buf[74] = self.difficulty_bits;
-        buf[75..83].copy_from_slice(&self.timestamp.to_le_bytes());
-        buf[83..87].copy_from_slice(&self.nonce.to_le_bytes());
-        buf[87] = if self.genesis_state.is_some() { 1 } else { 0 };
+        buf[74..106].copy_from_slice(&crate::difficulty::threshold_to_bytes(&self.hash_threshold));
+        buf[106..114].copy_from_slice(&self.timestamp.to_le_bytes());
+        buf[NONCE_OFFSET..NONCE_OFFSET + 4].copy_from_slice(&self.nonce.to_le_bytes());
+        buf[118] = u8::from(self.genesis_state.is_some());
         buf
     }
 }
@@ -106,7 +106,7 @@ impl Block {
         transactions: Vec<Transaction>,
         previous_block_hash: BlockHash,
         height: u64,
-        bits: u8,
+        hash_threshold: HashThreshold,
         timestamp: u64,
         version: u16,
     ) -> Self {
@@ -118,7 +118,7 @@ impl Block {
             merkle_root_hash: merkle_hash,
             previous_block_hash,
             height,
-            difficulty_bits: bits,
+            hash_threshold,
             timestamp,
             nonce: 0,
             genesis_state: None,
@@ -174,7 +174,7 @@ impl Block {
 
             // Use provided values for the chain version
             version,
-            difficulty_bits: 0, // Zero in genesis blocks
+            hash_threshold: HashThreshold::ZERO, // Zero in genesis blocks
 
             // Use empty values for previous_block_hash, nonce, height and timestamp
             previous_block_hash: empty_block_hash,
@@ -208,10 +208,7 @@ impl Block {
         // Convert each transaction into a byte vector by serializing it via postcard
         let leaves_data: Vec<Vec<u8>> = transactions
             .iter()
-            .map(|tx| {
-                postcard::to_stdvec(tx)
-                    .expect("Failed to serialize transaction")
-            })
+            .map(|tx| postcard::to_stdvec(tx).expect("Failed to serialize transaction"))
             .collect();
 
         let tree = MerkleTree::new(&leaves_data);
@@ -227,6 +224,16 @@ impl Block {
         BlockHash::new(&self.header.to_hash_bytes())
     }
 
+    /// Work contributed by this block; zero for genesis.
+    /// Callers must validate genesis shape first with
+    /// [`verify_genesis_work_shape`](crate::storage::verify_genesis_work_shape).
+    pub fn work(&self) -> ChainWork {
+        if self.is_genesis() {
+            return ChainWork::ZERO;
+        }
+        block_work(&self.header.hash_threshold)
+    }
+
     /// Returns the miner reward recipient from the coinbase transaction.
     /// Returns `None` for genesis or structurally invalid non-genesis blocks.
     pub fn miner_address(&self) -> Option<AccountAddress> {
@@ -238,7 +245,10 @@ impl Block {
         if !matches!(first_tx.data.kind, TransactionKind::Coinbase { .. }) {
             return None;
         }
-        debug_assert!(matches!(first_tx.data.kind, TransactionKind::Coinbase { .. }));
+        debug_assert!(matches!(
+            first_tx.data.kind,
+            TransactionKind::Coinbase { .. }
+        ));
 
         if first_tx.data.outputs.len() != 1 {
             return None;
@@ -248,19 +258,12 @@ impl Block {
         first_tx.data.outputs.first().map(|output| output.recipient)
     }
 
-    /// Validates the Proof-of-Work (PoW) for the block.
-    ///
-    /// Computes the hash of the block and then checks if it meets the difficulty target specified in the header's `bits` field.
-    /// For genesis blocks return `true`.
+    /// Checks the block hash against the header threshold.
+    /// Assumes genesis shape has already been validated.
     pub fn validate_proof_of_work(&self) -> bool {
-        // Genesis blocks can go without PoW checks
-        if self.is_genesis() {
-            return true;
-        }
-
         let hash = self.block_hash();
 
-        meets_difficulty(&hash, self.header.difficulty_bits)
+        hash.meets_threshold(&self.header.hash_threshold)
     }
 
     /// Validates the Merkle root of the block.
@@ -299,7 +302,14 @@ mod tests {
 
         // Create a block
         let prev_hash = BlockHash::empty(); // Some placeholder
-        let mut block = Block::new(vec![signed_tx], prev_hash, 42, 16, 1_700_000_000, 1);
+        let mut block = Block::new(
+            vec![signed_tx],
+            prev_hash,
+            42,
+            HashThreshold::MAX >> 16,
+            1_700_000_000,
+            1,
+        );
 
         // Initial block hash
         let hash1 = block.block_hash();
@@ -343,7 +353,14 @@ mod tests {
             }],
         });
 
-        let block = Block::new(vec![coinbase], BlockHash::empty(), 1, 8, 1_700_000_000, 1);
+        let block = Block::new(
+            vec![coinbase],
+            BlockHash::empty(),
+            1,
+            HashThreshold::MAX >> 8,
+            1_700_000_000,
+            1,
+        );
 
         assert_eq!(block.miner_address(), Some(miner));
     }
@@ -357,8 +374,62 @@ mod tests {
             outputs: vec![],
         });
 
-        let block = Block::new(vec![tx], BlockHash::empty(), 1, 8, 1_700_000_000, 1);
+        let block = Block::new(
+            vec![tx],
+            BlockHash::empty(),
+            1,
+            HashThreshold::MAX >> 8,
+            1_700_000_000,
+            1,
+        );
 
         assert_eq!(block.miner_address(), None);
+    }
+
+    #[test]
+    fn pow_v2_header_layout() {
+        // Fixed shape of the hashing preimage: 119 bytes, nonce at offset 114.
+        assert_eq!(HEADER_HASH_SIZE, 119);
+        assert_eq!(NONCE_OFFSET, 114);
+
+        let threshold = HashThreshold::from(258u64); // LE bytes: 02 01 00 ...
+        let mut header = BlockHeader {
+            version: 0x0102,
+            merkle_root_hash: MerkleHash::empty(),
+            previous_block_hash: BlockHash::new(b"previous block"),
+            height: 0x0102_0304_0506_0708,
+            hash_threshold: threshold,
+            timestamp: 0x0102_0304_0506_0708,
+            nonce: 0x1122_3344,
+            genesis_state: None,
+        };
+
+        let buf = header.to_hash_bytes();
+        assert_eq!(buf.len(), 119);
+        assert_eq!(&buf[0..2], &header.version.to_le_bytes());
+        assert_eq!(&buf[2..34], &header.merkle_root_hash.data);
+        assert_eq!(&buf[34..66], &header.previous_block_hash.data);
+        assert_eq!(&buf[66..74], &header.height.to_le_bytes());
+        assert_eq!(
+            &buf[74..106],
+            &crate::difficulty::threshold_to_bytes(&threshold)
+        );
+        assert_eq!(&buf[106..114], &header.timestamp.to_le_bytes());
+        assert_eq!(&buf[114..118], &header.nonce.to_le_bytes());
+        assert_eq!(
+            buf[118], 0,
+            "genesis marker must be zero for normal headers"
+        );
+
+        // Little-endian ordering probe: lowest bytes first.
+        assert_eq!(buf[74], 0x02);
+        assert_eq!(buf[75], 0x01);
+        assert_eq!(buf[105], 0x00);
+
+        // Patching the nonce in the buffer must match re-encoding the header.
+        let mut patched = buf;
+        patched[NONCE_OFFSET..NONCE_OFFSET + 4].copy_from_slice(&0xdead_beefu32.to_le_bytes());
+        header.nonce = 0xdead_beef;
+        assert_eq!(patched, header.to_hash_bytes());
     }
 }

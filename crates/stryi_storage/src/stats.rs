@@ -4,6 +4,7 @@ use futures::future;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use stryi_core::block::BlockHash;
+use stryi_core::difficulty::ChainWork;
 use stryi_core::storage::StorageStats;
 
 /// Struct with only purpose for storing current storage's stats
@@ -14,7 +15,7 @@ pub struct StorageStateInformation {
     pub latest_block: (usize, BlockHash),
     pub last_update_time: usize,
     pub blocks_count: usize,
-    pub chain_difficulty: usize,
+    pub chain_work: ChainWork,
 }
 
 impl TryFrom<&UserValue> for StorageStateInformation {
@@ -22,8 +23,7 @@ impl TryFrom<&UserValue> for StorageStateInformation {
 
     fn try_from(value: &UserValue) -> Result<Self, Self::Error> {
         let storage_state: StorageStateInformation =
-            postcard::from_bytes(value)
-                .map_err(StryiStorageError::DeserializationError)?;
+            postcard::from_bytes(value).map_err(StryiStorageError::DeserializationError)?;
 
         Ok(storage_state)
     }
@@ -91,10 +91,9 @@ impl StorageStats for StryiStorage {
         ))
     }
 
-    fn chain_difficulty(&self) -> BoxFuture<'_, Result<u128, Self::StorageError>> {
+    fn chain_work(&self) -> BoxFuture<'_, Result<ChainWork, Self::StorageError>> {
         Box::pin(future::ready(
-            self.get_current_storage_state()
-                .map(|s| s.chain_difficulty as u128),
+            self.get_current_storage_state().map(|s| s.chain_work),
         ))
     }
 }
@@ -102,6 +101,7 @@ impl StorageStats for StryiStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn test_storage_state_operations() -> Result<(), StryiStorageError> {
         let (mut storage, _dir) = crate::blocks::tests::create_test_storage(false);
@@ -117,7 +117,7 @@ mod tests {
             latest_block: (1, BlockHash::empty()),
             last_update_time: 12345,
             blocks_count: 1,
-            chain_difficulty: 100,
+            chain_work: ChainWork::from(100u64),
         };
         storage.update_storage_state(test_state.clone())?;
 

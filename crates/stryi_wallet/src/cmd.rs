@@ -12,6 +12,7 @@ use colored::Colorize;
 use std::path::Path;
 use stryi_core::address::AccountAddress;
 use stryi_core::block::{Block, BlockHash};
+use stryi_core::difficulty::ChainWork;
 use stryi_core::transactions::{FeePolicy, OutPoint, TransactionHash};
 use tokio::time::{Duration, sleep};
 
@@ -349,8 +350,8 @@ pub(crate) async fn cmd_nodestate(node_url: &str) -> anyhow::Result<()> {
     );
     println!(
         "  {:<20} {}",
-        "Total difficulty:".bold(),
-        state.total_difficulty
+        "Chain work:".bold(),
+        format_chain_work(&state.chain_work)
     );
     println!(
         "  {:<20} {}",
@@ -624,4 +625,10 @@ fn format_tx_status(status: &TransactionQueryStatus) -> colored::ColoredString {
         TransactionQueryStatus::Pending => "pending".yellow(),
         TransactionQueryStatus::Confirmed => "confirmed".green(),
     }
+}
+
+// Keeps chain work readable as a full decimal number; the native Uint
+// Display pads it to 128 hex digits.
+fn format_chain_work(work: &ChainWork) -> String {
+    work.to_string_radix_vartime(10)
 }

@@ -6,7 +6,12 @@
   },
   "genesis_state" : {
     "consts" : {
-      "difficulty_adjustment_interval_blocks": 50,
+      "pow" : {
+        "target_spacing_secs" : 10,
+        "half_life_secs" : 3600,
+        "initial_hash_threshold" : "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0f",
+        "max_hash_threshold" : "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"
+      },
       "initial_subsidy" : 10000,
       "decay_interval" : 1000,
       "decay_step" : 100

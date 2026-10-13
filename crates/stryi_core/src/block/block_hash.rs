@@ -1,4 +1,5 @@
 use blake3;
+use crypto_bigint::U256;
 use hashx::{Error, HashX};
 
 use crate::hash::HashKind;
@@ -84,11 +85,73 @@ impl BlockHash {
             data: [0u8; BlockHashKind::SIZE],
         }
     }
+
+    /// Inclusive check: the block hash satisfies the threshold when its
+    /// big-endian integer value is less than or equal to it.
+    pub fn meets_threshold(&self, threshold: &U256) -> bool {
+        U256::from(*self) <= *threshold
+    }
+}
+
+impl From<BlockHash> for U256 {
+    fn from(value: BlockHash) -> Self {
+        // Match the byte order of the Bx hex display and its leading zeros.
+        U256::from_be_slice(&value.data)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_threshold_inclusive() {
+        let mut hash = BlockHash::empty();
+        assert!(hash.meets_threshold(&U256::ZERO));
+        hash.data[31] = 1;
+        assert!(!hash.meets_threshold(&U256::ZERO));
+
+        hash.data[31] = 2;
+        assert!(!hash.meets_threshold(&U256::from(1u64)));
+        assert!(hash.meets_threshold(&U256::from(2u64)));
+        assert!(hash.meets_threshold(&U256::from(3u64)));
+
+        hash.data.fill(0xff);
+        assert!(hash.meets_threshold(&U256::MAX));
+        assert!(!hash.meets_threshold(&(U256::MAX - U256::ONE)));
+        assert!(BlockHash::empty().meets_threshold(&U256::MAX));
+    }
+
+    #[test]
+    fn test_threshold_boundary_be_assertions() {
+        // The comparison reads the raw digest as a big-endian integer, so a
+        // digest equal to the threshold is accepted while threshold + 1 is not.
+        let thresholds = [
+            U256::ZERO,
+            U256::ONE,
+            U256::from(258u64),
+            U256::MAX >> 4,
+            U256::from_be_hex("8000000000000000000000000000000000000000000000000000000000000201"),
+            U256::MAX,
+        ];
+
+        for threshold in thresholds {
+            let boundary = BlockHash::try_from(threshold.to_be_bytes().as_slice()).unwrap();
+            assert!(
+                boundary.meets_threshold(&threshold),
+                "boundary value must satisfy its own threshold: {threshold}"
+            );
+
+            if threshold < U256::MAX {
+                let above =
+                    BlockHash::try_from((threshold + U256::ONE).to_be_bytes().as_slice()).unwrap();
+                assert!(
+                    !above.meets_threshold(&threshold),
+                    "threshold + 1 must not satisfy the threshold: {threshold}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_block_hash_basic() {

@@ -10,8 +10,9 @@ use rand::RngExt;
 use rand_chacha::ChaCha8Rng;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::collections::HashSet;
-use stryi_core::block::{Block, BlockHash, meets_difficulty};
+use stryi_core::block::{Block, BlockHash};
 use stryi_core::consensus::BlockStorage;
+use stryi_core::difficulty::{MAX_FUTURE_BLOCK_TIME_SECS, median_time_past};
 use stryi_core::transactions::{
     OutPoint, Transaction, TransactionData, TransactionKind, TransactionOut,
 };
@@ -34,10 +35,11 @@ impl ChainGenerator {
         let miner = self.config.blocks.miner_address;
         let distributor_chain_height = self.pre_generation_height + 1;
 
-        // Get the current tip to compute timestamp and version/difficulty
-        let prev_block = {
+        // Get the current tip to build on: it provides the parent, timestamp and version
+        let (prev_block, hash_threshold, median_time) = {
             let s = self.storage.read().await;
-            s.get_block_by_height(self.pre_generation_height)
+            let prev_block = s
+                .get_block_by_height(self.pre_generation_height)
                 .await
                 .map_err(|e| format!("Failed to read previous block for distributor: {}", e))?
                 .ok_or_else(|| {
@@ -45,12 +47,31 @@ impl ChainGenerator {
                         "Previous block at height {} not found",
                         self.pre_generation_height
                     )
-                })?
+                })?;
+
+            // The threshold is derived from the same storage view that provided
+            // the parent, so a resumed generation and the validator agree.
+            let hash_threshold = self
+                .difficulty_calc
+                .next_hash_threshold(&*s, prev_block.block_hash())
+                .await
+                .map_err(|e| format!("Failed to compute next hash threshold: {e}"))?;
+
+            let median_time = median_time_past(&*s, prev_block.block_hash())
+                .await
+                .map_err(|e| format!("Failed to read distributor timestamp history: {e}"))?;
+
+            (prev_block, hash_threshold, median_time)
         };
 
         let base_time = self.config.blocks.average_block_time_secs;
-        let timestamp = prev_block.header.timestamp.saturating_add(base_time);
-        let bits = consts.difficulty_bits_for_height(distributor_chain_height);
+        let timestamp = generation_timestamp(
+            prev_block.header.timestamp,
+            base_time,
+            0,
+            median_time,
+            generation_now_secs()?,
+        )?;
         let version = prev_block.header.version;
         let subsidy = consts.block_subsidy(distributor_chain_height);
 
@@ -85,12 +106,12 @@ impl ChainGenerator {
             vec![coinbase_tx, dist_tx],
             prev_block.block_hash(),
             distributor_chain_height,
-            bits,
+            hash_threshold,
             timestamp,
             version,
         );
 
-        self.mine_block_parallel_ordered(&mut block)?;
+        mine_block_parallel_ordered(&mut block, MINING_ATTEMPT_CAP)?;
 
         Ok(block)
     }
@@ -127,14 +148,28 @@ impl ChainGenerator {
             .map_err(|e| format!("cannot read prev block at height {}: {e}", height - 1))?
             .ok_or_else(|| format!("prev block at height {} not found", height - 1))?;
 
-        // Consensus fields for this height.
-        let bits = self.consensus_consts.difficulty_bits_for_height(height);
+        // Consensus fields for this height, from the same view as the parent.
+        let hash_threshold = self
+            .difficulty_calc
+            .next_hash_threshold(&*storage_guard, prev.block_hash())
+            .await
+            .map_err(|e| format!("cannot compute next hash threshold: {e}"))?;
+
+        let median_time = median_time_past(&*storage_guard, prev.block_hash())
+            .await
+            .map_err(|e| format!("cannot read generation timestamp history: {e}"))?;
 
         // Add deterministic variance to block times using the RNG
         let base_time = self.config.blocks.average_block_time_secs;
         let variance_range = base_time.min(30); // Max 30s variance or block time, whichever is smaller
         let variance = rng.random_range(0..=variance_range);
-        let timestamp = prev.header.timestamp.saturating_add(base_time + variance);
+        let timestamp = generation_timestamp(
+            prev.header.timestamp,
+            base_time,
+            variance,
+            median_time,
+            generation_now_secs()?,
+        )?;
 
         let miner = self.config.blocks.miner_address;
         let subsidy = self.consensus_consts.block_subsidy(height);
@@ -251,46 +286,79 @@ impl ChainGenerator {
             transactions,
             prev.block_hash(),
             height,
-            bits,
+            hash_threshold,
             timestamp,
             1, // version
         );
 
         // Mine nonce in parallel using ordered scan for a deterministic result between runs.
-        self.mine_block_parallel_ordered(&mut block)?;
+        mine_block_parallel_ordered(&mut block, MINING_ATTEMPT_CAP)?;
 
         Ok(block)
     }
+}
 
-    /// Parallel, ordered nonce search using rayon.
-    /// Scans 0..cap in increasing order; the first matching nonce is chosen (deterministic).
-    fn mine_block_parallel_ordered(&self, block: &mut Block) -> Result<(), String> {
-        // Compute a sane attempt cap from difficulty.
-        // cap ~= min(50M, 16 * 2^bits), with lower bound 1k.
-        let pow_bits = block.header.difficulty_bits.min(31);
-        let expected = 1u64 << pow_bits;
-        let cap = expected.saturating_mul(16).clamp(1_000, 50_000_000);
+fn generation_now_secs() -> Result<u64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .map_err(|e| e.to_string())
+}
 
-        // Take a snapshot of the header without changing the shared `block` during the search.
-        let base_header = block.header;
+fn generation_timestamp(
+    parent_timestamp: u64,
+    base_time_secs: u64,
+    variance_secs: u64,
+    median_time: u64,
+    now_secs: u64,
+) -> Result<u64, String> {
+    let increment = base_time_secs
+        .checked_add(variance_secs)
+        .ok_or_else(|| "generation interval overflow".to_string())?;
+    let scheduled = parent_timestamp
+        .checked_add(increment)
+        .ok_or_else(|| "generation timestamp overflow".to_string())?;
 
-        let found = (0u32..(cap as u32)).into_par_iter().find_first(|&nonce| {
-            let mut hdr = base_header;
-            hdr.nonce = nonce;
+    let minimum = median_time
+        .checked_add(1)
+        .ok_or_else(|| "median time past leaves no valid timestamp".to_string())?;
+    let timestamp = scheduled.max(minimum);
 
-            let header_bytes = hdr.to_hash_bytes();
-            let h = BlockHash::new(&header_bytes);
-            meets_difficulty(&h, hdr.difficulty_bits)
-        });
-
-        if let Some(nonce) = found {
-            block.header.nonce = nonce;
-            return Ok(());
-        }
-
-        Err(format!(
-            "failed to mine block at height {} within {} attempts (difficulty bits: {})",
-            block.header.height, cap, block.header.difficulty_bits
-        ))
+    if timestamp > now_secs.saturating_add(MAX_FUTURE_BLOCK_TIME_SECS) {
+        return Err("generated timestamp exceeds future time limit".into());
     }
+
+    Ok(timestamp)
+}
+
+/// Hard cap on nonces tried for one generated block: keeps local generation
+/// bounded for an excessively hard configured threshold.
+const MINING_ATTEMPT_CAP: u32 = 50_000_000;
+
+/// Parallel, ordered nonce search using rayon.
+/// Scans `0..max_attempts` in increasing order; the first matching nonce is chosen (deterministic).
+fn mine_block_parallel_ordered(block: &mut Block, max_attempts: u32) -> Result<(), String> {
+    let threshold = block.header.hash_threshold;
+
+    // Take a snapshot of the header without changing the shared `block` during the search.
+    let base_header = block.header;
+
+    let found = (0u32..max_attempts).into_par_iter().find_first(|&nonce| {
+        let mut hdr = base_header;
+        hdr.nonce = nonce;
+
+        let header_bytes = hdr.to_hash_bytes();
+        let h = BlockHash::new(&header_bytes);
+        h.meets_threshold(&threshold)
+    });
+
+    if let Some(nonce) = found {
+        block.header.nonce = nonce;
+        return Ok(());
+    }
+
+    Err(format!(
+        "failed to mine block at height {} within {} attempts (hash_threshold: {})",
+        block.header.height, max_attempts, threshold
+    ))
 }
