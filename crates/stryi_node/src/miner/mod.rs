@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use stryi_core::address::AccountAddress;
 use stryi_core::block::{Block, BlockHash, BlockHeader};
+use stryi_core::difficulty::MAX_FUTURE_BLOCK_TIME_SECS;
 use stryi_core::mempool::MemPool;
 use stryi_core::merkletree::{MerkleHash, calc_merkle_root};
 use stryi_core::transactions::{Transaction, TransactionData, TransactionKind, TransactionOut};
@@ -160,27 +161,24 @@ impl StryiMiner {
 
     /// build a candidate block from the best transactions in the mempool.
     async fn build_candidate_block(&self, best_txs: Vec<Transaction>) -> Result<Block, String> {
-        let (latest_block_height, latest_block_hash) = self
+        let context = self
             .backend
-            .tip()
+            .mining_context()
             .await
-            .map_err(|e| format!("cannot read current tip: {e}"))?;
+            .map_err(|e| format!("cannot read mining context: {e}"))?;
 
-        let system_time = SystemTime::now();
-        let timestamp = system_time
+        let latest_block_hash = context.parent_hash;
+        let hash_threshold = context.hash_threshold;
+        let next_height = context
+            .parent_height
+            .checked_add(1)
+            .ok_or_else(|| "chain height overflow".to_string())?;
+
+        let now_secs = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("SystemTime before UNIX_EPOCH, this should never normally happen")
+            .map_err(|e| format!("cannot read local clock: {e}"))?
             .as_secs();
-
-        let next_height = latest_block_height + 1;
-
-        // The threshold is derived from the same tip the candidate is built on,
-        // so the locally mined block and the validator agree on the target.
-        let hash_threshold = self
-            .backend
-            .next_hash_threshold(latest_block_hash)
-            .await
-            .map_err(|e| format!("cannot compute next hash threshold: {e}"))?;
+        let timestamp = mining_timestamp(now_secs, context.median_time_past)?;
 
         let mut header = BlockHeader {
             // -- dynamic values --
@@ -310,6 +308,19 @@ impl StryiMiner {
     }
 }
 
+fn mining_timestamp(now_secs: u64, median: u64) -> Result<u64, String> {
+    let minimum = median
+        .checked_add(1)
+        .ok_or_else(|| "median time past leaves no valid timestamp".to_string())?;
+    let timestamp = now_secs.max(minimum);
+
+    if timestamp > now_secs.saturating_add(MAX_FUTURE_BLOCK_TIME_SECS) {
+        return Err("chain time is too far ahead of the local clock".into());
+    }
+
+    Ok(timestamp)
+}
+
 /// Mine a block by finding a valid nonce.
 /// Delegates to `stryi_core::block::mine_block_memcpy` for the fixed-layout memcpy approach.
 fn mine_block(block: &mut Block, cancel: &CancellationToken) -> bool {
@@ -322,6 +333,20 @@ mod tests {
     use stryi_core::block::BlockData;
     use stryi_core::difficulty::HashThreshold;
     use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn mining_timestamp_respects_validation_window() {
+        for (now, median, expected) in [
+            (100, 99, Some(100)),
+            (100, 100, Some(101)),
+            (100, 219, Some(220)),
+            (100, 220, None),
+            (100, u64::MAX, None),
+            (u64::MAX, u64::MAX - 1, Some(u64::MAX)),
+        ] {
+            assert_eq!(mining_timestamp(now, median).ok(), expected);
+        }
+    }
 
     #[test]
     fn pow_finds_nonce_satisfying_hash_threshold() {

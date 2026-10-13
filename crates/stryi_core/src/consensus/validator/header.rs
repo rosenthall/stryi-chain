@@ -1,5 +1,7 @@
 use crate::block::Block;
-use crate::difficulty::{DifficultyCalc, HashThreshold};
+use crate::difficulty::{
+    DifficultyCalc, HashThreshold, MAX_FUTURE_BLOCK_TIME_SECS, median_time_past,
+};
 use crate::error::StryiCoreError;
 use crate::storage::{BlockStorage, verify_genesis_work_shape};
 use tracing::trace;
@@ -21,6 +23,14 @@ where
 
     verify_header_shape(block)?;
     trace!("Block {} passed header shape verification", hash);
+
+    if !block.header.is_genesis() {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| StryiCoreError::other(e.to_string()))?
+            .as_secs();
+        verify_timestamp(block, state, now_secs).await?;
+    }
 
     verify_hash_threshold(block, calc, state).await?;
     trace!(
@@ -44,6 +54,30 @@ fn verify_header_shape(block: &Block) -> Result<(), StryiCoreError> {
         return Err(StryiCoreError::ConsensusValidationFailed {
             details: "normal block must carry a positive hash threshold (ZERO is genesis-only)"
                 .into(),
+        });
+    }
+
+    Ok(())
+}
+
+async fn verify_timestamp<STATE>(
+    block: &Block,
+    state: &STATE,
+    now_secs: u64,
+) -> Result<(), StryiCoreError>
+where
+    STATE: BlockStorage + Send + Sync,
+{
+    let median = median_time_past(state, block.header.previous_block_hash).await?;
+    if block.header.timestamp <= median {
+        return Err(StryiCoreError::ConsensusValidationFailed {
+            details: "block timestamp must be greater than median time past".into(),
+        });
+    }
+
+    if block.header.timestamp > now_secs.saturating_add(MAX_FUTURE_BLOCK_TIME_SECS) {
+        return Err(StryiCoreError::ConsensusValidationFailed {
+            details: "block timestamp exceeds future time limit".into(),
         });
     }
 

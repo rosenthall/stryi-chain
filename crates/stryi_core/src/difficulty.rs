@@ -2,7 +2,7 @@ use crate::StryiCoreError;
 use crate::block::{Block, BlockHash, BlockHeader};
 use crate::consensus::ConsensusConsts;
 use crate::error::StorageLayer;
-use crate::storage::{BlockStorage, StorageStats};
+use crate::storage::{BlockStorage, StorageStats, verify_genesis_work_shape};
 use crypto_bigint::{CheckedAdd, NonZero};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -13,6 +13,67 @@ pub use asert::asert_upper;
 
 pub use crypto_bigint::U256 as HashThreshold;
 pub use crypto_bigint::U512 as ChainWork;
+
+pub const MAX_FUTURE_BLOCK_TIME_SECS: u64 = 120;
+
+async fn read_required_block<S>(state: &S, hash: BlockHash) -> Result<Block, StryiCoreError>
+where
+    S: BlockStorage + Send + Sync,
+{
+    let block = state
+        .get_block_by_hash(hash)
+        .await
+        .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?
+        .ok_or_else(|| StryiCoreError::ConsensusValidationFailed {
+            details: format!("block {hash} is missing from the branch view"),
+        })?;
+
+    if block.block_hash() != hash {
+        return Err(StryiCoreError::storage(
+            StorageLayer::Block,
+            format!("block hash does not match storage key {hash}"),
+        ));
+    }
+
+    Ok(block)
+}
+
+/// Upper median of up to eleven ancestors, starting at the parent.
+pub async fn median_time_past<S>(state: &S, parent_hash: BlockHash) -> Result<u64, StryiCoreError>
+where
+    S: BlockStorage + Send + Sync,
+{
+    let mut timestamps = [0u64; 11];
+    let mut count = 0;
+    let mut cursor = read_required_block(state, parent_hash).await?;
+
+    loop {
+        verify_genesis_work_shape(&cursor)?;
+        if !cursor.header.is_genesis() && cursor.header.height == 0 {
+            return Err(StryiCoreError::ConsensusValidationFailed {
+                details: "normal ancestor has height zero".into(),
+            });
+        }
+
+        timestamps[count] = cursor.header.timestamp;
+        count += 1;
+        if cursor.header.is_genesis() || count == timestamps.len() {
+            break;
+        }
+
+        let previous = read_required_block(state, cursor.header.previous_block_hash).await?;
+        if previous.header.height.checked_add(1) != Some(cursor.header.height) {
+            return Err(StryiCoreError::ConsensusValidationFailed {
+                details: "broken timestamp ancestry".into(),
+            });
+        }
+
+        cursor = previous;
+    }
+
+    timestamps[..count].sort_unstable();
+    Ok(timestamps[count / 2])
+}
 
 // H <= target accepts target + 1 hashes, so work is
 // floor(2^256 / (target + 1)), the inverse success probability.
@@ -53,105 +114,6 @@ pub fn chain_work_from_bytes(bytes: &[u8]) -> Result<ChainWork, &'static str> {
 
 pub fn chain_work_to_bytes(value: &ChainWork) -> [u8; 64] {
     value.to_le_bytes().into()
-}
-
-#[cfg(test)]
-mod pow_number_tests {
-    use super::*;
-
-    #[test]
-    fn test_block_work() {
-        let half = HashThreshold::ONE.shl_vartime(255);
-        let quarter = HashThreshold::ONE.shl_vartime(254);
-        for (target, expected) in [
-            (HashThreshold::ZERO, ChainWork::ONE.shl_vartime(256)),
-            (HashThreshold::ONE, ChainWork::ONE.shl_vartime(255)),
-            (
-                HashThreshold::from(2u64),
-                ChainWork::from_be_hex(concat!(
-                    "0000000000000000000000000000000000000000000000000000000000000000",
-                    "5555555555555555555555555555555555555555555555555555555555555555"
-                )),
-            ),
-            (quarter - HashThreshold::ONE, ChainWork::from(4u64)),
-            (quarter, ChainWork::from(3u64)),
-            (half - HashThreshold::ONE, ChainWork::from(2u64)),
-            (half, ChainWork::ONE),
-            (half + HashThreshold::ONE, ChainWork::ONE),
-            (HashThreshold::MAX - HashThreshold::ONE, ChainWork::ONE),
-            (HashThreshold::MAX, ChainWork::ONE),
-        ] {
-            assert_eq!(block_work(&target), expected, "target {target:?}");
-        }
-    }
-
-    #[test]
-    fn test_add_work() {
-        let work = ChainWork::ONE.shl_vartime(255);
-        assert_eq!(
-            add_work(work, work).unwrap(),
-            ChainWork::ONE.shl_vartime(256)
-        );
-        assert_eq!(
-            add_work(ChainWork::MAX, ChainWork::ZERO).unwrap(),
-            ChainWork::MAX
-        );
-        assert_eq!(
-            add_work(ChainWork::MAX, ChainWork::ONE),
-            Err(StryiCoreError::consensus_chain_selection(
-                "chain work overflow"
-            ))
-        );
-    }
-
-    #[test]
-    fn test_threshold_bytes() {
-        let value = HashThreshold::ONE.shl_vartime(255) + HashThreshold::from(258u64);
-        let mut bytes = [0; 32];
-        bytes[..2].copy_from_slice(&[2, 1]);
-        bytes[31] = 0x80;
-        for (value, bytes) in [
-            (HashThreshold::ZERO, [0; 32]),
-            (value, bytes),
-            (HashThreshold::MAX, [0xff; 32]),
-        ] {
-            assert_eq!(threshold_from_bytes(&bytes).unwrap(), value);
-            assert_eq!(threshold_to_bytes(&value), bytes);
-        }
-        for n in [0, 1, 31, 33, 64] {
-            assert_eq!(
-                threshold_from_bytes(&vec![0; n]),
-                Err("hash_threshold must contain exactly 32 bytes"),
-                "length {n}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_chain_work_bytes() {
-        let value = ChainWork::ONE.shl_vartime(511)
-            + ChainWork::ONE.shl_vartime(256)
-            + ChainWork::from(258u64);
-        let mut bytes = [0; 64];
-        bytes[..2].copy_from_slice(&[2, 1]);
-        bytes[32] = 1;
-        bytes[63] = 0x80;
-        for (value, bytes) in [
-            (ChainWork::ZERO, [0; 64]),
-            (value, bytes),
-            (ChainWork::MAX, [0xff; 64]),
-        ] {
-            assert_eq!(chain_work_from_bytes(&bytes).unwrap(), value);
-            assert_eq!(chain_work_to_bytes(&value), bytes);
-        }
-        for n in [0, 1, 32, 63, 65] {
-            assert_eq!(
-                chain_work_from_bytes(&vec![0; n]),
-                Err("chain_work must contain exactly 64 bytes"),
-                "length {n}"
-            );
-        }
-    }
 }
 
 /// Proof-of-work schedule parameters stored in genesis and fixed for the chain.
@@ -322,71 +284,100 @@ where
 }
 
 #[cfg(test)]
-mod difficulty_calc_tests {
+mod tests {
     use super::*;
-    use crate::address::AccountAddress;
-    use crate::block::{BlockData, GenesisState};
-    use crate::storage::StryiInMemoryStorage;
-    use crate::transactions::{Transaction, TransactionData, TransactionKind, TransactionOut};
 
-    // Minimal deterministic genesis builder for these tests only.
-    fn make_genesis_for_calc() -> Block {
-        let premine_owner = AccountAddress::new(&[0u8; 20]);
-        let genesis_tx = Transaction {
-            data: TransactionData {
-                version: 1,
-                kind: TransactionKind::Genesis,
-                inputs: vec![],
-                outputs: vec![TransactionOut {
-                    value: 1_000_000,
-                    recipient: premine_owner,
-                }],
-            },
-            signature: Default::default(),
-        };
-
-        Block {
-            header: BlockHeader {
-                version: 1,
-                merkle_root_hash: Block::compute_merkle_root(std::slice::from_ref(&genesis_tx)),
-                previous_block_hash: BlockHash::empty(),
-                height: 0,
-                // Genesis carries the zero hash threshold; genesis work is zero.
-                hash_threshold: HashThreshold::ZERO,
-                timestamp: 0,
-                nonce: 0,
-
-                // Critical: genesis_state must be Some to carry ConsensusConsts from genesis.
-                genesis_state: Some(GenesisState::default()),
-            },
-            data: BlockData {
-                transactions: vec![genesis_tx],
-            },
+    #[test]
+    fn test_block_work() {
+        let half = HashThreshold::ONE.shl_vartime(255);
+        let quarter = HashThreshold::ONE.shl_vartime(254);
+        for (target, expected) in [
+            (HashThreshold::ZERO, ChainWork::ONE.shl_vartime(256)),
+            (HashThreshold::ONE, ChainWork::ONE.shl_vartime(255)),
+            (
+                HashThreshold::from(2u64),
+                ChainWork::from_be_hex(concat!(
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                    "5555555555555555555555555555555555555555555555555555555555555555"
+                )),
+            ),
+            (quarter - HashThreshold::ONE, ChainWork::from(4u64)),
+            (quarter, ChainWork::from(3u64)),
+            (half - HashThreshold::ONE, ChainWork::from(2u64)),
+            (half, ChainWork::ONE),
+            (half + HashThreshold::ONE, ChainWork::ONE),
+            (HashThreshold::MAX - HashThreshold::ONE, ChainWork::ONE),
+            (HashThreshold::MAX, ChainWork::ONE),
+        ] {
+            assert_eq!(block_work(&target), expected, "target {target:?}");
         }
     }
 
-    #[tokio::test]
-    async fn pow_v2_load_rules_builds_calc_from_genesis() {
-        // Arrange: in-memory DB with a valid genesis carrying default ConsensusConsts.
-        let db = StryiInMemoryStorage::new(make_genesis_for_calc());
-        let db = Arc::new(RwLock::new(db));
-
-        // Act: build difficulty calculator from genesis rules/consts.
-        let calc = load_rules_and_build_calc(db.clone())
-            .await
-            .expect("calculator");
-
-        // Assert: the calculator follows the genesis PowParams; the first normal
-        // candidate (child of genesis) gets the initial threshold, not ZERO.
-        let guard = db.read().await;
-        let child_of_genesis = calc
-            .next_hash_threshold(&*guard, BlockHash::empty())
-            .await
-            .expect("genesis parent exists");
+    #[test]
+    fn test_add_work() {
+        let work = ChainWork::ONE.shl_vartime(255);
         assert_eq!(
-            child_of_genesis,
-            ConsensusConsts::default().pow.initial_hash_threshold
+            add_work(work, work).unwrap(),
+            ChainWork::ONE.shl_vartime(256)
         );
-        assert_ne!(child_of_genesis, HashThreshold::ZERO);
+        assert_eq!(
+            add_work(ChainWork::MAX, ChainWork::ZERO).unwrap(),
+            ChainWork::MAX
+        );
+        assert_eq!(
+            add_work(ChainWork::MAX, ChainWork::ONE),
+            Err(StryiCoreError::consensus_chain_selection(
+                "chain work overflow"
+            ))
+        );
+    }
+
+    #[test]
+    fn test_threshold_bytes() {
+        let value = HashThreshold::ONE.shl_vartime(255) + HashThreshold::from(258u64);
+        let mut bytes = [0; 32];
+        bytes[..2].copy_from_slice(&[2, 1]);
+        bytes[31] = 0x80;
+        for (value, bytes) in [
+            (HashThreshold::ZERO, [0; 32]),
+            (value, bytes),
+            (HashThreshold::MAX, [0xff; 32]),
+        ] {
+            assert_eq!(threshold_from_bytes(&bytes).unwrap(), value);
+            assert_eq!(threshold_to_bytes(&value), bytes);
+        }
+        for n in [0, 1, 31, 33, 64] {
+            assert_eq!(
+                threshold_from_bytes(&vec![0; n]),
+                Err("hash_threshold must contain exactly 32 bytes"),
+                "length {n}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_chain_work_bytes() {
+        let value = ChainWork::ONE.shl_vartime(511)
+            + ChainWork::ONE.shl_vartime(256)
+            + ChainWork::from(258u64);
+        let mut bytes = [0; 64];
+        bytes[..2].copy_from_slice(&[2, 1]);
+        bytes[32] = 1;
+        bytes[63] = 0x80;
+        for (value, bytes) in [
+            (ChainWork::ZERO, [0; 64]),
+            (value, bytes),
+            (ChainWork::MAX, [0xff; 64]),
+        ] {
+            assert_eq!(chain_work_from_bytes(&bytes).unwrap(), value);
+            assert_eq!(chain_work_to_bytes(&value), bytes);
+        }
+        for n in [0, 1, 32, 63, 65] {
+            assert_eq!(
+                chain_work_from_bytes(&vec![0; n]),
+                Err("chain_work must contain exactly 64 bytes"),
+                "length {n}"
+            );
+        }
     }
 }

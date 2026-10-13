@@ -12,6 +12,7 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::collections::HashSet;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::consensus::BlockStorage;
+use stryi_core::difficulty::{MAX_FUTURE_BLOCK_TIME_SECS, median_time_past};
 use stryi_core::transactions::{
     OutPoint, Transaction, TransactionData, TransactionKind, TransactionOut,
 };
@@ -35,7 +36,7 @@ impl ChainGenerator {
         let distributor_chain_height = self.pre_generation_height + 1;
 
         // Get the current tip to build on: it provides the parent, timestamp and version
-        let (prev_block, hash_threshold) = {
+        let (prev_block, hash_threshold, median_time) = {
             let s = self.storage.read().await;
             let prev_block = s
                 .get_block_by_height(self.pre_generation_height)
@@ -56,11 +57,21 @@ impl ChainGenerator {
                 .await
                 .map_err(|e| format!("Failed to compute next hash threshold: {e}"))?;
 
-            (prev_block, hash_threshold)
+            let median_time = median_time_past(&*s, prev_block.block_hash())
+                .await
+                .map_err(|e| format!("Failed to read distributor timestamp history: {e}"))?;
+
+            (prev_block, hash_threshold, median_time)
         };
 
         let base_time = self.config.blocks.average_block_time_secs;
-        let timestamp = prev_block.header.timestamp.saturating_add(base_time);
+        let timestamp = generation_timestamp(
+            prev_block.header.timestamp,
+            base_time,
+            0,
+            median_time,
+            generation_now_secs()?,
+        )?;
         let version = prev_block.header.version;
         let subsidy = consts.block_subsidy(distributor_chain_height);
 
@@ -144,11 +155,21 @@ impl ChainGenerator {
             .await
             .map_err(|e| format!("cannot compute next hash threshold: {e}"))?;
 
+        let median_time = median_time_past(&*storage_guard, prev.block_hash())
+            .await
+            .map_err(|e| format!("cannot read generation timestamp history: {e}"))?;
+
         // Add deterministic variance to block times using the RNG
         let base_time = self.config.blocks.average_block_time_secs;
         let variance_range = base_time.min(30); // Max 30s variance or block time, whichever is smaller
         let variance = rng.random_range(0..=variance_range);
-        let timestamp = prev.header.timestamp.saturating_add(base_time + variance);
+        let timestamp = generation_timestamp(
+            prev.header.timestamp,
+            base_time,
+            variance,
+            median_time,
+            generation_now_secs()?,
+        )?;
 
         let miner = self.config.blocks.miner_address;
         let subsidy = self.consensus_consts.block_subsidy(height);
@@ -275,6 +296,39 @@ impl ChainGenerator {
 
         Ok(block)
     }
+}
+
+fn generation_now_secs() -> Result<u64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .map_err(|e| e.to_string())
+}
+
+fn generation_timestamp(
+    parent_timestamp: u64,
+    base_time_secs: u64,
+    variance_secs: u64,
+    median_time: u64,
+    now_secs: u64,
+) -> Result<u64, String> {
+    let increment = base_time_secs
+        .checked_add(variance_secs)
+        .ok_or_else(|| "generation interval overflow".to_string())?;
+    let scheduled = parent_timestamp
+        .checked_add(increment)
+        .ok_or_else(|| "generation timestamp overflow".to_string())?;
+
+    let minimum = median_time
+        .checked_add(1)
+        .ok_or_else(|| "median time past leaves no valid timestamp".to_string())?;
+    let timestamp = scheduled.max(minimum);
+
+    if timestamp > now_secs.saturating_add(MAX_FUTURE_BLOCK_TIME_SECS) {
+        return Err("generated timestamp exceeds future time limit".into());
+    }
+
+    Ok(timestamp)
 }
 
 /// Hard cap on nonces tried for one generated block: keeps local generation
