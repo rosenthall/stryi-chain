@@ -521,3 +521,79 @@ where
         Box::pin(ready(Ok(())))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::consensus::ConsensusConsts;
+    use crate::difficulty::{DifficultyCalc, HashThreshold, PowParams};
+    use crate::tests::make_test_genesis;
+
+    #[tokio::test]
+    async fn asert_uses_parent_branch() {
+        let pow = PowParams {
+            target_spacing_secs: 3600,
+            half_life_secs: 3600,
+            initial_hash_threshold: HashThreshold::from(1_000_000u64),
+            max_hash_threshold: HashThreshold::from(10_000_000u64),
+        };
+        let consts = ConsensusConsts {
+            pow,
+            ..ConsensusConsts::default()
+        };
+        let (genesis, mut db) = make_test_genesis(&[], consts);
+        let calc = DifficultyCalc::new(pow).unwrap();
+        let initial = pow.initial_hash_threshold;
+        assert_eq!(
+            calc.next_hash_threshold(&db, genesis.block_hash())
+                .await
+                .unwrap(),
+            initial
+        );
+
+        let first = Block::new(vec![], genesis.block_hash(), 1, initial, 1000, 1);
+        db.put_block(&first).await.unwrap();
+        assert_eq!(
+            calc.next_hash_threshold(&db, first.block_hash())
+                .await
+                .unwrap(),
+            initial
+        );
+        let slow = Block::new(vec![], first.block_hash(), 2, initial, 8200, 1);
+        db.put_block(&slow).await.unwrap();
+        assert_eq!(
+            calc.next_hash_threshold(&db, slow.block_hash())
+                .await
+                .unwrap(),
+            HashThreshold::from(2_000_000u64)
+        );
+
+        let mut shared = ForkDbOverlay::new(&db, first.work());
+        let fast = Block::new(vec![], first.block_hash(), 2, initial, 2800, 1);
+        shared.put_block(&fast).await.unwrap();
+        assert_eq!(
+            calc.next_hash_threshold(&shared, fast.block_hash())
+                .await
+                .unwrap(),
+            HashThreshold::from(707_046u64)
+        );
+
+        let mut from_genesis = ForkDbOverlay::new(&db, ChainWork::ZERO);
+        let fork_first = Block::new(vec![], genesis.block_hash(), 1, initial, 100_000, 1);
+        from_genesis.put_block(&fork_first).await.unwrap();
+        assert_eq!(
+            calc.next_hash_threshold(&from_genesis, fork_first.block_hash())
+                .await
+                .unwrap(),
+            initial
+        );
+        let fork_second = Block::new(vec![], fork_first.block_hash(), 2, initial, 103_600, 1);
+        from_genesis.put_block(&fork_second).await.unwrap();
+        assert_eq!(
+            calc.next_hash_threshold(&from_genesis, fork_second.block_hash())
+                .await
+                .unwrap(),
+            initial
+        );
+    }
+}

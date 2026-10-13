@@ -38,6 +38,28 @@ where
     Ok(block)
 }
 
+async fn read_required_block_by_height<S>(state: &S, height: u64) -> Result<Block, StryiCoreError>
+where
+    S: BlockStorage + Send + Sync,
+{
+    let block = state
+        .get_block_by_height(height)
+        .await
+        .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?
+        .ok_or_else(|| StryiCoreError::ConsensusValidationFailed {
+            details: format!("block at height {height} is missing from the branch view"),
+        })?;
+
+    if block.header.height != height {
+        return Err(StryiCoreError::storage(
+            StorageLayer::Block,
+            format!("block height does not match storage key {height}"),
+        ));
+    }
+
+    Ok(block)
+}
+
 /// Upper median of up to eleven ancestors, starting at the parent.
 pub async fn median_time_past<S>(state: &S, parent_hash: BlockHash) -> Result<u64, StryiCoreError>
 where
@@ -179,8 +201,9 @@ impl Default for PowParams {
 
 /// Difficulty calculator holding the proof-of-work parameters of the chain.
 ///
-/// It returns the configured `initial_hash_threshold` for every normal
-/// candidate block.
+/// Thresholds are calculated relative to the branch anchor at height 1 using ASERT.
+/// Callers must provide a stable branch view where height lookups consistently
+/// reflect the chosen branch history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DifficultyCalc {
     params: PowParams,
@@ -193,10 +216,40 @@ impl DifficultyCalc {
         Ok(Self { params })
     }
 
+    fn verify_anchor(&self, anchor: &Block) -> Result<(), StryiCoreError> {
+        verify_genesis_work_shape(anchor)?;
+        if anchor.header.is_genesis() {
+            return Err(StryiCoreError::ConsensusValidationFailed {
+                details: "anchor block cannot have genesis shape".into(),
+            });
+        }
+        if anchor.header.height != 1 {
+            return Err(StryiCoreError::ConsensusValidationFailed {
+                details: format!(
+                    "anchor block height is {}, expected 1",
+                    anchor.header.height
+                ),
+            });
+        }
+        if anchor.header.previous_block_hash != BlockHash::empty() {
+            return Err(StryiCoreError::ConsensusValidationFailed {
+                details: "anchor block must have empty previous block hash".into(),
+            });
+        }
+        if anchor.header.hash_threshold != self.params.initial_hash_threshold {
+            return Err(StryiCoreError::ConsensusValidationFailed {
+                details: "anchor block must use initial hash threshold".into(),
+            });
+        }
+        Ok(())
+    }
+
     /// Returns the hash threshold required for a candidate block whose parent is `parent_hash`.
     ///
-    /// Missing parent/storage errors are errors, never defaults. ZERO applies only
-    /// to the genesis header and is handled by validation, never to a child of genesis.
+    /// The parent and the branch anchor at height 1 are looked up from the provided `state`.
+    /// The caller must ensure that `state` provides a consistent view of the branch containing
+    /// `parent_hash`. Missing blocks, branch inconsistencies, or invalid anchor shapes return
+    /// an error.
     pub async fn next_hash_threshold<S>(
         &self,
         state: &S,
@@ -205,26 +258,62 @@ impl DifficultyCalc {
     where
         S: BlockStorage + Send + Sync,
     {
-        let parent = state.get_block_by_hash(parent_hash).await.map_err(|e| {
-            StryiCoreError::StorageError {
-                layer: StorageLayer::Block,
-                err: format!(
-                    "failed to read parent {} while computing the next hash threshold: {}",
-                    parent_hash, e
-                ),
-            }
-        })?;
+        let parent = read_required_block(state, parent_hash).await?;
+        verify_genesis_work_shape(&parent)?;
 
-        if parent.is_none() {
-            return Err(StryiCoreError::ConsensusDifficultyAdjustmentFailed {
+        if parent.header.is_genesis() {
+            return Ok(self.params.initial_hash_threshold);
+        }
+
+        if parent.header.height == 0 {
+            return Err(StryiCoreError::ConsensusValidationFailed {
+                details: "normal parent has height zero".into(),
+            });
+        }
+
+        let parent_at_height = read_required_block_by_height(state, parent.header.height).await?;
+        if parent_at_height.block_hash() != parent_hash {
+            return Err(StryiCoreError::ConsensusValidationFailed {
                 details: format!(
-                    "parent block {} not found while computing the next hash threshold",
-                    parent_hash
+                    "branch height {} mapped to block {} instead of parent {parent_hash}",
+                    parent.header.height,
+                    parent_at_height.block_hash()
                 ),
             });
         }
 
-        Ok(self.params.initial_hash_threshold)
+        if parent.header.height == 1 {
+            self.verify_anchor(&parent)?;
+            return Ok(self.params.initial_hash_threshold);
+        }
+
+        let anchor = read_required_block_by_height(state, 1).await?;
+        self.verify_anchor(&anchor)?;
+
+        if parent.header.height == 2 && parent.header.previous_block_hash != anchor.block_hash() {
+            return Err(StryiCoreError::ConsensusValidationFailed {
+                details: format!(
+                    "parent at height 2 previous block hash {} does not match anchor {}",
+                    parent.header.previous_block_hash,
+                    anchor.block_hash()
+                ),
+            });
+        }
+
+        let elapsed = i128::from(parent.header.timestamp) - i128::from(anchor.header.timestamp);
+        let scheduled =
+            i128::from(self.params.target_spacing_secs) * i128::from(parent.header.height - 1);
+        let drift = elapsed - scheduled;
+
+        asert_upper(
+            self.params.initial_hash_threshold,
+            drift,
+            self.params.half_life_secs,
+            self.params.max_hash_threshold,
+        )
+        .ok_or_else(|| StryiCoreError::ConsensusDifficultyAdjustmentFailed {
+            details: "ASERT calculation returned None".into(),
+        })
     }
 }
 
