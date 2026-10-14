@@ -113,14 +113,22 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
 
         // Enforce max range
         let max = self.config.max_blocks_range_per_request as u64;
-        let actual_end = std::cmp::min(end_height, start_height + max);
+        if start_height > end_height {
+            return Err(Status::invalid_argument("start height exceeds end height"));
+        }
+        if max == 0 {
+            return Err(Status::internal("maximum block range is zero"));
+        }
+        let actual_end = end_height.min(start_height.saturating_add(max - 1));
 
         let storage = self.storage.clone();
 
-        let header_stream = stream::unfold(start_height, move |current_height| {
+        let header_stream = stream::unfold(Some(start_height), move |current_height| {
             let storage = storage.clone();
 
             async move {
+                let current_height = current_height?;
+
                 // End the stream if current_height > actual_end
                 if current_height > actual_end {
                     return None;
@@ -133,7 +141,7 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
                 match block_result {
                     Ok(Some(block)) => {
                         let pb_header: PbBlockHeader = PbBlock::from(block).header.unwrap();
-                        let next_state = current_height + 1;
+                        let next_state = current_height.checked_add(1);
                         Some((Ok(pb_header), next_state))
                     }
 
@@ -156,7 +164,7 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
                         } else {
                             Status::internal(e.to_string())
                         };
-                        Some((Err(status), actual_end + 1))
+                        Some((Err(status), None))
                     }
                 }
             }
@@ -179,7 +187,13 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
 
         // Enforce maximum range
         let max = self.config.max_blocks_range_per_request as u64;
-        let actual_end = std::cmp::min(end_height, start_height + max);
+        if start_height > end_height {
+            return Err(Status::invalid_argument("start height exceeds end height"));
+        }
+        if max == 0 {
+            return Err(Status::internal("maximum block range is zero"));
+        }
+        let actual_end = end_height.min(start_height.saturating_add(max - 1));
 
         // We'll produce blocks for heights in [start_height..=actual_end].
         // If any block is missing, we return an error in the stream
@@ -188,9 +202,11 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
         let storage = self.storage.clone();
 
         // 2) Build a stream using `futures_util::stream::unfold(...)`
-        let block_stream = stream::unfold(start_height, move |current_height| {
+        let block_stream = stream::unfold(Some(start_height), move |current_height| {
             let storage = storage.clone();
             async move {
+                let current_height = current_height?;
+
                 if current_height > actual_end {
                     // Reached the end, so no more items
                     return None;
@@ -205,7 +221,7 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
                     Ok(Some(block)) => {
                         // Now `block: Block` matches your `From<Block>` impl
                         let pb_block: PbBlock = block.into();
-                        let next_state = current_height + 1;
+                        let next_state = current_height.checked_add(1);
                         Some((Ok(pb_block), next_state))
                     }
 
@@ -215,7 +231,7 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
                             "Block at height {} not found",
                             current_height
                         ));
-                        Some((Err(status), actual_end + 1))
+                        Some((Err(status), None))
                     }
 
                     // Storage API returned some other error
@@ -230,10 +246,7 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
                             Status::internal(e.to_string())
                         };
 
-                        // We yield Some((Err(status), <dummy next state>))
-                        // to produce exactly one error item, then effectively end
-                        // by jumping past 'actual_end'
-                        Some((Err(status), actual_end + 1))
+                        Some((Err(status), None))
                     }
                 }
             }
