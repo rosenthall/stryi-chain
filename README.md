@@ -176,7 +176,7 @@ My approach should be **reasonably** ASIC-resistant for a basic blockchain while
 2. `HashX::new(seed)` -> compiles a unique short program from the seed (retries with a re-hash if the seed is "weak")
 3. The header is split into 8-byte chunks; each chunk is run through the compiled HashX program
 4. All chunk outputs are fed into a streaming BLAKE3 hasher -> final 32-byte hash
-5. The hash must be below the current difficulty target
+5. The hash must be at or below the current difficulty target
 
 ### Hybrid Network
 
