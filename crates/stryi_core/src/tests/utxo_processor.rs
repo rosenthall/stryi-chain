@@ -101,9 +101,14 @@ async fn test_rewind_block_restores_previous_state() {
         genesis.block_hash(),
     );
     let payment = make_payment_tx(&alice_key, vec![alice_op], vec![(40_000, miner_addr)]);
+    let payment_op = OutPoint {
+        txid: payment.data.hash(),
+        vout: 0,
+    };
+    let child = make_payment_tx(&miner_key, vec![payment_op], vec![(30_000, alice_addr)]);
 
     let block = make_block_mined(
-        vec![coinbase.clone(), payment.clone()],
+        vec![coinbase.clone(), payment.clone(), child.clone()],
         1,
         consts.pow.initial_hash_threshold,
         genesis.block_hash(),
@@ -112,8 +117,11 @@ async fn test_rewind_block_restores_previous_state() {
     let processor = UtxoProcessor::new();
     let undo = processor.apply_block(&block, &mut db).await.unwrap();
 
-    // after apply: alice's UTXO gone, new outputs exist
+    // Outputs consumed within the block must not be restored by its undo.
+    assert_eq!(undo.created_outpoints.len(), 2);
+    assert_eq!(undo.spent_utxos.len(), 1);
     assert!(utxo_exists(&db, alice_op).await.is_none());
+    assert!(utxo_exists(&db, payment_op).await.is_none());
 
     // rewind
     processor.rewind_block(undo, &mut db).await.unwrap();
@@ -136,12 +144,14 @@ async fn test_rewind_block_restores_previous_state() {
         "Coinbase output should be removed after rewind"
     );
 
-    let payment_op = OutPoint {
-        txid: payment.data.hash(),
-        vout: 0,
-    };
     assert!(
         utxo_exists(&db, payment_op).await.is_none(),
         "Payment output should be removed after rewind"
     );
+
+    let child_op = OutPoint {
+        txid: child.data.hash(),
+        vout: 0,
+    };
+    assert!(utxo_exists(&db, child_op).await.is_none());
 }

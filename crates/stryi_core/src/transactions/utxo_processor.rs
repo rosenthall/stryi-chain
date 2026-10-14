@@ -53,8 +53,11 @@ impl UtxoProcessor {
                     // fetch current UTXOs so we can store them in undo
                     let existing = utxo_storage.batch_get_utxos(in_ops.clone()).await?;
 
+                    // Undo only records inputs that existed before this block.
                     for op in &in_ops {
-                        if let Some(u) = existing.get(op) {
+                        if !created_outpoints.remove(op)
+                            && let Some(u) = existing.get(op)
+                        {
                             spent_utxos.insert((*op, *u));
                         }
                     }
@@ -115,12 +118,12 @@ impl UtxoProcessor {
     where
         S: UtxoStorage + Send,
     {
-        // return all spent outputs
-        let spent_outputs = undo.spent_utxos.iter().cloned().collect::<Vec<_>>();
-        utxo_storage.batch_put_utxos(spent_outputs).await?;
-
         // remove outputs that were created by the reverted block
         let created_outputs = undo.created_outpoints.iter().cloned().collect::<Vec<_>>();
-        utxo_storage.batch_remove_utxos(created_outputs).await
+        utxo_storage.batch_remove_utxos(created_outputs).await?;
+
+        // return all spent outputs
+        let spent_outputs = undo.spent_utxos.iter().cloned().collect::<Vec<_>>();
+        utxo_storage.batch_put_utxos(spent_outputs).await
     }
 }
