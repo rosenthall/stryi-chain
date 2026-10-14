@@ -612,18 +612,21 @@ async fn sync_from_peer(
     let remote_chain_info = remote_peer.request_chain_info().await?;
     let remote_height = remote_chain_info.height;
 
-    let (local_tip_height, local_tip_hash) = {
+    let (local_tip_height, local_tip_hash, local_work) = {
         let s = storage.read().await;
-        s.tip()
+        let (height, hash) = s
+            .tip()
             .await
-            .map_err(|e| StryiNodeError::other(format!("tip(): {e}")))?
+            .map_err(|e| StryiNodeError::other(format!("tip(): {e}")))?;
+        let work = s
+            .chain_work()
+            .await
+            .map_err(|e| StryiNodeError::other(format!("chain_work(): {e}")))?;
+
+        (height, hash, work)
     };
 
-    if local_tip_height >= remote_height {
-        info!(
-            "Local height ({}) >= remote ({}), nothing to sync",
-            local_tip_height, remote_height
-        );
+    if local_work >= remote_chain_info.chain_work {
         return Ok(());
     }
 

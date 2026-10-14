@@ -389,23 +389,6 @@ impl ConnectedNode {
             info.chain_name.as_str(),
         )?;
 
-        let remote_tip_hash = info.tip_hash;
-
-        let (local_height, local_tip_hash) = {
-            let s = self.storage.read().await;
-            s.tip()
-                .await
-                .map_err(|e| StryiNodeError::other(format!("tip() failed: {e}")))?
-        };
-
-        if info.height == local_height && local_height > 0 && remote_tip_hash != local_tip_hash {
-            return Err(StryiNodeError::chain_info_mismatch(
-                "tip_hash at the same height",
-                local_tip_hash.to_string(),
-                remote_tip_hash.to_string(),
-            ));
-        }
-
         Ok(())
     }
 }
