@@ -24,6 +24,7 @@ use std::fmt::Debug;
 // --- exports ---
 pub use crate::storage::{BlockStorage, StorageStats, UndoStorage, UtxoStorage};
 pub use engine::StryiConsensusEngine;
+pub use forks::overlay::{ForkDbDelta, ForkDbOverlay};
 pub use rules::ConsensusConsts;
 pub use validator::BlockValidator;
 #[cfg(test)]
@@ -31,7 +32,7 @@ pub(crate) use validator::block::validate_block_structure;
 
 /// Reply message type for ConsensusEngine.
 /// See [`ConsensusEngine::on_block`] method for more implementation details.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum ConsensusVerdict {
     /// Block was successfully applied to a canonical chain
     Applied {

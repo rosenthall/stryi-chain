@@ -1,4 +1,5 @@
 use crate::address::AccountAddress;
+use crate::storage::StorageError;
 use crate::transactions::TransactionHash;
 use hex::FromHexError;
 use thiserror::Error;
@@ -21,7 +22,7 @@ pub enum StorageLayer {
     Other,
 }
 
-#[derive(Debug, Clone, Error, PartialEq)]
+#[derive(Debug, Clone, Error)]
 pub enum StryiCoreError {
     #[error(
         "Unexpected prefix while trying decode hash. Actual : {actual:?}, expected : {expected:?}"
@@ -85,13 +86,30 @@ pub enum StryiCoreError {
     CannotBuildChainIndex(String),
 
     #[error("Storage error in {layer}: {err}")]
-    StorageError { layer: StorageLayer, err: String },
+    StorageError {
+        layer: StorageLayer,
+        #[source]
+        err: StorageError,
+    },
 
     #[error("Got unknown error : {msg:?}")]
     Other { msg: String },
 }
 
+impl From<StorageError> for StryiCoreError {
+    fn from(err: StorageError) -> Self {
+        Self::StorageError {
+            layer: StorageLayer::Other,
+            err,
+        }
+    }
+}
+
 impl StryiCoreError {
+    pub fn is_fatal(&self) -> bool {
+        matches!(self, Self::StorageError { err, .. } if err.is_fatal())
+    }
+
     /// Constructs simple `StryiCoreError::Other` instance with provided message
     pub fn other(msg: impl ToString) -> Self {
         StryiCoreError::Other {
@@ -100,7 +118,7 @@ impl StryiCoreError {
     }
 
     /// Constructs instance of `StryiCoreError::Storage` with provided layer kind and exact err.
-    pub fn storage(layer: StorageLayer, err: String) -> Self {
+    pub fn storage(layer: StorageLayer, err: StorageError) -> Self {
         StryiCoreError::StorageError { layer, err }
     }
 

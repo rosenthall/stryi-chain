@@ -1,472 +1,275 @@
-//! A very simple implementation of UtxoStorage, BlockStorage, and StorageStats traits
-//! Uses a lot of HashMaps + RwLocks inside.
-//! Created to simplify some steps in development, especially in testing
-//! Should not be used in the real node, but during development and for testing other functionality
+//! A very simple implementation of the domain storage traits.
+//! Uses HashMaps with cloned read views and staged writes under a mutex.
+//! Created to simplify some steps in development, especially in testing.
+//! Should not be used in the real node, but during development and for testing other functionality.
 
+use super::{
+    BlockIndexData, BlockStorage, ChainMetadata, ChainState, ChainTransition,
+    ChainTransitionResult, ConfirmedTransaction, FullNodeStorage, StorageError, StorageReader,
+    StorageStats, StorageWrite, TransactionIndexData, UndoStorage, UtxoStorage, UtxoWrite,
+    apply_transition,
+};
+use crate::BlockUndo;
+use crate::address::AccountAddress;
 use crate::block::{Block, BlockHash};
-use crate::difficulty::{ChainWork, add_work};
-use crate::error::StryiCoreError;
-use crate::storage::{
-    BlockStorage, RangeError, StorageStats, UndoStorage, UtxoStorage, verified_block_work,
-};
-use crate::transactions::TransactionKind;
-use crate::{
-    BlockUndo,
-    address::AccountAddress,
-    transactions::{OutPoint, UTXO},
-};
-use futures::future::BoxFuture;
+use crate::transactions::{OutPoint, TransactionHash, UTXO};
 use std::collections::HashMap;
-use std::future::ready;
-use std::ops::RangeInclusive;
-use thiserror::Error;
-use tokio::sync::RwLock;
+use std::sync::{Arc, Mutex};
 
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
-pub enum InMemoryStorageError {
-    // UTXO layer
-    #[error("UTXO {0:?} not found")]
-    UtxoNotFound(OutPoint),
-
-    #[error("UTXO {0:?} already exists")]
-    UtxoExists(OutPoint),
-
-    // Block layer
-    #[error("Block {0:?} not found")]
-    BlockNotFound(BlockHash),
-
-    #[error("No block at height {0}")]
-    HeightMissing(u64),
-
-    #[error("Invalid range: start={start}, end={end}")]
-    InvalidRange { start: usize, end: usize },
-
-    // Misc / plumbing
-    #[error("Undo data failed: {0}")]
-    UndoFailure(String),
-
-    #[error("{0}")]
-    Other(String),
+#[derive(Clone, Default)]
+pub struct MemoryView {
+    utxos: HashMap<OutPoint, UTXO>,
+    blocks: HashMap<BlockHash, Block>,
+    heights: HashMap<u64, BlockHash>,
+    indexes: HashMap<BlockHash, BlockIndexData>,
+    transactions: HashMap<TransactionHash, TransactionIndexData>,
+    undos: HashMap<BlockHash, BlockUndo>,
+    state: Option<ChainState>,
+    metadata: Option<ChainMetadata>,
 }
 
-impl From<RangeError> for InMemoryStorageError {
-    fn from(r: RangeError) -> Self {
-        match r {
-            RangeError::InvalidRange { start, end } => Self::InvalidRange { start, end },
-        }
-    }
-}
-
-impl From<StryiCoreError> for InMemoryStorageError {
-    fn from(e: StryiCoreError) -> Self {
-        Self::Other(e.to_string())
-    }
-}
-
-#[derive(Clone, PartialEq)]
-struct StryiInMemoryStorageState {
-    pub latest_block: (u64, BlockHash),
-    pub last_update_time: u64,
-    pub blocks_count: u64,
-    pub chain_work: ChainWork,
-}
-
-impl Default for StryiInMemoryStorageState {
-    fn default() -> Self {
-        Self {
-            latest_block: (0, BlockHash::empty()),
-            last_update_time: 0,
-            blocks_count: 1,
-            chain_work: ChainWork::ZERO,
-        }
-    }
-}
-
-impl StryiInMemoryStorageState {
-    /// Initializes a new StryiInMemoryStorageState based on the provided genesis block
-    pub fn new_from_genesis(block: &Block) -> Self {
-        assert!(block.header.is_genesis());
-        StryiInMemoryStorageState {
-            latest_block: (0, block.block_hash()),
-            last_update_time: block.header.timestamp,
-            blocks_count: 1,
-            // Genesis contributes zero work to the chain.
-            chain_work: ChainWork::ZERO,
-        }
-    }
-}
-
-/// A minimalistic, in-ram implementation of storage (UtxoStorage, BlockStorage, StorageStats traits)
-/// Implementation is backed by std HashMap instances
+/// A minimalistic, in-ram implementation of storage backed by std HashMap instances.
 ///
 /// **Never use in a real node**
 /// It is purely for local development and unit-testing.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct StryiInMemoryStorage {
-    utxos: RwLock<HashMap<OutPoint, UTXO>>,
-    blocks: RwLock<HashMap<BlockHash, Block>>,
-    blocks_heights: RwLock<HashMap<u64, BlockHash>>,
-    blocks_undo: RwLock<HashMap<BlockHash, BlockUndo>>,
-    current_state: RwLock<StryiInMemoryStorageState>,
+    data: Arc<Mutex<MemoryView>>,
 }
 
 impl StryiInMemoryStorage {
-    /// Initialize StryiInMemoryStorage
-    /// Takes genesis_block for proper initial state
-    /// Panics if the provided block isn't a genesis
-    pub fn new(genesis_block: Block) -> Self {
-        assert!(
-            genesis_block.header.is_genesis(),
-            "Non-genesis block was provided for initialization of StryiInMemoryStorage"
-        );
+    /// Initialize StryiInMemoryStorage.
+    /// Takes genesis for proper initial state; panics if it is invalid.
+    pub fn new(genesis: Block) -> Self {
+        let storage = Self::default();
+        let metadata = ChainMetadata {
+            // In-memory fixtures have no persistent schema.
+            schema_version: 0,
+            chain_name: "test".into(),
+            protocol_version: u64::from(genesis.header.version),
+            created_unix_ts: 0,
+        };
 
-        let hash = genesis_block.block_hash();
+        storage
+            .apply_transition(ChainTransition::Genesis {
+                block: &genesis,
+                metadata: &metadata,
+            })
+            .expect("Valid test genesis");
 
-        let state = StryiInMemoryStorageState::new_from_genesis(&genesis_block);
+        storage
+    }
 
-        // setup block_by_* tables
-        let mut blocks_by_hash = HashMap::new();
-        blocks_by_hash.insert(hash, genesis_block.clone());
-        let mut blocks_by_height = HashMap::new();
-        blocks_by_height.insert(0, hash);
+    pub(crate) fn update<F, T>(&self, callback: F) -> Result<T, StorageError>
+    where
+        F: FnOnce(&mut MemoryView) -> Result<T, StorageError>,
+    {
+        let mut guard = self.data.lock().map_err(|_| StorageError::Unhealthy)?;
+        let mut pending = guard.clone();
+        let result = callback(&mut pending)?;
 
-        // Setup utxo table
-        let mut genesis_utxos = HashMap::new();
+        *guard = pending;
 
-        let genesis_tx = &genesis_block.data.transactions[0];
-        assert!(
-            genesis_tx.data.kind.eq(&TransactionKind::Genesis),
-            "Cannot initialize StryiInMemoryStorage. Provided genesis block's first tx is not TransactionKind::Genesis"
-        );
-
-        let genesis_tx_hash = genesis_tx.data.hash();
-
-        // add all the required transactions from genesis tx in utxo table.
-        for (vout, out) in genesis_block.data.transactions[0]
-            .data
-            .outputs
-            .iter()
-            .enumerate()
-        {
-            let outpoint = OutPoint {
-                txid: genesis_tx_hash,
-                vout: vout as u32,
-            };
-
-            let utxo = UTXO {
-                txid: genesis_tx_hash,
-                vout: vout as u32,
-                value: out.value,
-                owner: out.recipient,
-            };
-
-            genesis_utxos.insert(outpoint, utxo);
-        }
-
-        Self {
-            utxos: RwLock::new(genesis_utxos),
-            blocks: RwLock::new(blocks_by_hash),
-            blocks_heights: RwLock::new(blocks_by_height),
-            blocks_undo: Default::default(), // No BlockUndo entries are required for now
-            current_state: RwLock::new(state),
-        }
+        Ok(result)
     }
 }
 
-// ---- UTXO STORAGE IMPLEMENTATION ----
-impl UtxoStorage for StryiInMemoryStorage {
-    type StorageError = InMemoryStorageError;
+impl StorageReader for StryiInMemoryStorage {
+    type Read<'a> = MemoryView;
 
-    // ---------- required methods ---------- //
-
-    fn batch_put_utxos(
-        &mut self,
-        utxos: Vec<(OutPoint, UTXO)>,
-    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
-        Box::pin(async move {
-            let mut guard = self.utxos.write().await;
-            for (op, u) in utxos {
-                guard.insert(op, u);
-            }
-            Ok(())
-        })
+    fn read(&self) -> Result<Self::Read<'_>, StorageError> {
+        self.data
+            .lock()
+            .map(|data| data.clone())
+            .map_err(|_| StorageError::Unhealthy)
     }
+}
 
-    fn batch_remove_utxos(
-        &mut self,
-        outpoints: Vec<OutPoint>,
-    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
-        Box::pin(async move {
-            let mut guard = self.utxos.write().await;
-            for op in outpoints {
-                if guard.remove(&op).is_none() {
-                    return Err(InMemoryStorageError::UtxoNotFound(op));
-                }
-            }
-            Ok(())
-        })
-    }
-
-    fn batch_get_utxos<I>(
+impl FullNodeStorage for StryiInMemoryStorage {
+    fn apply_transition(
         &self,
-        outpoints: I,
-    ) -> BoxFuture<'_, Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
-    where
-        I: IntoIterator<Item = OutPoint> + Send,
-        I::IntoIter: Send,
-    {
-        // Collect iterator into a Vec so it can be moved into the async block
-        let it: Vec<OutPoint> = outpoints.into_iter().collect();
-        Box::pin(async move {
-            let guard = self.utxos.read().await;
-            let mut map = HashMap::with_capacity(it.len());
-            for op in it {
-                match guard.get(&op) {
-                    Some(u) => {
-                        map.insert(op, *u);
-                    }
-                    None => return Err(InMemoryStorageError::UtxoNotFound(op)),
-                }
-            }
-            Ok(map)
-        })
+        transition: ChainTransition<'_>,
+    ) -> Result<ChainTransitionResult, StorageError> {
+        self.update(|pending| apply_transition(pending, transition))
+    }
+}
+
+impl UtxoStorage for MemoryView {
+    fn get_utxo(&self, outpoint: OutPoint) -> Result<Option<UTXO>, StorageError> {
+        Ok(self.utxos.get(&outpoint).copied())
     }
 
     fn get_utxos_for_address(
         &self,
         address: AccountAddress,
-    ) -> BoxFuture<'_, Result<HashMap<OutPoint, UTXO>, Self::StorageError>> {
-        Box::pin(async move {
-            let guard = self.utxos.read().await;
-            Ok(guard
-                .iter()
-                .filter(|(_, utxo)| utxo.owner == address)
-                .map(|(op, utxo)| (*op, *utxo))
-                .collect())
-        })
+    ) -> Result<HashMap<OutPoint, UTXO>, StorageError> {
+        Ok(self
+            .utxos
+            .iter()
+            .filter(|(_, utxo)| utxo.owner == address)
+            .map(|(outpoint, utxo)| (*outpoint, *utxo))
+            .collect())
     }
 }
 
-// ---- BLOCK STORAGE IMPLEMENTATION ----
-impl BlockStorage for StryiInMemoryStorage {
-    type StorageError = InMemoryStorageError;
+impl BlockStorage for MemoryView {
+    fn get_block_hash_by_height(&self, height: u64) -> Result<Option<BlockHash>, StorageError> {
+        Ok(self.heights.get(&height).copied())
+    }
 
-    fn put_block(&mut self, block: &Block) -> BoxFuture<'_, Result<(), Self::StorageError>> {
-        let block = block.clone();
+    fn get_block_by_hash(&self, hash: BlockHash) -> Result<Option<Block>, StorageError> {
+        Ok(self.blocks.get(&hash).cloned())
+    }
 
-        // Compute the block hash from the block
-        let block_hash = block.block_hash();
-        let block_height = block.header.height;
-        let block_work = match verified_block_work(&block) {
-            Ok(work) => work,
-            Err(e) => return Box::pin(ready(Err(e.into()))),
+    fn get_block_by_height(&self, height: u64) -> Result<Option<Block>, StorageError> {
+        match self.heights.get(&height) {
+            None => Ok(None),
+            Some(hash) => self.blocks.get(hash).cloned().map(Some).ok_or_else(|| {
+                StorageError::Corruption(format!("Height {height} references missing block {hash}"))
+            }),
+        }
+    }
+
+    fn get_block_index(&self, hash: &BlockHash) -> Result<Option<BlockIndexData>, StorageError> {
+        Ok(self.indexes.get(hash).cloned())
+    }
+
+    fn get_transaction(
+        &self,
+        hash: &TransactionHash,
+    ) -> Result<Option<ConfirmedTransaction>, StorageError> {
+        let Some(location) = self.transactions.get(hash) else {
+            return Ok(None);
         };
 
-        Box::pin(async move {
-            // hash->block map
-            let mut blocks_map = self.blocks.write().await;
-            // height->hash map
-            let mut heights_map = self.blocks_heights.write().await;
+        let block = self.blocks.get(&location.block_hash).ok_or_else(|| {
+            StorageError::Corruption(format!(
+                "Transaction {hash} references absent block {}",
+                location.block_hash
+            ))
+        })?;
+        let transaction = block
+            .data
+            .transactions
+            .get(location.tx_index as usize)
+            .filter(|transaction| {
+                block.block_hash() == location.block_hash
+                    && block.header.height == location.block_height
+                    && transaction.data.hash() == *hash
+            })
+            .ok_or_else(|| {
+                StorageError::Corruption(format!(
+                    "Transaction {hash} does not match block {} index {}",
+                    location.block_hash, location.tx_index
+                ))
+            })?;
 
-            // Validate the new cumulative work before mutating anything, so an
-            // overflowing chain cannot leave a partially stored block behind.
-            let mut st = self.current_state.write().await;
-            let new_chain_work = add_work(st.chain_work, block_work)
-                .map_err(|e| InMemoryStorageError::Other(e.to_string()))?;
-
-            // Map hash -> block
-            blocks_map.insert(block_hash, block.to_owned());
-            println!("[test-storage] Mapped block to {}", block_hash);
-
-            // height -> hash
-            heights_map.insert(block_height, block_hash);
-            println!(
-                "[test-storage] Mapped height {} to block {}",
-                block_height, block_hash
-            );
-
-            st.latest_block = (block_height, block_hash);
-            st.last_update_time = block.header.timestamp;
-            st.blocks_count += 1;
-            st.chain_work = new_chain_work;
-
-            // diagnostic log
-            println!(
-                "[test-storage] tip -> height={}, hash={}, total_blocks={}, chain_work={}",
-                st.latest_block.0, st.latest_block.1, st.blocks_count, st.chain_work,
-            );
-
-            Ok(())
-        })
-    }
-
-    fn batch_get_blocks_by_hashes(
-        &self,
-        hashes: Vec<BlockHash>,
-    ) -> BoxFuture<'_, Result<HashMap<BlockHash, Block>, Self::StorageError>> {
-        // capture a reference to the map so it can be used inside the async closure
-        let blocks_lock = &self.blocks;
-        Box::pin(async move {
-            // acquire a read guard
-            let guard = blocks_lock.read().await;
-            let mut result = HashMap::with_capacity(hashes.len());
-
-            // for each requested hash, fetch or return an error
-            for h in hashes {
-                match guard.get(&h) {
-                    Some(block) => {
-                        result.insert(h, block.clone());
-                    }
-                    None => {
-                        return Err(InMemoryStorageError::BlockNotFound(h));
-                    }
-                }
-            }
-
-            Ok(result)
-        })
-    }
-
-    fn batch_get_blocks_by_heights<I>(
-        &self,
-        heights: I,
-    ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>>
-    where
-        I: IntoIterator<Item = u64> + Send + Clone,
-        I::IntoIter: Send,
-    {
-        // collect heights up front so we can move them into the async block
-        let heights_vec: Vec<u64> = heights.into_iter().collect();
-
-        Box::pin(async move {
-            // first read the height -> hash map
-            let heights_map = self.blocks_heights.read().await;
-            // then read the hash -> block map
-            let blocks_map = self.blocks.read().await;
-
-            let mut result = HashMap::with_capacity(heights_vec.len());
-            for height in heights_vec {
-                // lookup the block hash at this height
-                let hash = heights_map
-                    .get(&height)
-                    .ok_or(InMemoryStorageError::HeightMissing(height))?;
-
-                // lookup the block by hash
-                let block = blocks_map
-                    .get(hash)
-                    .ok_or(InMemoryStorageError::BlockNotFound(*hash))?;
-
-                result.insert(height, block.clone());
-            }
-            Ok(result)
-        })
-    }
-
-    fn blocks_range(
-        &self,
-        range: RangeInclusive<usize>,
-    ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>> {
-        // Capture locks so they can be used inside async move
-        let heights_lock = &self.blocks_heights;
-        let blocks_lock = &self.blocks;
-        let start = *range.start();
-        let end = *range.end();
-
-        Box::pin(async move {
-            Self::validate_range(&range)?;
-
-            // Read both maps under their own RwLock guards
-            let heights_map = heights_lock.read().await;
-            let blocks_map = blocks_lock.read().await;
-
-            let mut result = HashMap::with_capacity(end - start + 1);
-            for h in start..=end {
-                let height = h as u64;
-                // 1) lookup the block hash at this height
-                let hash = heights_map.get(&height).ok_or_else(|| {
-                    InMemoryStorageError::Other(format!("No block at height {}", height))
-                })?;
-                // 2) lookup the actual block by hash
-                let block = blocks_map.get(hash).ok_or_else(|| {
-                    InMemoryStorageError::Other(format!("Block not found for hash {:?}", hash))
-                })?;
-                result.insert(height, block.clone());
-            }
-
-            Ok(result)
-        })
-    }
-
-    fn block_exists(&self, hash: BlockHash) -> BoxFuture<'_, Result<bool, Self::StorageError>> {
-        Box::pin(async move { Ok(ready(self.blocks.read().await.get(&hash).is_some()).await) })
+        Ok(Some(ConfirmedTransaction {
+            transaction: transaction.clone(),
+            location: location.clone(),
+        }))
     }
 }
 
-// ---- STORAGE STATS IMPLEMENTATION ----
-impl StorageStats for StryiInMemoryStorage {
-    type StorageError = InMemoryStorageError;
-
-    fn tip(&self) -> BoxFuture<'_, Result<(u64, BlockHash), Self::StorageError>> {
-        Box::pin(async move {
-            let st = self.current_state.read().await;
-            Ok(st.latest_block)
-        })
+impl StorageStats for MemoryView {
+    fn chain_state(&self) -> Result<Option<ChainState>, StorageError> {
+        Ok(self.state.clone())
     }
 
-    fn last_updated(&self) -> BoxFuture<'_, Result<u64, Self::StorageError>> {
-        Box::pin(async move {
-            let st = self.current_state.read().await;
-            Ok(st.last_update_time)
-        })
-    }
-
-    fn block_count(&self) -> BoxFuture<'_, Result<u64, Self::StorageError>> {
-        Box::pin(async move {
-            let st = self.current_state.read().await;
-            Ok(st.blocks_count)
-        })
-    }
-
-    fn chain_work(&self) -> BoxFuture<'_, Result<ChainWork, Self::StorageError>> {
-        Box::pin(async move {
-            let st = self.current_state.read().await;
-            Ok(st.chain_work)
-        })
+    fn metadata(&self) -> Result<Option<ChainMetadata>, StorageError> {
+        Ok(self.metadata.clone())
     }
 }
 
-// ---- UNDO STORAGE IMPLEMENTATION ----
-impl UndoStorage for StryiInMemoryStorage {
-    type StorageError = InMemoryStorageError;
+impl UndoStorage for MemoryView {
+    fn get_block_undo(&self, hash: BlockHash) -> Result<Option<BlockUndo>, StorageError> {
+        Ok(self.undos.get(&hash).cloned())
+    }
+}
 
-    fn put_block_undo(
-        &self,
-        hash: BlockHash,
-        undo: BlockUndo,
-    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
-        Box::pin(async move {
-            let mut guard = self.blocks_undo.write().await;
-            guard.insert(hash, undo);
-            Ok(())
-        })
+impl UtxoWrite for MemoryView {
+    fn batch_put_utxos(&mut self, utxos: Vec<(OutPoint, UTXO)>) -> Result<(), StorageError> {
+        self.utxos.extend(utxos);
+        Ok(())
     }
 
-    fn get_block_undo(
-        &self,
-        hash: BlockHash,
-    ) -> BoxFuture<'_, Result<Option<BlockUndo>, Self::StorageError>> {
-        Box::pin(async move {
-            let guard = self.blocks_undo.read().await;
-            Ok(guard.get(&hash).cloned())
-        })
+    fn batch_remove_utxos(&mut self, outpoints: Vec<OutPoint>) -> Result<(), StorageError> {
+        for outpoint in &outpoints {
+            if !self.utxos.contains_key(outpoint) {
+                return Err(StorageError::UtxoNotFound(*outpoint));
+            }
+        }
+
+        for outpoint in outpoints {
+            self.utxos.remove(&outpoint);
+        }
+
+        Ok(())
+    }
+}
+
+impl StorageWrite for MemoryView {
+    fn put_block(&mut self, block: &Block, index: &BlockIndexData) -> Result<(), StorageError> {
+        let hash = block.block_hash();
+        self.blocks.insert(hash, block.clone());
+        self.heights.insert(block.header.height, hash);
+        self.indexes.insert(hash, index.clone());
+
+        for (position, transaction) in block.data.transactions.iter().enumerate() {
+            let tx_index = u32::try_from(position).map_err(|_| {
+                StorageError::InvalidTransition("Transaction index overflow".into())
+            })?;
+
+            self.transactions.insert(
+                transaction.data.hash(),
+                TransactionIndexData {
+                    block_hash: hash,
+                    block_height: block.header.height,
+                    tx_index,
+                },
+            );
+        }
+
+        Ok(())
     }
 
-    fn delete_block_undo(&self, hash: BlockHash) -> BoxFuture<'_, Result<(), Self::StorageError>> {
-        Box::pin(async move {
-            let mut guard = self.blocks_undo.write().await;
-            guard.remove(&hash);
-            Ok(())
-        })
+    fn remove_canonical_block(&mut self, block: &Block) -> Result<(), StorageError> {
+        let hash = block.block_hash();
+
+        if self.heights.get(&block.header.height) != Some(&hash) {
+            return Err(StorageError::Corruption(
+                "Detached block is outside canonical heights".into(),
+            ));
+        }
+
+        self.heights.remove(&block.header.height);
+        for transaction in &block.data.transactions {
+            let txid = transaction.data.hash();
+            if self
+                .transactions
+                .get(&txid)
+                .is_some_and(|index| index.block_hash == hash)
+            {
+                self.transactions.remove(&txid);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn put_block_undo(&mut self, hash: BlockHash, undo: BlockUndo) -> Result<(), StorageError> {
+        self.undos.insert(hash, undo);
+        Ok(())
+    }
+
+    fn put_chain_state(&mut self, state: &ChainState) -> Result<(), StorageError> {
+        self.state = Some(state.clone());
+        Ok(())
+    }
+
+    fn put_metadata(&mut self, metadata: &ChainMetadata) -> Result<(), StorageError> {
+        self.metadata = Some(metadata.clone());
+        Ok(())
     }
 }
 
@@ -474,11 +277,11 @@ impl UndoStorage for StryiInMemoryStorage {
 mod tests {
     use super::*;
     use crate::block::GenesisState;
-    use crate::difficulty::HashThreshold;
+    use crate::difficulty::{ChainWork, HashThreshold};
     use crate::{
         address::AccountAddress,
         block::{Block, BlockData, BlockHash, BlockHeader},
-        storage::{BlockStorage, InMemoryStorageError, StorageStats, UtxoStorage},
+        storage::{BlockStorage, StorageError, StorageStats, UtxoStorage},
         transactions::{
             OutPoint, Transaction, TransactionData, TransactionHash, TransactionKind,
             TransactionOut, UTXO,
@@ -501,6 +304,7 @@ mod tests {
             },
             signature: Default::default(),
         };
+
         Block {
             header: BlockHeader {
                 version: 1,
@@ -518,9 +322,12 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn in_memory_storage_single_utxo_round_trip() {
-        let mut store = StryiInMemoryStorage::new(make_test_genesis_block());
+    #[test]
+    fn in_memory_storage_single_utxo_round_trip() {
+        let mut store = StryiInMemoryStorage::new(make_test_genesis_block())
+            .read()
+            .unwrap();
+
         let op = OutPoint {
             txid: TransactionHash::new(&[1; 32]),
             vout: 0,
@@ -533,18 +340,20 @@ mod tests {
             owner,
         };
 
-        store.put_utxo(op, utxo).await.expect("insert");
-        let fetched = store.get_utxos_for_address(owner).await.unwrap();
+        store.batch_put_utxos(vec![(op, utxo)]).expect("insert");
+        let fetched = store.get_utxos_for_address(owner).unwrap();
         assert_eq!(fetched.len(), 1);
         assert_eq!(fetched[&op].value, 42);
 
-        store.remove_utxo(op).await.unwrap();
-        assert!(store.get_utxos_for_address(owner).await.unwrap().is_empty());
+        store.batch_remove_utxos(vec![op]).unwrap();
+        assert!(store.get_utxos_for_address(owner).unwrap().is_empty());
     }
 
-    #[tokio::test]
-    async fn in_memory_storage_helper_methods_and_errors() {
-        let mut store = StryiInMemoryStorage::new(make_test_genesis_block());
+    #[test]
+    fn in_memory_storage_helper_methods_and_errors() {
+        let mut store = StryiInMemoryStorage::new(make_test_genesis_block())
+            .read()
+            .unwrap();
 
         // insert two distinct UTXOs
         let op1 = OutPoint {
@@ -570,24 +379,27 @@ mod tests {
             owner: addr2,
         };
 
-        store.put_utxo(op1, utxo1).await.unwrap();
-        store.put_utxo(op2, utxo2).await.unwrap();
-        assert_eq!(store.get_utxo(op1).await.unwrap().unwrap().value, 10);
+        store.batch_put_utxos(vec![(op1, utxo1)]).unwrap();
+        store.batch_put_utxos(vec![(op2, utxo2)]).unwrap();
+        assert_eq!(store.get_utxo(op1).unwrap().unwrap().value, 10);
 
         // remove first - should succeed
-        store.remove_utxo(op1).await.unwrap();
+        store.batch_remove_utxos(vec![op1]).unwrap();
 
         // subsequent fetch must error
-        let err = store.get_utxo(op1).await.unwrap_err();
-        assert!(matches!(err, InMemoryStorageError::UtxoNotFound(o) if o == op1));
+        let err = store.batch_get_utxos([op1]).unwrap_err();
+        assert!(matches!(err, StorageError::UtxoNotFound(o) if o == op1));
 
         // second UTXO untouched
-        assert_eq!(store.get_utxo(op2).await.unwrap().unwrap().value, 20);
+        assert_eq!(store.get_utxo(op2).unwrap().unwrap().value, 20);
     }
 
-    #[tokio::test]
-    async fn in_memory_storage_batch_insert_and_remove() {
-        let mut store = StryiInMemoryStorage::new(make_test_genesis_block());
+    #[test]
+    fn in_memory_storage_batch_insert_and_remove() {
+        let mut store = StryiInMemoryStorage::new(make_test_genesis_block())
+            .read()
+            .unwrap();
+
         let batch: Vec<(OutPoint, UTXO)> = (0..100)
             .map(|i| {
                 let op = OutPoint {
@@ -604,30 +416,32 @@ mod tests {
             })
             .collect();
 
-        store.batch_put_utxos(batch.clone()).await.unwrap();
+        store.batch_put_utxos(batch.clone()).unwrap();
+
         // remove even-indexed outpoints
         let to_remove: Vec<_> = batch
             .iter()
             .enumerate()
             .filter_map(|(idx, (op, _))| if idx % 2 == 0 { Some(*op) } else { None })
             .collect();
-        store.batch_remove_utxos(to_remove.clone()).await.unwrap();
+        store.batch_remove_utxos(to_remove.clone()).unwrap();
 
         for (idx, (op, _)) in batch.iter().enumerate() {
-            match store.get_utxo(*op).await {
+            match store.get_utxo(*op) {
                 // present -> must be an odd index
                 Ok(Some(_)) if idx % 2 == 1 => {}
                 // removed -> backend may return Err(UtxoNotFound)
-                Ok(None) | Err(InMemoryStorageError::UtxoNotFound(_)) if idx % 2 == 0 => {}
+                Ok(None) | Err(StorageError::UtxoNotFound(_)) if idx % 2 == 0 => {}
                 // anything else is a failure
                 other => panic!("unexpected result for idx {idx}: {other:?}"),
             }
         }
     }
 
-    #[tokio::test]
-    async fn in_memory_storage_block_storage_and_stats() {
-        let mut store = StryiInMemoryStorage::new(make_test_genesis_block());
+    #[test]
+    fn in_memory_storage_block_storage_and_stats() {
+        let storage = StryiInMemoryStorage::new(make_test_genesis_block());
+        let before = storage.read().unwrap();
 
         // build & store a dummy block at height 1
         let addr = AccountAddress::new(&[0xFF; 20]);
@@ -661,39 +475,72 @@ mod tests {
                 transactions: vec![coinbase_tx],
             },
         };
-        store.put_block(&block1).await.unwrap();
+
+        storage
+            .apply_transition(ChainTransition::Append { block: &block1 })
+            .unwrap();
+
+        let store = storage.read().unwrap();
+        assert_eq!(before.tip().unwrap().0, 0);
+        assert!(before.get_block_by_height(1).unwrap().is_none());
 
         // fetch by hash / height / range
         assert!(
             store
                 .batch_get_blocks_by_hashes(vec![block1.block_hash()])
-                .await
                 .unwrap()
                 .contains_key(&block1.block_hash())
         );
         assert!(
             store
                 .batch_get_blocks_by_heights(vec![1])
-                .await
                 .unwrap()
                 .contains_key(&1)
         );
 
-        let range = 0usize..=1usize;
+        let range = 0u64..=1u64;
 
-        assert_eq!(store.blocks_range(range).await.unwrap().len(), 2);
+        assert_eq!(store.blocks_range(range).unwrap().len(), 2);
 
         // stats
-        assert_eq!(store.tip().await.unwrap().0, 1);
-        assert_eq!(store.block_count().await.unwrap(), 2);
+        assert_eq!(store.tip().unwrap().0, 1);
+        assert_eq!(store.block_count().unwrap(), 2);
         // Genesis contributes zero work; only the normal block adds its work.
-        assert_eq!(store.chain_work().await.unwrap(), ChainWork::from(2u64));
+        assert_eq!(store.chain_work().unwrap(), ChainWork::from(2u64));
+
+        let outpoint = OutPoint {
+            txid: TransactionHash::new(&[9; 32]),
+            vout: 0,
+        };
+        let error = storage
+            .update(|pending| {
+                pending.batch_put_utxos(vec![(
+                    outpoint,
+                    UTXO {
+                        txid: outpoint.txid,
+                        vout: 0,
+                        value: 42,
+                        owner: addr,
+                    },
+                )])?;
+
+                Err::<(), _>(StorageError::InvalidTransition("abort fixture".into()))
+            })
+            .unwrap_err();
+        assert!(matches!(error, StorageError::InvalidTransition(_)));
+
+        let after = storage.read().unwrap();
+        assert!(after.get_utxo(outpoint).unwrap().is_none());
+        assert_eq!(after.chain_state().unwrap(), store.chain_state().unwrap());
+        assert_eq!(
+            after.get_utxos_for_address(addr).unwrap(),
+            store.get_utxos_for_address(addr).unwrap()
+        );
     }
 
     #[tokio::test]
     async fn in_memory_storage_concurrent_access() {
         let store = StryiInMemoryStorage::new(make_test_genesis_block());
-        let store = std::sync::Arc::new(tokio::sync::Mutex::new(store));
 
         const TASKS: usize = 8;
         const OPS_PER_TASK: usize = 50;
@@ -714,11 +561,13 @@ mod tests {
                         value: idx as u64,
                         owner: AccountAddress::new(&[idx; 20]),
                     };
-                    {
-                        let mut guard = store.lock().await;
-                        guard.put_utxo(op, u).await.unwrap();
-                        guard.remove_utxo(op).await.unwrap();
-                    }
+
+                    store
+                        .update(|pending| {
+                            pending.batch_put_utxos(vec![(op, u)])?;
+                            pending.batch_remove_utxos(vec![op])
+                        })
+                        .unwrap();
                 }
             }));
         }
@@ -726,8 +575,9 @@ mod tests {
         for h in handles {
             h.await.unwrap();
         }
+
         // after all tasks, storage should still contain only genesis outputs
-        let guard = store.lock().await;
-        assert_eq!(guard.block_count().await.unwrap(), 1); // only genesis
+        let guard = store.read().unwrap();
+        assert_eq!(guard.block_count().unwrap(), 1); // only genesis
     }
 }

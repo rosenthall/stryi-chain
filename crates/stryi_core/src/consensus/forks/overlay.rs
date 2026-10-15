@@ -1,524 +1,292 @@
 use crate::BlockUndo;
 use crate::address::AccountAddress;
 use crate::block::{Block, BlockHash};
-use crate::difficulty::{ChainWork, add_work};
-use crate::error::{StorageLayer, StryiCoreError};
-use crate::storage::{BlockStorage, StorageStats, UndoStorage, UtxoStorage, verified_block_work};
-use crate::transactions::{OutPoint, UTXO};
-use dashmap::{DashMap, DashSet};
-use futures::future::BoxFuture;
-use std::collections::HashMap;
-use std::future::ready;
-use std::ops::RangeInclusive;
+use crate::difficulty::HashThreshold;
+use crate::storage::{
+    BlockIndexData, BlockStorage, ConfirmedTransaction, StorageError, StorageRead, UtxoStorage,
+    UtxoWrite, verify_genesis_work_shape,
+};
+use crate::transactions::{OutPoint, TransactionHash, UTXO, UtxoProcessor};
+use std::collections::{HashMap, HashSet};
 
-/// In-memory fork view over canonical storage.
+/// In-memory overlay on top of a storage snapshot for validating and preparing a fork.
 ///
-/// Reads fall through to `base` unless this overlay has a local override.
-/// All writes stay local until the overlay is converted into a delta and committed.
-pub struct ForkDbOverlay<'a, DB>
-where
-    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
-{
-    /// Canonical storage snapshot used for reads.
+/// Rewinds blocks from canonical tip down to `common_ancestor`, replays fork blocks,
+/// and converts the resulting state into [`ForkDbDelta`] via `into_delta`.
+/// Canonical heights and txs above `common_ancestor` are masked so difficulty/header
+/// validation on the fork won't accidentally read blocks from the old main branch.
+pub struct ForkDbOverlay<'a, DB: StorageRead> {
     base: &'a DB,
-
-    /// Cumulative work up to and including the fork point.
-    inherited_work: ChainWork,
-
-    /// Fork-local UTXO writes and overrides.
-    utxo_delta: DashMap<OutPoint, UTXO>,
-
-    /// Base UTXOs that are considered spent on this fork.
-    spent_from_base: DashSet<OutPoint>,
-
-    /// Fork-local blocks keyed by hash.
-    block_delta: DashMap<BlockHash, Block>,
-
-    /// Fork-local undo records keyed by block hash.
-    undo_delta: DashMap<BlockHash, BlockUndo>,
+    common_ancestor: (u64, BlockHash),
+    expected_head: (u64, BlockHash),
+    rewind_tip: (u64, BlockHash),
+    branch_tip: (u64, BlockHash),
+    utxos: HashMap<OutPoint, UTXO>,
+    /// Can also contain outpoints created and spent inside the fork itself (not present in `base`).
+    removed_utxos: HashSet<OutPoint>,
+    blocks: HashMap<BlockHash, (Block, BlockUndo)>,
+    heights: HashMap<u64, BlockHash>,
+    detached: Vec<(u64, BlockHash)>,
 }
 
-/// Owned changes extracted from a `ForkDbOverlay`.
-///
-/// This type has no borrow of the base DB, so it can be safely committed
-/// into the canonical storage later.
+/// Prepared reorg batch produced by [`ForkDbOverlay::into_delta`].
 pub struct ForkDbDelta {
-    /// Fork-local UTXO writes and overrides.
-    utxo_delta: HashMap<OutPoint, UTXO>,
-
-    /// Base UTXOs that must be removed from canonical state.
-    spent_from_base: Vec<OutPoint>,
-
-    /// Blocks that must be inserted into canonical storage.
-    block_delta: Vec<Block>,
-
-    /// Undo records that must be inserted into canonical storage.
-    undo_delta: Vec<(BlockHash, BlockUndo)>,
+    pub(crate) expected_head: (u64, BlockHash),
+    pub(crate) common_ancestor: BlockHash,
+    pub(crate) detached: Vec<(u64, BlockHash)>,
+    /// Fork blocks in parent-first order along with their undo data.
+    pub(crate) blocks: Vec<(Block, BlockUndo)>,
+    pub(crate) utxos: Vec<(OutPoint, UTXO)>,
+    pub(crate) removed_utxos: Vec<OutPoint>,
 }
 
-impl ForkDbDelta {
-    pub async fn commit<DB>(self, db: &mut DB) -> Result<(), StryiCoreError>
-    where
-        DB: UtxoStorage + BlockStorage + UndoStorage + Send + Sync + 'static,
-    {
-        for block in self.block_delta {
-            db.put_block(&block).await.map_err(|e| {
-                StryiCoreError::storage(
-                    StorageLayer::Block,
-                    format!("failed put_block during commit: {e}"),
-                )
+impl<'a, DB: StorageRead> ForkDbOverlay<'a, DB> {
+    /// Creates a new overlay rooted at `ancestor`.
+    /// Call `rewind_block` from current tip down to `ancestor` before replaying fork blocks.
+    pub fn new(base: &'a DB, ancestor: BlockHash) -> Result<Self, StorageError> {
+        let block = base
+            .get_block_by_hash(ancestor)?
+            .ok_or(StorageError::BlockNotFound(ancestor))?;
+        let expected_head = base.tip()?;
+
+        if block.block_hash() != ancestor {
+            return Err(StorageError::Corruption(
+                "Fork ancestor body does not match its key".into(),
+            ));
+        }
+
+        if block.header.height > expected_head.0
+            || base.get_block_hash_by_height(block.header.height)? != Some(ancestor)
+        {
+            return Err(StorageError::InvalidTransition(
+                "Fork ancestor is outside the canonical chain".into(),
+            ));
+        }
+
+        let common_ancestor = (block.header.height, ancestor);
+
+        Ok(Self {
+            base,
+            common_ancestor,
+            expected_head,
+            rewind_tip: expected_head,
+            branch_tip: common_ancestor,
+            utxos: HashMap::new(),
+            removed_utxos: HashSet::new(),
+            blocks: HashMap::new(),
+            heights: HashMap::new(),
+            detached: Vec::new(),
+        })
+    }
+
+    /// Rewind one canonical block using undo from this overlay's base snapshot.
+    /// This only changes the overlay. Discard it on any error.
+    pub fn rewind_block(&mut self, processor: &UtxoProcessor) -> Result<(), StorageError> {
+        if !self.blocks.is_empty() || self.rewind_tip.0 <= self.common_ancestor.0 {
+            return Err(StorageError::InvalidTransition(
+                "Cannot rewind past the fork ancestor or after replay".into(),
+            ));
+        }
+
+        let (height, hash) = self.rewind_tip;
+        let block = self
+            .base
+            .get_block_by_hash(hash)?
+            .ok_or_else(|| StorageError::Corruption(format!("Canonical block {hash} is absent")))?;
+
+        if block.block_hash() != hash
+            || block.header.height != height
+            || self.base.get_block_hash_by_height(height)? != Some(hash)
+        {
+            return Err(StorageError::Corruption(
+                "Canonical ancestry and height mappings disagree".into(),
+            ));
+        }
+
+        let undo = self
+            .base
+            .get_block_undo(hash)?
+            .ok_or_else(|| StorageError::Corruption(format!("Canonical undo {hash} is absent")))?;
+
+        processor
+            .rewind_block(undo, self)
+            .map_err(|error| match error {
+                StorageError::UtxoNotFound(outpoint) => {
+                    StorageError::Corruption(format!("Undo references missing UTXO {outpoint:?}"))
+                }
+                other => other,
             })?;
-        }
 
-        for (hash, undo) in self.undo_delta {
-            db.put_block_undo(hash, undo).await.map_err(|e| {
-                StryiCoreError::storage(
-                    StorageLayer::Undo,
-                    format!("failed put_block_undo during commit: {e}"),
-                )
-            })?;
-        }
-
-        if !self.utxo_delta.is_empty() {
-            db.batch_put_utxos(self.utxo_delta.into_iter().collect())
-                .await
-                .map_err(|e| {
-                    StryiCoreError::storage(
-                        StorageLayer::Utxo,
-                        format!("failed put_utxos during commit: {e}"),
-                    )
-                })?;
-        }
-
-        if !self.spent_from_base.is_empty() {
-            db.batch_remove_utxos(self.spent_from_base)
-                .await
-                .map_err(|e| {
-                    StryiCoreError::storage(
-                        StorageLayer::Utxo,
-                        format!("failed remove_utxos during commit: {e}"),
-                    )
-                })?;
-        }
+        self.detached.push((height, hash));
+        self.rewind_tip = (height - 1, block.header.previous_block_hash);
 
         Ok(())
     }
-}
 
-impl<'a, DB> ForkDbOverlay<'a, DB>
-where
-    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
-{
-    pub fn new(base: &'a DB, work: ChainWork) -> Self {
-        Self {
-            base,
-            inherited_work: work,
-            utxo_delta: DashMap::new(),
-            spent_from_base: DashSet::new(),
-            block_delta: DashMap::new(),
-            undo_delta: DashMap::new(),
+    /// Applies a validated fork block on top of the rewound ancestor state (in parent-first order).
+    pub fn replay_block(&mut self, block: &Block) -> Result<(), StorageError> {
+        verify_genesis_work_shape(block)
+            .map_err(|error| StorageError::InvalidTransition(error.to_string()))?;
+
+        if self.rewind_tip != self.common_ancestor
+            || block.header.is_genesis()
+            || block.header.hash_threshold == HashThreshold::ZERO
+            || block.header.previous_block_hash != self.branch_tip.1
+            || self.branch_tip.0.checked_add(1) != Some(block.header.height)
+        {
+            return Err(StorageError::InvalidTransition(
+                "Fork replay must extend the rewound ancestor or its replacement prefix".into(),
+            ));
         }
+
+        let undo = UtxoProcessor::new().apply_block(block, self)?;
+        let hash = block.block_hash();
+        self.blocks.insert(hash, (block.clone(), undo));
+        self.heights.insert(block.header.height, hash);
+        self.branch_tip = (block.header.height, hash);
+
+        Ok(())
     }
 
-    pub fn into_delta(self) -> ForkDbDelta {
-        ForkDbDelta {
-            utxo_delta: self.utxo_delta.into_iter().collect(),
-            spent_from_base: self.spent_from_base.into_iter().collect(),
-            block_delta: self.block_delta.into_iter().map(|kv| kv.1).collect(),
-            undo_delta: self.undo_delta.into_iter().collect(),
-        }
-    }
-
-    fn overlay_get_utxo(&self, op: &OutPoint) -> Option<Option<UTXO>> {
-        if let Some(u) = self.utxo_delta.get(op) {
-            return Some(Some(*u));
+    /// Consume a complete replacement into net changes relative to the base tip.
+    /// A local put wins over a removal marker. Outputs created and then spent
+    /// only inside the overlay must not become deletions from canonical storage.
+    pub fn into_delta(self) -> Result<ForkDbDelta, StorageError> {
+        if self.rewind_tip != self.common_ancestor || self.blocks.is_empty() {
+            return Err(StorageError::InvalidTransition(
+                "Fork delta requires a complete rewind and a nonempty replacement".into(),
+            ));
         }
 
-        if self.spent_from_base.contains(op) {
-            return Some(None);
-        }
-
-        None
-    }
-}
-
-impl<'a, DB> UtxoStorage for ForkDbOverlay<'a, DB>
-where
-    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
-{
-    type StorageError = StryiCoreError;
-
-    fn batch_put_utxos(
-        &mut self,
-        utxos: Vec<(OutPoint, UTXO)>,
-    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
-        for (op, utxo) in utxos {
-            self.utxo_delta.insert(op, utxo);
-        }
-
-        Box::pin(ready(Ok(())))
-    }
-
-    fn batch_remove_utxos(
-        &mut self,
-        outpoints: Vec<OutPoint>,
-    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
-        for op in outpoints {
-            if self.utxo_delta.remove(&op).is_none() {
-                self.spent_from_base.insert(op);
+        let mut removed_utxos = Vec::new();
+        for outpoint in self.removed_utxos {
+            if !self.utxos.contains_key(&outpoint) && self.base.get_utxo(outpoint)?.is_some() {
+                removed_utxos.push(outpoint);
             }
         }
 
-        Box::pin(ready(Ok(())))
-    }
-
-    fn batch_get_utxos<I>(
-        &self,
-        outpoints: I,
-    ) -> BoxFuture<'_, Result<HashMap<OutPoint, UTXO>, Self::StorageError>>
-    where
-        I: IntoIterator<Item = OutPoint> + Send,
-        I::IntoIter: Send,
-    {
-        let base = self.base;
-        let outpoints: Vec<_> = outpoints.into_iter().collect();
-
-        Box::pin(async move {
-            let mut hit = HashMap::with_capacity(outpoints.len());
-            let mut miss = Vec::new();
-
-            for outpoint in outpoints {
-                match self.overlay_get_utxo(&outpoint) {
-                    Some(Some(utxo)) => {
-                        hit.insert(outpoint, utxo);
-                    }
-                    Some(None) => {
-                        return Err(StryiCoreError::TxMissingUtxo {
-                            txid: outpoint.txid,
-                            vout: outpoint.vout,
-                        });
-                    }
-                    None => miss.push(outpoint),
-                }
+        let mut utxos = Vec::new();
+        for (outpoint, utxo) in self.utxos {
+            if self.base.get_utxo(outpoint)? != Some(utxo) {
+                utxos.push((outpoint, utxo));
             }
+        }
 
-            if !miss.is_empty() {
-                let from_base = base
-                    .batch_get_utxos(miss)
-                    .await
-                    .map_err(|e| StryiCoreError::storage(StorageLayer::Utxo, e.to_string()))?;
+        let mut blocks: Vec<_> = self.blocks.into_values().collect();
+        blocks.sort_unstable_by_key(|(block, _)| block.header.height);
 
-                hit.extend(from_base);
-            }
-
-            Ok(hit)
+        Ok(ForkDbDelta {
+            expected_head: self.expected_head,
+            common_ancestor: self.common_ancestor.1,
+            detached: self.detached,
+            blocks,
+            utxos,
+            removed_utxos,
         })
+    }
+}
+
+impl<DB: StorageRead> UtxoStorage for ForkDbOverlay<'_, DB> {
+    fn get_utxo(&self, outpoint: OutPoint) -> Result<Option<UTXO>, StorageError> {
+        // A restored or recreated output takes precedence over a base removal marker.
+        if let Some(utxo) = self.utxos.get(&outpoint) {
+            return Ok(Some(*utxo));
+        }
+
+        if self.removed_utxos.contains(&outpoint) {
+            return Ok(None);
+        }
+
+        self.base.get_utxo(outpoint)
     }
 
     fn get_utxos_for_address(
         &self,
         address: AccountAddress,
-    ) -> BoxFuture<'_, Result<HashMap<OutPoint, UTXO>, Self::StorageError>> {
-        let overlay_map = self.utxo_delta.clone();
-        let spent_set = self.spent_from_base.clone();
-        let base = self.base;
+    ) -> Result<HashMap<OutPoint, UTXO>, StorageError> {
+        let mut result = self.base.get_utxos_for_address(address)?;
+        result.retain(|outpoint, _| {
+            !self.removed_utxos.contains(outpoint) && !self.utxos.contains_key(outpoint)
+        });
 
-        Box::pin(async move {
-            let mut result = HashMap::new();
+        result.extend(
+            self.utxos
+                .iter()
+                .filter(|(_, utxo)| utxo.owner == address)
+                .map(|(outpoint, utxo)| (*outpoint, *utxo)),
+        );
 
-            for entry in overlay_map.iter() {
-                if entry.value().owner == address {
-                    result.insert(*entry.key(), *entry.value());
-                }
-            }
-
-            let base_map = base
-                .get_utxos_for_address(address)
-                .await
-                .map_err(|e| StryiCoreError::storage(StorageLayer::Utxo, e.to_string()))?;
-
-            for (op, utxo) in base_map {
-                if spent_set.contains(&op) {
-                    continue;
-                }
-
-                if overlay_map.contains_key(&op) {
-                    continue;
-                }
-
-                result.insert(op, utxo);
-            }
-
-            Ok(result)
-        })
+        Ok(result)
     }
 }
 
-impl<'a, DB> BlockStorage for ForkDbOverlay<'a, DB>
-where
-    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
-{
-    type StorageError = StryiCoreError;
-
-    fn put_block(&mut self, block: &Block) -> BoxFuture<'_, Result<(), Self::StorageError>> {
-        self.block_delta.insert(block.block_hash(), block.clone());
-        Box::pin(ready(Ok(())))
-    }
-
-    fn batch_get_blocks_by_hashes(
-        &self,
-        hashes: Vec<BlockHash>,
-    ) -> BoxFuture<'_, Result<HashMap<BlockHash, Block>, Self::StorageError>> {
-        let delta = self.block_delta.clone();
-        let base = self.base;
-
-        Box::pin(async move {
-            let mut hit = HashMap::with_capacity(hashes.len());
-            let mut miss = Vec::new();
-
-            for hash in hashes {
-                if let Some(block) = delta.get(&hash) {
-                    hit.insert(hash, block.clone());
-                } else {
-                    miss.push(hash);
-                }
-            }
-
-            if !miss.is_empty() {
-                let from_base = base
-                    .batch_get_blocks_by_hashes(miss.clone())
-                    .await
-                    .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?;
-
-                if from_base.len() != miss.len() {
-                    return Err(StryiCoreError::ConsensusValidationFailed {
-                        details: "some hashes are missing in base storage".into(),
-                    });
-                }
-
-                hit.extend(from_base);
-            }
-
-            Ok(hit)
-        })
-    }
-
-    fn batch_get_blocks_by_heights<I>(
-        &self,
-        heights: I,
-    ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>>
-    where
-        I: IntoIterator<Item = u64> + Send + Clone,
-        I::IntoIter: Send,
-    {
-        let delta = self.block_delta.clone();
-        let base = self.base;
-        let requested: Vec<u64> = heights.into_iter().collect();
-
-        Box::pin(async move {
-            let mut hit = HashMap::with_capacity(requested.len());
-            let mut miss = Vec::new();
-
-            for blk in delta.iter() {
-                let height = blk.value().header.height;
-                if requested.contains(&height) {
-                    hit.insert(height, blk.value().clone());
-                }
-            }
-
-            for &height in &requested {
-                if !hit.contains_key(&height) {
-                    miss.push(height);
-                }
-            }
-
-            if !miss.is_empty() {
-                let from_base = base
-                    .batch_get_blocks_by_heights(miss.clone())
-                    .await
-                    .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?;
-
-                if from_base.len() != miss.len() {
-                    return Err(StryiCoreError::ConsensusValidationFailed {
-                        details: "some heights are missing in base storage".into(),
-                    });
-                }
-
-                hit.extend(from_base);
-            }
-
-            Ok(hit)
-        })
-    }
-
-    fn blocks_range(
-        &self,
-        range: RangeInclusive<usize>,
-    ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>> {
-        let delta = self.block_delta.clone();
-        let base = self.base;
-        let start = *range.start();
-        let end = *range.end();
-        let heights: Vec<u64> = (start..=end).map(|n| n as u64).collect();
-
-        Box::pin(async move {
-            let mut result = HashMap::new();
-
-            for blk in delta.iter() {
-                let height = blk.value().header.height;
-                if (start..=end).contains(&(height as usize)) {
-                    result.insert(height, blk.value().clone());
-                }
-            }
-
-            let mut gaps = Vec::new();
-            for height in &heights {
-                if !result.contains_key(height) {
-                    gaps.push(*height);
-                }
-            }
-
-            if !gaps.is_empty() {
-                let from_base = base
-                    .batch_get_blocks_by_heights(gaps.clone())
-                    .await
-                    .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?;
-
-                if from_base.len() != gaps.len() {
-                    return Err(StryiCoreError::ConsensusValidationFailed {
-                        details: "range contains missing blocks".into(),
-                    });
-                }
-
-                result.extend(from_base);
-            }
-
-            Ok(result)
-        })
-    }
-
-    fn block_exists(&self, hash: BlockHash) -> BoxFuture<'_, Result<bool, Self::StorageError>> {
-        if self.block_delta.contains_key(&hash) {
-            return Box::pin(ready(Ok(true)));
+impl<DB: StorageRead> BlockStorage for ForkDbOverlay<'_, DB> {
+    fn get_block_hash_by_height(&self, height: u64) -> Result<Option<BlockHash>, StorageError> {
+        if let Some(hash) = self.heights.get(&height) {
+            return Ok(Some(*hash));
         }
 
-        let base = self.base;
-        Box::pin(async move {
-            base.block_exists(hash)
-                .await
-                .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))
-        })
+        if height > self.common_ancestor.0 {
+            return Ok(None);
+        }
+
+        self.base.get_block_hash_by_height(height)
+    }
+
+    fn get_block_by_hash(&self, hash: BlockHash) -> Result<Option<Block>, StorageError> {
+        if let Some((block, _)) = self.blocks.get(&hash) {
+            return Ok(Some(block.clone()));
+        }
+
+        self.base.get_block_by_hash(hash)
+    }
+
+    fn get_block_by_height(&self, height: u64) -> Result<Option<Block>, StorageError> {
+        if let Some(hash) = self.heights.get(&height) {
+            return self.get_block_by_hash(*hash);
+        }
+
+        if height > self.common_ancestor.0 {
+            return Ok(None);
+        }
+
+        self.base.get_block_by_height(height)
+    }
+
+    fn get_block_index(&self, hash: &BlockHash) -> Result<Option<BlockIndexData>, StorageError> {
+        self.base.get_block_index(hash)
+    }
+
+    fn get_transaction(
+        &self,
+        hash: &TransactionHash,
+    ) -> Result<Option<ConfirmedTransaction>, StorageError> {
+        Ok(self
+            .base
+            .get_transaction(hash)?
+            .filter(|record| record.location.block_height <= self.common_ancestor.0))
     }
 }
 
-impl<'a, DB> StorageStats for ForkDbOverlay<'a, DB>
-where
-    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
-{
-    type StorageError = StryiCoreError;
-
-    fn tip(&self) -> BoxFuture<'_, Result<(u64, BlockHash), Self::StorageError>> {
-        let delta = self.block_delta.clone();
-
-        Box::pin(async move {
-            let block = delta
-                .iter()
-                .max_by_key(|b| b.value().header.height)
-                .ok_or_else(|| StryiCoreError::ConsensusValidationFailed {
-                    details: "overlay is empty".into(),
-                })?;
-
-            Ok((block.value().header.height, block.value().block_hash()))
-        })
+impl<DB: StorageRead> UtxoWrite for ForkDbOverlay<'_, DB> {
+    fn batch_put_utxos(&mut self, utxos: Vec<(OutPoint, UTXO)>) -> Result<(), StorageError> {
+        self.utxos.extend(utxos);
+        Ok(())
     }
 
-    fn last_updated(&self) -> BoxFuture<'_, Result<u64, Self::StorageError>> {
-        let delta = self.block_delta.clone();
-
-        Box::pin(async move {
-            let ts = delta
-                .iter()
-                .map(|b| b.value().header.timestamp)
-                .max()
-                .ok_or_else(|| StryiCoreError::ConsensusValidationFailed {
-                    details: "overlay is empty".into(),
-                })?;
-
-            Ok(ts)
-        })
-    }
-
-    fn block_count(&self) -> BoxFuture<'_, Result<u64, Self::StorageError>> {
-        let delta_len = self.block_delta.len() as u64;
-        let delta = self.block_delta.clone();
-        let base = self.base;
-
-        Box::pin(async move {
-            let base_cnt = base
-                .block_count()
-                .await
-                .map_err(|e| StryiCoreError::storage(StorageLayer::Stats, e.to_string()))?;
-
-            let mut overridden = 0u64;
-            for kv in delta.iter() {
-                if base
-                    .block_exists(*kv.key())
-                    .await
-                    .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?
-                {
-                    overridden += 1;
-                }
+    fn batch_remove_utxos(&mut self, outpoints: Vec<OutPoint>) -> Result<(), StorageError> {
+        for outpoint in &outpoints {
+            if self.get_utxo(*outpoint)?.is_none() {
+                return Err(StorageError::UtxoNotFound(*outpoint));
             }
+        }
 
-            Ok(base_cnt + delta_len - overridden)
-        })
-    }
+        for outpoint in outpoints {
+            self.utxos.remove(&outpoint);
+            self.removed_utxos.insert(outpoint);
+        }
 
-    fn chain_work(&self) -> BoxFuture<'_, Result<ChainWork, Self::StorageError>> {
-        let delta = self.block_delta.clone();
-        let base_work = self.inherited_work;
-
-        Box::pin(async move {
-            let mut sum = base_work;
-
-            for entry in delta.iter() {
-                // A delta block that also exists in the base storage is the very
-                // same block, so its work is added exactly once on top of the
-                // inherited LCA work - no compensation is subtracted.
-                sum = add_work(sum, verified_block_work(entry.value())?)?;
-            }
-
-            Ok(sum)
-        })
-    }
-}
-
-impl<'a, DB> UndoStorage for ForkDbOverlay<'a, DB>
-where
-    DB: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static,
-{
-    type StorageError = StryiCoreError;
-
-    fn put_block_undo(
-        &self,
-        hash: BlockHash,
-        undo: BlockUndo,
-    ) -> BoxFuture<'_, Result<(), Self::StorageError>> {
-        self.undo_delta.insert(hash, undo);
-        Box::pin(ready(Ok(())))
-    }
-
-    fn get_block_undo(
-        &self,
-        hash: BlockHash,
-    ) -> BoxFuture<'_, Result<Option<BlockUndo>, Self::StorageError>> {
-        let res = self.undo_delta.get(&hash).map(|u| u.clone());
-        Box::pin(ready(Ok(res)))
-    }
-
-    fn delete_block_undo(&self, hash: BlockHash) -> BoxFuture<'_, Result<(), Self::StorageError>> {
-        self.undo_delta.remove(&hash);
-        Box::pin(ready(Ok(())))
+        Ok(())
     }
 }
 
@@ -527,10 +295,11 @@ mod tests {
     use super::*;
     use crate::consensus::ConsensusConsts;
     use crate::difficulty::{DifficultyCalc, HashThreshold, PowParams};
+    use crate::storage::{ChainTransition, FullNodeStorage, StorageReader};
     use crate::tests::make_test_genesis;
 
-    #[tokio::test]
-    async fn asert_uses_parent_branch() {
+    #[test]
+    fn asert_uses_parent_branch() {
         let pow = PowParams {
             target_spacing_secs: 3600,
             half_life_secs: 3600,
@@ -541,57 +310,60 @@ mod tests {
             pow,
             ..ConsensusConsts::default()
         };
-        let (genesis, mut db) = make_test_genesis(&[], consts);
+        let (genesis, db) = make_test_genesis(&[(AccountAddress::new(&[1; 20]), 1)], consts);
         let calc = DifficultyCalc::new(pow).unwrap();
         let initial = pow.initial_hash_threshold;
+
         assert_eq!(
-            calc.next_hash_threshold(&db, genesis.block_hash())
-                .await
+            calc.next_hash_threshold(&db.read().unwrap(), genesis.block_hash())
                 .unwrap(),
             initial
         );
 
         let first = Block::new(vec![], genesis.block_hash(), 1, initial, 1000, 1);
-        db.put_block(&first).await.unwrap();
+        db.apply_transition(ChainTransition::Append { block: &first })
+            .unwrap();
         assert_eq!(
-            calc.next_hash_threshold(&db, first.block_hash())
-                .await
+            calc.next_hash_threshold(&db.read().unwrap(), first.block_hash())
                 .unwrap(),
             initial
         );
+
         let slow = Block::new(vec![], first.block_hash(), 2, initial, 8200, 1);
-        db.put_block(&slow).await.unwrap();
+        db.apply_transition(ChainTransition::Append { block: &slow })
+            .unwrap();
         assert_eq!(
-            calc.next_hash_threshold(&db, slow.block_hash())
-                .await
+            calc.next_hash_threshold(&db.read().unwrap(), slow.block_hash())
                 .unwrap(),
             HashThreshold::from(2_000_000u64)
         );
 
-        let mut shared = ForkDbOverlay::new(&db, first.work());
+        let view = db.read().unwrap();
+        let mut shared = ForkDbOverlay::new(&view, first.block_hash()).unwrap();
+        shared.rewind_block(&UtxoProcessor::new()).unwrap();
         let fast = Block::new(vec![], first.block_hash(), 2, initial, 2800, 1);
-        shared.put_block(&fast).await.unwrap();
+        shared.replay_block(&fast).unwrap();
         assert_eq!(
             calc.next_hash_threshold(&shared, fast.block_hash())
-                .await
                 .unwrap(),
             HashThreshold::from(707_046u64)
         );
 
-        let mut from_genesis = ForkDbOverlay::new(&db, ChainWork::ZERO);
+        let mut from_genesis = ForkDbOverlay::new(&view, genesis.block_hash()).unwrap();
+        from_genesis.rewind_block(&UtxoProcessor::new()).unwrap();
+        from_genesis.rewind_block(&UtxoProcessor::new()).unwrap();
         let fork_first = Block::new(vec![], genesis.block_hash(), 1, initial, 100_000, 1);
-        from_genesis.put_block(&fork_first).await.unwrap();
+        from_genesis.replay_block(&fork_first).unwrap();
         assert_eq!(
             calc.next_hash_threshold(&from_genesis, fork_first.block_hash())
-                .await
                 .unwrap(),
             initial
         );
+
         let fork_second = Block::new(vec![], fork_first.block_hash(), 2, initial, 103_600, 1);
-        from_genesis.put_block(&fork_second).await.unwrap();
+        from_genesis.replay_block(&fork_second).unwrap();
         assert_eq!(
             calc.next_hash_threshold(&from_genesis, fork_second.block_hash())
-                .await
                 .unwrap(),
             initial
         );
