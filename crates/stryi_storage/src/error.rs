@@ -1,64 +1,18 @@
-use std::string::FromUtf8Error;
-use stryi_core::storage::RangeError;
-use thiserror::Error;
+//! Backend errors use the common core contract so consensus does not depend on
+//! RocksDB. Keep the existing public name while preserving backend error sources.
 
-#[derive(Debug, Error)]
-pub enum StryiStorageError {
-    #[error("Cannot initialize storage because of incorrect path : {msg}")]
-    IncorrectPath { msg: String },
+pub use stryi_core::storage::StorageError as StryiStorageError;
 
-    #[error("Fjall returned an error : {0}")]
-    FjallError(#[from] fjall::Error),
+use std::error::Error;
+use std::sync::Arc;
+use stryi_core::storage::StorageError;
 
-    #[error("Database is not initialized and no configuration for setting up provided")]
-    NoInitializationConfigProvided,
-
-    #[error("Serialization error")]
-    SerializationError(#[from] postcard::Error),
-
-    #[error("Deserialization error")]
-    DeserializationError(postcard::Error),
-
-    #[error("Error while trying construct typed hash object from bytes, message : {0}")]
-    IncorrectHashValue(String),
-
-    #[error("Nonexistent height value was provided : {0}")]
-    InvalidHeight(usize),
-
-    #[error("Error while converting bytes in string {0}")]
-    FromUtf8Error(#[from] FromUtf8Error),
-
-    #[error("Cannot get storage stats from `stats_partition` : {0}")]
-    NoStorageStatsFound(String),
-
-    #[error("Incorrect blocks range provided: start={0}, end={1}")]
-    IncorrectBlocksRange(usize, usize),
-
-    #[error("Cannot find value with such key in data base: {0}")]
-    NotFound(String),
-
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("Database is locked by another process: {0}")]
-    DatabaseLocked(String),
-
-    #[error("Invalid Genesis Block: {0}")]
-    InvalidGenesisBlock(String),
-
-    #[error("Cannot construct undo object for the block: {msg}")]
-    UndoCreationError { msg: String },
-
-    #[error("Chain work overflow while adding block work : {0}")]
-    ChainWorkOverflow(String),
-}
-
-impl From<RangeError> for StryiStorageError {
-    fn from(e: RangeError) -> Self {
-        match e {
-            RangeError::InvalidRange { start, end } => {
-                StryiStorageError::IncorrectBlocksRange(start, end)
-            }
-        }
+pub(crate) fn backend_error(
+    operation: impl Into<String>,
+    source: impl Error + Send + Sync + 'static,
+) -> StorageError {
+    StorageError::Backend {
+        operation: operation.into(),
+        source: Arc::new(source),
     }
 }

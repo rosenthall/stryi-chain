@@ -29,7 +29,7 @@ grow.
 - `stryi_core`: core blockchain logic and shared domain types (`Block`, `Transaction`, `AccountAddress`, and more) + tx
   mempool implementation
 - `stryi_node`: the node binary implementation, gRPC and http servers, config engine, miner, main event loop,
-- `stryi_storage`: storage layer for blocks, UTXOs, transactions. Powered by the [fjall](https://crates.io/crates/fjall)
+- `stryi_storage`: storage layer for blocks, UTXOs, transactions. Powered by the [RocksDB](https://rocksdb.org/)
   db
 - `stryi_network`: p2p networking and higher-level protocol glue
 - `stryi_devkit`: local development utilities, currently - just a powerful chain generator CLI tool
@@ -38,12 +38,15 @@ grow.
 ## Build
 
 Requires **Rust nightly**. The exact version is pinned in `rust-toolchain.toml`.
+RocksDB also requires a C++20 compiler and libclang.
 
 ```bash
 # Install deps
 # Ubuntu
 sudo apt-get install -y --no-install-recommends \
   clang \
+  libclang-dev \
+  g++ \
   libprotobuf-dev \
   libssl-dev \
   pkg-config \
@@ -140,7 +143,7 @@ has an unknown parent. We need this to know exactly against what storage overlay
 
 When a competing fork appears, the node needs to validate it without corrupting the canonical chain. It does this
 through overlay storages - temporary layers on top of the real state. If the fork wins (more cumulative work), the
-overlay is committed and the old tip is rolled back using stored undo data. If it loses, the overlay is discarded. The
+overlay's delta replaces the canonical suffix in one transaction. If it loses, the overlay is discarded. The
 canonical state is only ever touched once the outcome is known.
 
 ### Custom Proof-of-Work
@@ -228,7 +231,7 @@ connect via gRPC directly.
 
 ### Performance
 
-On average, the Node (and the StryiConsensusEngine) fully validates and applies ~403 blocks/sec on GHA free shared
+An earlier benchmark with Fjall validated and applied ~403 blocks/sec on GHA free shared
 runner (4 vCPU cores) when performing Initial-Block-Download/reorg on **250 blocks** with total ~3700 transactions
 (~15 txs/block, 1-to-8 inputs and outputs per tx.)
 
@@ -251,7 +254,7 @@ from `bincode` to `postcard`.
   `stryi_wallet -i`)
 - Deterministic, fast, and customizable chain generator for testing and benchmarks
 - CLI wallet with interactive REPL
-- Persistent storage backed by [fjall](https://crates.io/crates/fjall)
+- Persistent storage backed by [RocksDB](https://rocksdb.org/)
 - Multi-node E2E tests in Docker Compose (IBD, reorgs, tx lifecycle)
 - Mempool with dependency tracking, and Replace-By-Fee
 
