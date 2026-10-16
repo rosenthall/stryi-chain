@@ -2,11 +2,9 @@ use crate::StryiCoreError;
 use crate::block::{Block, BlockHash, BlockHeader};
 use crate::consensus::ConsensusConsts;
 use crate::error::StorageLayer;
-use crate::storage::{BlockStorage, StorageStats, verify_genesis_work_shape};
+use crate::storage::{BlockStorage, StorageError, verify_genesis_work_shape};
 use crypto_bigint::{CheckedAdd, NonZero};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
 mod asert;
 pub use asert::asert_upper;
@@ -16,14 +14,13 @@ pub use crypto_bigint::U512 as ChainWork;
 
 pub const MAX_FUTURE_BLOCK_TIME_SECS: u64 = 120;
 
-async fn read_required_block<S>(state: &S, hash: BlockHash) -> Result<Block, StryiCoreError>
+fn read_required_block<S>(state: &S, hash: BlockHash) -> Result<Block, StryiCoreError>
 where
     S: BlockStorage + Send + Sync,
 {
     let block = state
         .get_block_by_hash(hash)
-        .await
-        .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?
+        .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e))?
         .ok_or_else(|| StryiCoreError::ConsensusValidationFailed {
             details: format!("block {hash} is missing from the branch view"),
         })?;
@@ -31,21 +28,20 @@ where
     if block.block_hash() != hash {
         return Err(StryiCoreError::storage(
             StorageLayer::Block,
-            format!("block hash does not match storage key {hash}"),
+            StorageError::Corruption(format!("block hash does not match storage key {hash}")),
         ));
     }
 
     Ok(block)
 }
 
-async fn read_required_block_by_height<S>(state: &S, height: u64) -> Result<Block, StryiCoreError>
+fn read_required_block_by_height<S>(state: &S, height: u64) -> Result<Block, StryiCoreError>
 where
     S: BlockStorage + Send + Sync,
 {
     let block = state
         .get_block_by_height(height)
-        .await
-        .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e.to_string()))?
+        .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e))?
         .ok_or_else(|| StryiCoreError::ConsensusValidationFailed {
             details: format!("block at height {height} is missing from the branch view"),
         })?;
@@ -53,7 +49,7 @@ where
     if block.header.height != height {
         return Err(StryiCoreError::storage(
             StorageLayer::Block,
-            format!("block height does not match storage key {height}"),
+            StorageError::Corruption(format!("block height does not match storage key {height}")),
         ));
     }
 
@@ -61,16 +57,17 @@ where
 }
 
 /// Upper median of up to eleven ancestors, starting at the parent.
-pub async fn median_time_past<S>(state: &S, parent_hash: BlockHash) -> Result<u64, StryiCoreError>
+pub fn median_time_past<S>(state: &S, parent_hash: BlockHash) -> Result<u64, StryiCoreError>
 where
     S: BlockStorage + Send + Sync,
 {
     let mut timestamps = [0u64; 11];
     let mut count = 0;
-    let mut cursor = read_required_block(state, parent_hash).await?;
+    let mut cursor = read_required_block(state, parent_hash)?;
 
     loop {
         verify_genesis_work_shape(&cursor)?;
+
         if !cursor.header.is_genesis() && cursor.header.height == 0 {
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: "normal ancestor has height zero".into(),
@@ -79,11 +76,12 @@ where
 
         timestamps[count] = cursor.header.timestamp;
         count += 1;
+
         if cursor.header.is_genesis() || count == timestamps.len() {
             break;
         }
 
-        let previous = read_required_block(state, cursor.header.previous_block_hash).await?;
+        let previous = read_required_block(state, cursor.header.previous_block_hash)?;
         if previous.header.height.checked_add(1) != Some(cursor.header.height) {
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: "broken timestamp ancestry".into(),
@@ -120,6 +118,7 @@ pub fn threshold_from_bytes(bytes: &[u8]) -> Result<HashThreshold, &'static str>
     if bytes.len() != 32 {
         return Err("hash_threshold must contain exactly 32 bytes");
     }
+
     Ok(HashThreshold::from_le_slice(bytes))
 }
 
@@ -131,6 +130,7 @@ pub fn chain_work_from_bytes(bytes: &[u8]) -> Result<ChainWork, &'static str> {
     if bytes.len() != 64 {
         return Err("chain_work must contain exactly 64 bytes");
     }
+
     Ok(ChainWork::from_le_slice(bytes))
 }
 
@@ -163,26 +163,31 @@ impl PowParams {
                 details: "target_spacing_secs must be positive".into(),
             });
         }
+
         if self.half_life_secs == 0 {
             return Err(StryiCoreError::InvalidDifficultyValue {
                 details: "half_life_secs must be positive".into(),
             });
         }
+
         if self.initial_hash_threshold == HashThreshold::ZERO {
             return Err(StryiCoreError::InvalidDifficultyValue {
                 details: "initial_hash_threshold must be positive".into(),
             });
         }
+
         if self.max_hash_threshold == HashThreshold::ZERO {
             return Err(StryiCoreError::InvalidDifficultyValue {
                 details: "max_hash_threshold must be positive".into(),
             });
         }
+
         if self.initial_hash_threshold > self.max_hash_threshold {
             return Err(StryiCoreError::InvalidDifficultyValue {
                 details: "initial_hash_threshold must not exceed max_hash_threshold".into(),
             });
         }
+
         Ok(())
     }
 }
@@ -218,11 +223,13 @@ impl DifficultyCalc {
 
     fn verify_anchor(&self, anchor: &Block) -> Result<(), StryiCoreError> {
         verify_genesis_work_shape(anchor)?;
+
         if anchor.header.is_genesis() {
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: "anchor block cannot have genesis shape".into(),
             });
         }
+
         if anchor.header.height != 1 {
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: format!(
@@ -231,16 +238,19 @@ impl DifficultyCalc {
                 ),
             });
         }
+
         if anchor.header.previous_block_hash != BlockHash::empty() {
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: "anchor block must have empty previous block hash".into(),
             });
         }
+
         if anchor.header.hash_threshold != self.params.initial_hash_threshold {
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: "anchor block must use initial hash threshold".into(),
             });
         }
+
         Ok(())
     }
 
@@ -250,7 +260,7 @@ impl DifficultyCalc {
     /// The caller must ensure that `state` provides a consistent view of the branch containing
     /// `parent_hash`. Missing blocks, branch inconsistencies, or invalid anchor shapes return
     /// an error.
-    pub async fn next_hash_threshold<S>(
+    pub fn next_hash_threshold<S>(
         &self,
         state: &S,
         parent_hash: BlockHash,
@@ -258,7 +268,7 @@ impl DifficultyCalc {
     where
         S: BlockStorage + Send + Sync,
     {
-        let parent = read_required_block(state, parent_hash).await?;
+        let parent = read_required_block(state, parent_hash)?;
         verify_genesis_work_shape(&parent)?;
 
         if parent.header.is_genesis() {
@@ -271,7 +281,8 @@ impl DifficultyCalc {
             });
         }
 
-        let parent_at_height = read_required_block_by_height(state, parent.header.height).await?;
+        let parent_at_height = read_required_block_by_height(state, parent.header.height)?;
+
         if parent_at_height.block_hash() != parent_hash {
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: format!(
@@ -287,7 +298,7 @@ impl DifficultyCalc {
             return Ok(self.params.initial_hash_threshold);
         }
 
-        let anchor = read_required_block_by_height(state, 1).await?;
+        let anchor = read_required_block_by_height(state, 1)?;
         self.verify_anchor(&anchor)?;
 
         if parent.header.height == 2 && parent.header.previous_block_hash != anchor.block_hash() {
@@ -318,31 +329,21 @@ impl DifficultyCalc {
 }
 
 /// Reads consensus rules from genesis and returns a [`DifficultyCalc`].
-pub async fn load_rules_and_build_calc<DB>(
-    db: Arc<RwLock<DB>>,
-) -> Result<DifficultyCalc, StryiCoreError>
+pub fn load_rules_and_build_calc<DB>(db: &DB) -> Result<DifficultyCalc, StryiCoreError>
 where
-    DB: BlockStorage + StorageStats + Send + Sync + 'static,
+    DB: BlockStorage,
 {
-    let genesis_opt = {
-        let guard = db.read().await;
-        guard.get_block_by_height(0).await
-    }
-    .map_err(|e| StryiCoreError::StorageError {
-        layer: StorageLayer::Block,
-        err: format!(
-            "failed to read genesis while constructing DifficultyCalc: {}",
-            e
-        ),
-    })?;
+    let genesis_opt = db
+        .get_block_by_height(0)
+        .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e))?;
 
     let genesis_block = match genesis_opt {
         Some(b) => b,
         None => {
-            return Err(StryiCoreError::StorageError {
-                layer: StorageLayer::Block,
-                err: "genesis block not found (height 0)".to_string(),
-            });
+            return Err(StryiCoreError::storage(
+                StorageLayer::Block,
+                StorageError::Corruption("genesis block not found (height 0)".to_string()),
+            ));
         }
     };
 
@@ -365,10 +366,10 @@ where
                     ..
                 },
             ..
-        } => Err(StryiCoreError::StorageError {
-            layer: StorageLayer::Block,
-            err: "`genesis_state` is None in the genesis block".to_string(),
-        }),
+        } => Err(StryiCoreError::storage(
+            StorageLayer::Block,
+            StorageError::Corruption("`genesis_state` is None in the genesis block".to_string()),
+        )),
     }
 }
 
@@ -413,12 +414,11 @@ mod tests {
             add_work(ChainWork::MAX, ChainWork::ZERO).unwrap(),
             ChainWork::MAX
         );
-        assert_eq!(
+        assert!(matches!(
             add_work(ChainWork::MAX, ChainWork::ONE),
-            Err(StryiCoreError::consensus_chain_selection(
-                "chain work overflow"
-            ))
-        );
+            Err(StryiCoreError::ConsensusChainSelectionFailed { details })
+                if details == "chain work overflow"
+        ));
     }
 
     #[test]

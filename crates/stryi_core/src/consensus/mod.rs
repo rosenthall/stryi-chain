@@ -16,13 +16,13 @@ mod validator;
 use crate::block::{Block, BlockHash};
 use crate::difficulty::ChainWork;
 use crate::error::StryiCoreError;
-use futures::future::BoxFuture;
-use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
 
 // --- exports ---
-pub use crate::storage::{BlockStorage, StorageStats, UndoStorage, UtxoStorage};
+pub use crate::storage::{
+    BlockStorage, FullNodeStorage, StorageReader, StorageStats, UndoStorage, UtxoStorage,
+};
 pub use engine::StryiConsensusEngine;
 pub use forks::overlay::{ForkDbDelta, ForkDbOverlay};
 pub use rules::ConsensusConsts;
@@ -30,15 +30,23 @@ pub use validator::BlockValidator;
 #[cfg(test)]
 pub(crate) use validator::block::validate_block_structure;
 
+/// Committed consensus change returned after storage transition succeeds.
+#[derive(Debug, Clone)]
+pub struct CommittedTransition {
+    pub new_head: (u64, BlockHash),
+    pub chain_work: ChainWork,
+    /// Newly attached canonical blocks (parent-first).
+    pub attached: Vec<Block>,
+    /// Detached canonical blocks (tip-first).
+    pub detached: Vec<(u64, BlockHash)>,
+}
+
 /// Reply message type for ConsensusEngine.
 /// See [`ConsensusEngine::on_block`] method for more implementation details.
 #[derive(Debug, Clone)]
 pub enum ConsensusVerdict {
     /// Block was successfully applied to a canonical chain
-    Applied {
-        /// Cumulative work of the chain including this new block.
-        chain_work: ChainWork,
-    },
+    Applied { transition: CommittedTransition },
 
     /// Block was successfully accepted but did not become part of the canonical chain
     Buffered,
@@ -55,10 +63,7 @@ pub enum ConsensusVerdict {
     /// Block caused reorganization in a local chain.
     /// The reorganization may be triggered by this block alone
     /// or by the fork branch that includes it.
-    CausedReorganization {
-        /// map deleted block's hashes keyed to its pre-reorganization height.
-        deleted_blocks: HashMap<u64, BlockHash>,
-    },
+    CausedReorganization { transition: CommittedTransition },
 }
 
 /// The `ConsensusEngine` trait defines the interface for consensus mechanisms.
@@ -68,21 +73,6 @@ pub enum ConsensusVerdict {
 pub trait ConsensusEngine {
     type Error: Debug + Send + Error + Clone;
 
-    /// Method called for each new block
-    fn on_block(&mut self, block: Block) -> BoxFuture<'_, Result<ConsensusVerdict, Self::Error>>;
-}
-
-/// Common storage trait bundle used across consensus / forks / overlays.
-///
-/// Implementations may use **any** error type that satisfies the individual
-/// storage trait bounds.  The consensus engine converts foreign errors into
-/// `StryiCoreError` at each call site via `.map_err()`.
-pub trait FullNodeStorage:
-    UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static
-{
-}
-
-impl<T> FullNodeStorage for T where
-    T: UtxoStorage + BlockStorage + StorageStats + UndoStorage + Send + Sync + 'static
-{
+    /// Method called for each new block.
+    fn on_block(&mut self, block: Block) -> Result<ConsensusVerdict, Self::Error>;
 }
