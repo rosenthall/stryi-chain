@@ -61,8 +61,8 @@ use std::time::Duration;
 use stryi_core::address::AccountAddress;
 use stryi_core::block::Block;
 use stryi_core::mempool::{MemPool, MemPoolConfig, RbfPolicy, UtxoLookup};
-use stryi_core::storage::UtxoStorage;
-use stryi_core::transactions::{FeePolicy, OutPoint};
+use stryi_core::storage::{StorageError, StorageReader, UtxoStorage};
+use stryi_core::transactions::{FeePolicy, OutPoint, UTXO};
 use stryi_network::{
     PeerId, RendezvousMode, StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig,
 };
@@ -115,6 +115,32 @@ fn use_json_logs() -> bool {
         std::env::var("STRYI_LOG_FORMAT").ok().as_deref(),
         Some("json") | Some("JSON")
     )
+}
+
+async fn lookup_mempool_utxos(
+    storage: StryiStorage,
+    outpoints: Vec<OutPoint>,
+) -> Result<HashMap<OutPoint, UTXO>, StorageError> {
+    tokio::task::spawn_blocking(move || {
+        // Missing inputs are omitted for mempool validation to resolve; all reads
+        // must still describe one chain snapshot, and storage failures propagate.
+        let view = storage.read()?;
+
+        let mut utxos = HashMap::with_capacity(outpoints.len());
+
+        for outpoint in outpoints {
+            if let Some(utxo) = view.get_utxo(outpoint)? {
+                utxos.insert(outpoint, utxo);
+            }
+        }
+
+        Ok(utxos)
+    })
+    .await
+    .map_err(|e| StorageError::Backend {
+        operation: "mempool lookup".to_string(),
+        source: Arc::new(e),
+    })?
 }
 
 #[tokio::main]
@@ -246,11 +272,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         storage_status
     );
 
-    let storage: Arc<RwLock<StryiStorage>> = match (start_mode, &storage_status) {
+    let storage: StryiStorage = match (start_mode, &storage_status) {
         // if already initialized - just open
         (_start_mode, StorageStatus::Initialized { .. }) => {
-            let st = StryiStorage::initialize_in_path(cfg.storage_path.clone(), None).await?;
-            Arc::new(RwLock::new(st))
+            let st = StryiStorage::initialize_in_path(cfg.storage_path.clone(), None)?;
+            st
         }
 
         // if doing bootstrap and datadir is empty - setup meta
@@ -282,16 +308,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     e
                 })?;
 
-            let st = StryiStorage::initialize_in_path(cfg.storage_path.clone(), Some(genesis_cfg))
-                .await?;
-            Arc::new(RwLock::new(st))
+            let st = StryiStorage::initialize_in_path(cfg.storage_path.clone(), Some(genesis_cfg))?;
+            st
         }
 
         // if Join and datadir is empty it's a pre-Genesis layout
         // genesis will be fetched and saved later.
         (NodeStartMode::Join, StorageStatus::NoGenesis) => {
-            let st = StryiStorage::initialize_in_path(cfg.storage_path.clone(), None).await?;
-            Arc::new(RwLock::new(st))
+            let st = StryiStorage::initialize_in_path(cfg.storage_path.clone(), None)?;
+            st
         }
 
         // if meta is corrupted - halt
@@ -310,22 +335,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         60 * 60,               // 1-hour expiry time
     );
 
-    // Create utxo_lookup closure for mempool that reads UTXO by the outpoint from storage
     let utxo_lookup: UtxoLookup = {
         let storage = storage.clone();
 
-        Box::new(move |out_point: &OutPoint| {
-            let storage = storage.clone();
-            let out_point = *out_point;
-
-            Box::pin(async move {
-                storage
-                    .read()
-                    .await
-                    .get_utxo(out_point)
-                    .await
-                    .unwrap_or(None)
-            })
+        Box::new(move |outpoints: Vec<OutPoint>| {
+            Box::pin(lookup_mempool_utxos(storage.clone(), outpoints))
         })
     };
 

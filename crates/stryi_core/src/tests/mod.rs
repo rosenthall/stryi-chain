@@ -140,13 +140,19 @@ pub(crate) fn make_engine(
 }
 
 /// Builds a `UtxoLookup` closure from a flat list of UTXOs.
-/// The closure captures an `Arc<HashMap>` and resolves OutPoint to Option<UTXO>.
+/// Each lookup returns the present inputs from one immutable view.
 pub(crate) fn make_utxo_lookup(utxos: Vec<(OutPoint, UTXO)>) -> UtxoLookup {
     let map: HashMap<OutPoint, UTXO> = utxos.into_iter().collect();
     let shared = Arc::new(map);
-    Box::new(move |op: &OutPoint| {
+
+    Box::new(move |outpoints: Vec<OutPoint>| {
         let shared = Arc::clone(&shared);
-        let op = *op;
-        Box::pin(async move { shared.get(&op).cloned() })
+
+        Box::pin(async move {
+            Ok(outpoints
+                .into_iter()
+                .filter_map(|outpoint| shared.get(&outpoint).copied().map(|utxo| (outpoint, utxo)))
+                .collect())
+        })
     })
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tracing::error;
 
 use crate::http::{StryiHttpService, model::NodeStateBody};
-use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
+use stryi_core::storage::{StorageReader, StorageStats};
 
 #[utoipa::path(
     get,
@@ -18,34 +18,34 @@ pub async fn get_nodestate<DB>(
     State(svc): State<Arc<StryiHttpService<DB>>>,
 ) -> Result<Json<NodeStateBody>, StatusCode>
 where
-    DB: BlockStorage + UtxoStorage + StorageStats + Send + Sync + 'static,
+    DB: StorageReader,
 {
-    let store = svc.storage.read().await;
+    let storage = svc.storage.clone();
 
-    // Helper macro to reduce boilerplate for each stat call.
-    macro_rules! fetch {
-        ($expr:expr, $label:literal) => {
-            match $expr.await {
-                Ok(v) => v,
-                Err(e) => {
-                    error!("StorageStats::{} failed: {}", $label, e);
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
-            }
-        };
-    }
+    let state = tokio::task::spawn_blocking(move || {
+        storage
+            .read()?
+            .chain_state()?
+            .ok_or(stryi_core::storage::StorageError::Uninitialized)
+    })
+    .await
+    .map_err(|e| {
+        error!("node state worker failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?
+    .map_err(|e| {
+        error!("cannot read chain state: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
-    let (height, hash) = fetch!(store.tip(), "tip");
-    let last_update = fetch!(store.last_updated(), "last_updated");
-    let chain_work = fetch!(store.chain_work(), "chain_work");
-
+    let (height, hash) = state.latest_block;
     let body = NodeStateBody {
         chain_name: svc.config.chain_name.clone(),
         api_version: svc.config.api_version,
         height,
         latest_block_hash: hash.to_string(),
-        chain_work,
-        last_update_time: last_update,
+        chain_work: state.chain_work,
+        last_update_time: state.last_update_time,
     };
 
     Ok(Json(body))

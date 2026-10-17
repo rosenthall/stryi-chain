@@ -13,14 +13,11 @@ use futures_util::stream;
 use http::{Response as HttpResponse, StatusCode};
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Arc;
 use stryi_core::StryiCoreError;
 use stryi_core::block::{Block, BlockHash, BlockHeader, GenesisState};
 use stryi_core::difficulty::{chain_work_to_bytes, threshold_from_bytes, threshold_to_bytes};
 use stryi_core::merkletree::MerkleHash;
-use stryi_core::storage::{BlockStorage, UtxoStorage};
-use stryi_storage::{StryiStorage, StryiStorageError};
-use tokio::sync::RwLock;
+use stryi_core::storage::{BlockStorage, StorageReader, StorageStats};
 use tokio_stream::StreamExt;
 use tonic::body::Body;
 use tonic::codegen::tokio_stream::Stream;
@@ -33,10 +30,10 @@ pub const GRPC_SERVICE_TAG: &str = "grpc-sync";
 #[derive(Clone)]
 pub struct StryiSyncService<DB>
 where
-    DB: BlockStorage + UtxoStorage,
+    DB: StorageReader,
 {
     pub(crate) config: StryiSyncServiceConfig,
-    pub(crate) storage: Arc<RwLock<DB>>,
+    pub(crate) storage: DB,
 }
 
 #[derive(Clone, Debug)]
@@ -76,24 +73,29 @@ where
 }
 
 #[tonic::async_trait]
-impl crate::grpc_services::blockchain_sync_server::BlockchainSync
-    for StryiSyncService<StryiStorage>
+impl<DB> crate::grpc_services::blockchain_sync_server::BlockchainSync for StryiSyncService<DB>
+where
+    DB: StorageReader,
 {
     async fn get_chain_info(&self, _request: Request<()>) -> Result<Response<PbChainInfo>, Status> {
-        // read storage stats entry in db
-        let chain_info = self
-            .storage
-            .read()
-            .await
-            .get_current_storage_state()
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let storage = self.storage.clone();
 
-        // Construct PbChainInfo from StorageStateInformation we got and some values from self.config
+        let chain_info = tokio::task::spawn_blocking(move || {
+            storage
+                .read()
+                .map_err(|e| Status::internal(e.to_string()))?
+                .chain_state()
+                .map_err(|e| Status::internal(e.to_string()))?
+                .ok_or_else(|| Status::unavailable("storage is not initialized"))
+        })
+        .await
+        .map_err(|e| Status::internal(e.to_string()))??;
+
         let pb = PbChainInfo {
-            height: chain_info.latest_block.0 as u64,
+            height: chain_info.latest_block.0,
             latest_block_hash: chain_info.latest_block.1.to_string(),
             chain_work: chain_work_to_bytes(&chain_info.chain_work).to_vec(),
-            last_update_time: chain_info.last_update_time as u64,
+            last_update_time: chain_info.last_update_time,
             protocol_version: self.config.protocol_version as u32,
             chain_name: self.config.chain_name.clone(),
         };
@@ -107,71 +109,22 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
         &self,
         request: Request<BlockHeightRange>,
     ) -> Result<Response<Self::GetHeadersByHeightStream>, Status> {
-        let params = request.into_inner();
-        let start_height = params.start_height;
-        let end_height = params.end_height;
-
-        // Enforce max range
-        let max = self.config.max_blocks_range_per_request as u64;
-        if start_height > end_height {
-            return Err(Status::invalid_argument("start height exceeds end height"));
-        }
-        if max == 0 {
-            return Err(Status::internal("maximum block range is zero"));
-        }
-        let actual_end = end_height.min(start_height.saturating_add(max - 1));
-
+        let hashes = self.height_range_hashes(request.into_inner()).await?;
         let storage = self.storage.clone();
 
-        let header_stream = stream::unfold(Some(start_height), move |current_height| {
+        let header_stream = stream::iter(hashes).then(move |hash| {
             let storage = storage.clone();
 
             async move {
-                let current_height = current_height?;
+                let block = Self::read_block(storage, hash).await?.ok_or_else(|| {
+                    Status::internal(format!("block {hash} disappeared from storage"))
+                })?;
 
-                // End the stream if current_height > actual_end
-                if current_height > actual_end {
-                    return None;
-                }
-
-                // Attempt to fetch the block
-                let db = storage.read().await;
-                let block_result = db.get_block_by_height(current_height).await;
-
-                match block_result {
-                    Ok(Some(block)) => {
-                        let pb_header: PbBlockHeader = PbBlock::from(block).header.unwrap();
-                        let next_state = current_height.checked_add(1);
-                        Some((Ok(pb_header), next_state))
-                    }
-
-                    // Both "failed to load" cases in one arm
-                    other => {
-                        // Turn the match-arm payload into a concrete error
-                        let e: StryiStorageError = match other {
-                            Err(e) => e,
-                            Ok(None) => StryiStorageError::NotFound(format!(
-                                "Block at height {} missing",
-                                current_height
-                            )),
-
-                            // We've covered Ok(Some) above, so it should be impossible
-                            _ => unreachable!(),
-                        };
-
-                        let status = if matches!(e, StryiStorageError::NotFound(_)) {
-                            Status::not_found(e.to_string())
-                        } else {
-                            Status::internal(e.to_string())
-                        };
-                        Some((Err(status), None))
-                    }
-                }
+                Ok(PbBlock::from(block).header.unwrap())
             }
         });
 
-        let pinned_stream = Box::pin(header_stream);
-        Ok(Response::new(pinned_stream))
+        Ok(Response::new(Box::pin(header_stream)))
     }
 
     type GetBlocksByHeightStream =
@@ -180,81 +133,22 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
         &self,
         request: Request<BlockHeightRange>,
     ) -> Result<Response<Self::GetBlocksByHeightStream>, Status> {
-        // 1) Parse request
-        let params = request.into_inner();
-        let start_height = params.start_height;
-        let end_height = params.end_height;
-
-        // Enforce maximum range
-        let max = self.config.max_blocks_range_per_request as u64;
-        if start_height > end_height {
-            return Err(Status::invalid_argument("start height exceeds end height"));
-        }
-        if max == 0 {
-            return Err(Status::internal("maximum block range is zero"));
-        }
-        let actual_end = end_height.min(start_height.saturating_add(max - 1));
-
-        // We'll produce blocks for heights in [start_height..=actual_end].
-        // If any block is missing, we return an error in the stream
-        // and effectively terminate that stream.
-
+        let hashes = self.height_range_hashes(request.into_inner()).await?;
         let storage = self.storage.clone();
 
-        // 2) Build a stream using `futures_util::stream::unfold(...)`
-        let block_stream = stream::unfold(Some(start_height), move |current_height| {
+        let block_stream = stream::iter(hashes).then(move |hash| {
             let storage = storage.clone();
+
             async move {
-                let current_height = current_height?;
+                let block = Self::read_block(storage, hash).await?.ok_or_else(|| {
+                    Status::internal(format!("block {hash} disappeared from storage"))
+                })?;
 
-                if current_height > actual_end {
-                    // Reached the end, so no more items
-                    return None;
-                }
-
-                // Lock DB and fetch the block
-                let db = storage.read().await;
-                let block_res = db.get_block_by_height(current_height).await;
-
-                match block_res {
-                    // Only match when we actually got a `Block`
-                    Ok(Some(block)) => {
-                        // Now `block: Block` matches your `From<Block>` impl
-                        let pb_block: PbBlock = block.into();
-                        let next_state = current_height.checked_add(1);
-                        Some((Ok(pb_block), next_state))
-                    }
-
-                    // Block was not found in storage - translate to a gRPC NotFound error
-                    Ok(None) => {
-                        let status = Status::not_found(format!(
-                            "Block at height {} not found",
-                            current_height
-                        ));
-                        Some((Err(status), None))
-                    }
-
-                    // Storage API returned some other error
-                    Err(e) => {
-                        // If a block is missing or any error occurred,
-                        // produce an error item. Once Tonic sees an error,
-                        // the stream ends and the client receives that error.
-
-                        let status = if matches!(e, StryiStorageError::NotFound(_)) {
-                            Status::not_found(e.to_string())
-                        } else {
-                            Status::internal(e.to_string())
-                        };
-
-                        Some((Err(status), None))
-                    }
-                }
+                Ok(block.into())
             }
         });
 
-        // 3) Box the stream into Pin<Box<...>> so Tonic can return it
-        let pinned_stream = Box::pin(block_stream);
-        Ok(Response::new(pinned_stream))
+        Ok(Response::new(Box::pin(block_stream)))
     }
 
     type GetBlocksByHashStream =
@@ -265,7 +159,7 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
         request: Request<BlockHashList>,
     ) -> Result<Response<Self::GetBlocksByHashStream>, Status> {
         let list = request.into_inner();
-        let hashes = list.block_hashes; // Vector of raw bytes for each hash
+        let hashes = list.block_hashes;
 
         // Enforce a maximum
         let max = self.config.max_blocks_range_per_request;
@@ -277,22 +171,14 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
 
         let block_stream = stream::iter(hashes).then(move |block_hash| {
             let storage = storage.clone();
+
             async move {
                 let block_hash = BlockHash::from_hash_string(&block_hash)
                     .map_err(|e| Status::invalid_argument(format!("Invalid hash: {e:?}")))?;
 
-                let store = storage.read().await;
-
-                let opt_block = store.get_block_by_hash(block_hash).await.map_err(|e| {
-                    if matches!(e, StryiStorageError::NotFound(_)) {
-                        Status::not_found("Block not found in storage")
-                    } else {
-                        Status::internal(e.to_string())
-                    }
-                })?;
-
-                let block =
-                    opt_block.ok_or_else(|| Status::not_found("Block not found in storage"))?;
+                let block = Self::read_block(storage, block_hash)
+                    .await?
+                    .ok_or_else(|| Status::not_found("Block not found in storage"))?;
 
                 Ok(block.into())
             }
@@ -302,6 +188,64 @@ impl crate::grpc_services::blockchain_sync_server::BlockchainSync
         let pinned_stream = Box::pin(block_stream);
 
         Ok(Response::new(pinned_stream))
+    }
+}
+
+impl<DB> StryiSyncService<DB>
+where
+    DB: StorageReader,
+{
+    async fn read_block(storage: DB, hash: BlockHash) -> Result<Option<Block>, Status> {
+        tokio::task::spawn_blocking(move || {
+            let view = storage
+                .read()
+                .map_err(|e| Status::internal(e.to_string()))?;
+
+            view.get_block_by_hash(hash)
+                .map_err(|e| Status::internal(e.to_string()))
+        })
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?
+    }
+
+    async fn height_range_hashes(&self, range: BlockHeightRange) -> Result<Vec<BlockHash>, Status> {
+        if range.start_height > range.end_height {
+            return Err(Status::invalid_argument("start height exceeds end height"));
+        }
+
+        let max = self.config.max_blocks_range_per_request as u64;
+
+        if max == 0 {
+            return Err(Status::internal("maximum block range is zero"));
+        }
+
+        let end = range
+            .end_height
+            .min(range.start_height.saturating_add(max - 1));
+        let storage = self.storage.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let view = storage
+                .read()
+                .map_err(|e| Status::internal(e.to_string()))?;
+
+            let mut hashes = Vec::new();
+
+            for height in range.start_height..=end {
+                let hash = view
+                    .get_block_hash_by_height(height)
+                    .map_err(|e| Status::internal(e.to_string()))?
+                    .ok_or_else(|| {
+                        Status::not_found(format!("Block at height {height} not found"))
+                    })?;
+
+                hashes.push(hash);
+            }
+
+            Ok(hashes)
+        })
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?
     }
 }
 

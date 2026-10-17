@@ -1,11 +1,16 @@
 use crate::address::AccountAddress;
 use crate::mempool::UtxoLookup;
 use crate::mempool::storage::TransactionStorage;
+use crate::storage::StorageError;
 use crate::transactions::{OutPoint, Transaction, TransactionKind, UTXO};
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum MempoolValidationError {
+    #[error("Cannot read transaction inputs: {0}")]
+    Storage(#[source] StorageError),
+
     #[error("Missing UTXO for outpoint: {0:?}")]
     MissingOutPoint(OutPoint),
 
@@ -63,6 +68,27 @@ impl MempoolTxValidator {
         };
         let recovered_addr = AccountAddress::from_public_key(&rec_key);
 
+        let external_inputs: Vec<_> = tx
+            .data
+            .inputs
+            .iter()
+            .map(|input| input.previous_output)
+            .filter(|outpoint| storage.get_creating_tx(outpoint).is_none())
+            .collect();
+
+        let external_utxos = if external_inputs.is_empty() {
+            HashMap::new()
+        } else {
+            (self.utxo_lookup)(external_inputs)
+                .await
+                .map_err(|err| match err {
+                    StorageError::UtxoNotFound(outpoint) => {
+                        MempoolValidationError::MissingOutPoint(outpoint)
+                    }
+                    other => MempoolValidationError::Storage(other),
+                })?
+        };
+
         let mut total_input_value = 0u64;
         let mut utxos = Vec::with_capacity(tx.data.inputs.len());
         let mut potential_rbf = false;
@@ -93,10 +119,9 @@ impl MempoolTxValidator {
                     return Err(MempoolValidationError::MissingOutPoint(*outpoint));
                 }
             } else {
-                // Try external UTXO lookup
-                let utxo_lookup = &self.utxo_lookup;
-                utxo_lookup(outpoint)
-                    .await
+                external_utxos
+                    .get(outpoint)
+                    .copied()
                     .ok_or(MempoolValidationError::MissingOutPoint(*outpoint))?
             };
 

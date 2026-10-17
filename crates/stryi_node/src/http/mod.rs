@@ -24,7 +24,6 @@ use crate::http::model::SendTransactionRequest;
 use crate::http::model::TransactionQueryResponse;
 use crate::http::model::UtxoEntry;
 use crate::http::tx::__path_send_tx;
-use crate::http::tx::ConfirmedTransactionLookup;
 use crate::http::tx::get_tx;
 use crate::http::tx::send_tx;
 use crate::middleware::ready::{NotReadyResponder, ReadyFlag, ReadyGateLayer};
@@ -36,7 +35,7 @@ use http::StatusCode;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use stryi_core::mempool::MemPool;
-use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
+use stryi_core::storage::StorageReader;
 use stryi_core::transactions::Transaction;
 use stryi_network::{NetworkCommand, PeerId};
 use tokio::net::TcpListener;
@@ -85,13 +84,13 @@ impl TxBroadcaster {
 #[derive(Clone)]
 pub struct StryiHttpService<DB>
 where
-    DB: BlockStorage + UtxoStorage + StorageStats,
+    DB: StorageReader,
 {
     /// Configuration for this HTTP service
     pub(crate) config: StryiHttpServiceConfig,
 
     pub(crate) mempool: Arc<RwLock<MemPool>>,
-    pub(crate) storage: Arc<RwLock<DB>>,
+    pub(crate) storage: DB,
 
     /// Broadcaster for gossiping accepted transactions to peers.
     pub(crate) tx_broadcaster: TxBroadcaster,
@@ -145,9 +144,9 @@ where
 struct ApiDoc;
 
 /// Spawn the HTTP API
-/// All routes stay behind `ReadyGateLayer` until somebody flips `*ready.write() = true`.
+/// All routes stay behind `ReadyGateLayer` until `ready.store(true, Ordering::Release)`.
 pub async fn start_http_server<DB>(
-    storage: Arc<RwLock<DB>>,
+    storage: DB,
     cfg: StryiHttpServiceConfig,
     mempool: Arc<RwLock<MemPool>>,
     tx_broadcaster: TxBroadcaster,
@@ -155,13 +154,7 @@ pub async fn start_http_server<DB>(
     cancel_token: tokio_util::sync::CancellationToken,
 ) -> Result<(), StryiNodeError>
 where
-    DB: BlockStorage
-        + UtxoStorage
-        + StorageStats
-        + ConfirmedTransactionLookup
-        + Send
-        + Sync
-        + 'static,
+    DB: StorageReader,
 {
     // shared service state
     let svc = StryiHttpService {

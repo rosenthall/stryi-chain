@@ -39,7 +39,7 @@ mod event_loop;
 /// The first stage of node initialization.
 /// At this point this node is not yet connected and has no `ConsensusEngine` initialized
 pub struct StryiChainNode {
-    pub(crate) storage: Arc<RwLock<StryiStorage>>,
+    pub(crate) storage: StryiStorage,
     pub(crate) mempool: Arc<RwLock<MemPool>>,
     pub(crate) network_manager: StryiNetworkManager,
     pub(crate) genesis_bootstrap: GenesisBootstrap,
@@ -49,7 +49,7 @@ pub struct StryiChainNode {
 /// Node after connect().
 /// Has live network channels, ready for sync.
 pub struct ConnectedNode {
-    pub(crate) storage: Arc<RwLock<StryiStorage>>,
+    pub(crate) storage: StryiStorage,
     pub(crate) mempool: Arc<RwLock<MemPool>>,
     pub(crate) net_cmd: mpsc::Sender<NetworkCommand>,
     pub(crate) net_events: broadcast::Receiver<NetworkEvent>,
@@ -59,7 +59,7 @@ pub struct ConnectedNode {
 
 /// Node after synchronize() or bootstrap(). Has a consensus engine ready to go.
 pub struct SyncedNode {
-    pub(crate) storage: Arc<RwLock<StryiStorage>>,
+    pub(crate) storage: StryiStorage,
     pub(crate) mempool: Arc<RwLock<MemPool>>,
     pub(crate) net_cmd: mpsc::Sender<NetworkCommand>,
     pub(crate) net_events: broadcast::Receiver<NetworkEvent>,
@@ -89,7 +89,7 @@ pub(crate) struct EventLoopContext {
 
 impl StryiChainNode {
     pub fn new(
-        storage: Arc<RwLock<StryiStorage>>,
+        storage: StryiStorage,
         mempool: Arc<RwLock<MemPool>>,
         network_manager: StryiNetworkManager,
         genesis_bootstrap: GenesisBootstrap,
