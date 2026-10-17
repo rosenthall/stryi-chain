@@ -11,13 +11,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use stryi_core::block::Block;
 use stryi_core::consensus::{
-    BlockStorage, BlockValidator, ConsensusConsts, StorageStats, StryiConsensusEngine, UtxoStorage,
+    BlockStorage, BlockValidator, ConsensusConsts, StorageStats, StryiConsensusEngine,
 };
 use stryi_core::difficulty::{ChainWork, DifficultyCalc};
-use stryi_core::transactions::{OutPoint, UTXO, UtxoProcessor};
+use stryi_core::storage::StorageReader;
+use stryi_core::transactions::UtxoProcessor;
 use stryi_network::{NetworkCommand, PeerId, ServiceRecord, ServiceTransportSecurity};
-use stryi_storage::{StryiStorage, extract_utxos_from_block};
-use tokio::sync::{Mutex, RwLock, mpsc};
+use stryi_storage::StryiStorage;
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::sleep;
 use tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
 use tracing::{debug, info, trace, warn};
@@ -31,7 +32,7 @@ impl ConnectedNode {
     pub async fn bootstrap(self) -> Result<SyncedNode, StryiNodeError> {
         info!("Bootstrap: skipping synchronize(); This node is the source of genesis.");
 
-        let engine = self.build_consensus_engine().await?;
+        let engine = self.build_consensus_engine()?;
 
         Ok(SyncedNode {
             storage: self.storage,
@@ -48,12 +49,11 @@ impl ConnectedNode {
         info!("Start synchronizing with the network...");
 
         let (local_tip_height, local_tip_hash) = {
-            let s = self.storage.read().await;
-            let tip = s
-                .tip()
-                .await
-                .map_err(|e| StryiNodeError::other(format!("tip(): {e}")))?;
-            (tip.0, tip.1)
+            let s = self.storage.read()?;
+
+            s.chain_state()?
+                .map(|state| state.latest_block)
+                .unwrap_or((0, stryi_core::block::BlockHash::empty()))
         };
 
         trace!(local_tip_height = ?local_tip_height, local_tip_hash = ?local_tip_hash);
@@ -90,6 +90,7 @@ impl ConnectedNode {
             remote_peer.peer_id(),
             remote_chain_info
         );
+
         // fetch genesis from peer, compare or save locally
         self.ensure_genesis(&mut remote_peer).await?;
 
@@ -105,7 +106,7 @@ impl ConnectedNode {
         github.com/rosenthall :>
         */
 
-        let mut engine = self.build_consensus_engine().await?;
+        let mut engine = self.build_consensus_engine()?;
 
         // ask the peer if its chain already includes our tip
         // this is an easy case for synchronization, since it just requires download and apply all the remaining blocks
@@ -168,9 +169,8 @@ impl ConnectedNode {
             external_height,
         );
 
-        run_ibd(
-            &mut engine,
-            &self.storage,
+        engine = run_ibd(
+            engine,
             &mut remote_peer,
             sync_start_height,
             external_height,
@@ -190,14 +190,13 @@ impl ConnectedNode {
         })
     }
 
-    async fn build_consensus_engine(
-        &self,
-    ) -> Result<StryiConsensusEngine<StryiStorage>, StryiNodeError> {
+    fn build_consensus_engine(&self) -> Result<StryiConsensusEngine<StryiStorage>, StryiNodeError> {
         info!("Trying to instantize StryiConsensusEngine instance");
 
-        let consensus_constants = build_consensus_constants(&self.storage).await?;
+        let consensus_constants = build_consensus_constants(&self.storage)?;
         let difficulty_calculator = DifficultyCalc::new(consensus_constants.pow)
             .map_err(|e| StryiNodeError::other(format!("invalid pow params in genesis: {e}")))?;
+
         let block_validator = BlockValidator::new(consensus_constants, difficulty_calculator);
         let utxo_processor = UtxoProcessor::new();
 
@@ -207,10 +206,8 @@ impl ConnectedNode {
             consensus_constants,
             block_validator,
             utxo_processor,
-            self.storage.clone(),
-        )
-        .await
-        .map_err(|e| StryiNodeError::other(format!("consensus engine init failed: {e}")))?;
+            Arc::new(self.storage.clone()),
+        )?;
 
         engine.startup_message();
         info!("Successfully built StryiConsensusEngine instance!");
@@ -223,12 +220,14 @@ impl ConnectedNode {
     async fn ensure_genesis(&self, remote_peer: &mut RemotePeer) -> Result<(), StryiNodeError> {
         let peer_id = remote_peer.peer_id();
         info!("Requesting genesis block from peer {}", peer_id);
+
         let remote_genesis_block: Block = remote_peer.request_genesis().await?;
         trace!("Received genesis block: {:?}", remote_genesis_block);
 
         let maybe_local_genesis = {
-            let s = self.storage.read().await;
-            s.get_block_by_height(0).await.map_err(|e| {
+            let s = self.storage.read()?;
+
+            s.get_block_by_height(0).map_err(|e| {
                 StryiNodeError::other(format!("failed to query storage for genesis: {e}"))
             })?
         };
@@ -238,13 +237,14 @@ impl ConnectedNode {
             let external_genesis_block = remote_genesis_block.clone();
 
             trace!(local_genesis = ?local_genesis_block, external_genesis = ?external_genesis_block);
+
             if local_genesis_block != external_genesis_block {
                 return Err(StryiNodeError::other(
                     "genesis mismatch: local and remote peer have different genesis blocks",
                 ));
             }
         } else {
-            // Save meta first, then commit the block
+            // Metadata, genesis and allocations are committed together.
             self.genesis_bootstrap
                 .confirm_and_save(
                     &remote_genesis_block,
@@ -255,25 +255,7 @@ impl ConnectedNode {
                 )
                 .map_err(|e| StryiNodeError::other(format!("confirm_and_save failed: {e}")))?;
 
-            {
-                let mut s = self.storage.write().await;
-                s.put_block(&remote_genesis_block).await.map_err(|e| {
-                    StryiNodeError::other(format!("failed to commit genesis block: {e}"))
-                })?;
-
-                info!("Genesis block successfully stored.");
-
-                let utxos_to_insert: Vec<(OutPoint, UTXO)> =
-                    extract_utxos_from_block(&remote_genesis_block);
-
-                s.batch_put_utxos(utxos_to_insert).await.map_err(|e| {
-                    StryiNodeError::other(format!("failed to commit genesis UTXOs: {e}"))
-                })?;
-
-                info!("Genesis UTXOs successfully stored.");
-            }
-
-            info!("Genesis saved in meta and committed to storage (height=0).");
+            info!("Genesis initialized atomically (height=0).");
         }
 
         Ok(())
@@ -297,11 +279,10 @@ impl ConnectedNode {
 
         let local_work = self
             .storage
-            .read()
-            .await
-            .chain_work()
-            .await
-            .map_err(|e| StryiNodeError::other(format!("chain_work() failed: {e}")))?;
+            .read()?
+            .chain_state()?
+            .map(|state| state.chain_work)
+            .unwrap_or(ChainWork::ZERO);
 
         info!("Local work: {}", local_work);
 
@@ -332,7 +313,7 @@ impl ConnectedNode {
             };
 
             // Check protocol/chain name invariants
-            if let Err(e) = self.validate_peer_chain_invariants(&chain_info).await {
+            if let Err(e) = self.validate_peer_chain_invariants(&chain_info) {
                 warn!("Peer {} failed invariant check: {}. Skipping.", peer_id, e);
                 continue;
             }
@@ -344,8 +325,10 @@ impl ConnectedNode {
                     "Peer {} has no more work than us ({} <= {}) Skipping",
                     peer_id, remote_work, local_work
                 );
+
                 continue;
             }
+
             info!(
                 "Peer {} is a valid candidate (its work={} which IS more than local_work={}, height={}).",
                 peer_id, remote_work, local_work, chain_info.height
@@ -374,10 +357,7 @@ impl ConnectedNode {
         Ok(best)
     }
 
-    async fn validate_peer_chain_invariants(
-        &self,
-        info: &RemoteChainInfo,
-    ) -> Result<(), StryiNodeError> {
+    fn validate_peer_chain_invariants(&self, info: &RemoteChainInfo) -> Result<(), StryiNodeError> {
         require_chain_info_eq(
             "protocol_version",
             self.sync_service_config.protocol_version as u64,
@@ -406,6 +386,7 @@ where
             remote.to_string(),
         ));
     }
+
     Ok(())
 }
 
@@ -413,6 +394,7 @@ async fn query_sync_candidates(
     net_cmd: &mpsc::Sender<NetworkCommand>,
 ) -> Result<Vec<(PeerId, ServiceRecord)>, StryiNodeError> {
     let (tx, rx) = tokio::sync::oneshot::channel();
+
     net_cmd
         .send(NetworkCommand::QueryPeersWithService {
             service: GRPC_SERVICE_TAG.to_owned(),
@@ -535,47 +517,51 @@ fn grpc_uri_from_multiaddr(
 }
 
 async fn run_ibd(
-    engine: &mut StryiConsensusEngine<StryiStorage>,
-    storage: &Arc<RwLock<StryiStorage>>,
+    mut engine: StryiConsensusEngine<StryiStorage>,
     remote_peer: &mut RemotePeer,
     from_height: u64,
     to_height: u64,
     max_batch: usize,
-) -> Result<(), StryiNodeError> {
+) -> Result<StryiConsensusEngine<StryiStorage>, StryiNodeError> {
     let mut current_height = from_height;
 
     while current_height <= to_height {
-        let downloaded_blocks = remote_peer
+        let blocks = remote_peer
             .request_blocks_by_height_range(current_height, to_height, max_batch as u32)
             .await?;
 
-        if downloaded_blocks.is_empty() {
-            warn!(
-                "Peer returned empty batch at height {}. Stopping IBD.",
-                current_height
-            );
+        if blocks.is_empty() {
+            warn!("Peer returned empty batch at height {current_height}. Stopping IBD.");
             break;
         }
 
-        let fetched_count = downloaded_blocks.len() as u64;
+        let fetched_count = blocks.len() as u64;
 
-        ingest_ibd_batch(engine, storage, downloaded_blocks).await?;
+        engine = tokio::task::spawn_blocking(move || {
+            ingest_ibd_batch(&mut engine, blocks)?;
 
-        current_height += fetched_count;
+            Ok::<_, StryiNodeError>(engine)
+        })
+        .await
+        .map_err(|e| StryiNodeError::other(format!("IBD worker failed: {e}")))??;
+
+        current_height = current_height
+            .checked_add(fetched_count)
+            .ok_or_else(|| StryiNodeError::other("IBD height overflow"))?;
     }
 
-    Ok(())
+    Ok(engine)
 }
 
 /// Builds ConsensusConstants instance, calculates current difficulty from tip, other stuff from config.
-pub async fn build_consensus_constants(
-    storage: &Arc<RwLock<StryiStorage>>,
+pub fn build_consensus_constants(
+    storage: &StryiStorage,
 ) -> Result<ConsensusConsts, StryiNodeError> {
     // Ensure genesis exists and read it
     let genesis = {
-        let db = storage.read().await;
+        let db = storage.read()?;
+
         db.get_block_by_height(0)
-            .await
             .map_err(|e| StryiNodeError::other(format!("get_block_by_height(0): {e}")))?
     };
 
