@@ -8,9 +8,7 @@ use stryi_core::address::AccountAddress;
 
 /// Top-level config for chain-generator tool.
 /// Includes two tables : `[chain]` and `[blocks]` for chain-wide and block-gen settings correspondingly.
-///
-/// **NOTE**: Some chain parameters (like `chain_name` and `chain_id`) and Consensus-critical consts
-/// are expected to be set in the genesis JSON file, not here.
+/// Consensus-critical constants are read from the genesis JSON file.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ChainGenConfig {
     /// Chain-wide settings.
@@ -37,6 +35,11 @@ pub struct ChainSettings {
 
     /// Path to genesis JSON (same format as used by `stryi-node`).
     pub genesis_path: PathBuf,
+
+    /// Human-readable network name stored in metadata; defaults to "dev".
+    pub chain_name: Option<String>,
+    /// Sync protocol version stored in metadata; defaults to 1.
+    pub protocol_version: Option<u64>,
 }
 
 /// Block-generation rules for timestamps, miner, and synthetic traffic.
@@ -104,6 +107,7 @@ impl ChainGenConfig {
                     .to_string(),
             );
         }
+
         if self.blocks.min_transactions_per_block < 2 {
             return Err(
                 "min_transactions_per_block must be >= 2, since the first transaction slot is always reserved for a coinbase.".to_string()
@@ -151,11 +155,14 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time after epoch")
             .as_nanos();
+
         let path = std::env::temp_dir().join(format!(
             "stryi-chaingen-config-{unique}-{}.json",
             std::process::id()
         ));
+
         fs::write(&path, "{}").expect("write test genesis");
+
         path
     }
 
@@ -167,6 +174,8 @@ mod tests {
                 seed: SeedValue::Single(42),
                 output_path: std::env::temp_dir(),
                 genesis_path,
+                chain_name: None,
+                protocol_version: None,
             },
             blocks: BlocksSettings {
                 funding_key: PrivateKey::try_from(

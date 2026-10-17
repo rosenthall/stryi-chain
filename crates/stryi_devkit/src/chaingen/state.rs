@@ -12,6 +12,7 @@ use std::time::Instant;
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
 use stryi_core::block::Block;
+use stryi_core::storage::StorageReader;
 use stryi_core::transactions::{OutPoint, TransactionKind};
 use stryi_storage::chaingen::StryiStorageChaingenExt;
 use stryi_storage::{StryiStorage, StryiStorageError};
@@ -59,14 +60,14 @@ impl GenerationState {
     }
 
     /// Print some stats about currently existing UTXOs
-    pub(crate) async fn log_utxos_state(
+    pub(crate) fn log_utxos_state(
         &mut self,
         storage: &StryiStorage,
         // true if log about generation start, false if about the generation end
         start: bool,
     ) -> Result<(), StryiStorageError> {
-        // Lock storage and retrieve all UTXOs
-        let account_to_utxo_map = storage.get_all_utxos().await?;
+        // Read one snapshot and retrieve all UTXOs
+        let account_to_utxo_map = storage.read()?.get_all_utxos()?;
 
         // Count total UTXOs
         let total_utxos: usize = account_to_utxo_map.values().map(|m| m.len()).sum();
@@ -196,6 +197,7 @@ impl GenerationState {
         generation_deadline: Option<Instant>,
     ) -> Result<IndexMap<AccountAddress, SigningKey>, String> {
         check_generation_deadline(generation_deadline, Some(start_height))?;
+
         // Add start height to the base seed
         let base_seed = base_seed.wrapping_pow(if start_height == 0 {
             1
@@ -207,6 +209,7 @@ impl GenerationState {
 
         for i in 0..amount {
             check_generation_deadline(generation_deadline, Some(start_height))?;
+
             // Create a deterministic seed for each account by combining base seed with index
             let account_seed = base_seed.wrapping_add(i as u64);
 
@@ -217,9 +220,12 @@ impl GenerationState {
 
             let verifying_key = signing_key.verifying_key();
             let account_address = AccountAddress::from_public_key(verifying_key);
+
             accounts.insert(account_address, signing_key);
         }
+
         check_generation_deadline(generation_deadline, Some(start_height))?;
+
         Ok(accounts)
     }
 

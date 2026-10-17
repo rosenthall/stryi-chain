@@ -121,9 +121,10 @@ active_addresses_count = 50
 #### Implementation details
 
 Generated blocks go through `StryiConsensusEngine`, so the chain is checked the same way a
-real node would check it.
+real node would check it. Each accepted block is applied through an atomic storage transition.
 
 Chaingen is resume-friendly: it opens existing storage, reads the current tip, and keeps going from there.
+Optional `chain_name` and `protocol_version` in `[chain]` default to `dev` and `1` and must match the node configuration.
 That also means rerunning the same config against the same `output_path` is different from starting fresh.
 The funding account may already be drained by an older run, so for clean benchmark runs it is usually better to use a
 fresh directory.

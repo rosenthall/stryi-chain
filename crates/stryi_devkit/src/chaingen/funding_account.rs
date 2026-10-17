@@ -1,7 +1,7 @@
 use indexmap::IndexMap;
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
-use stryi_core::storage::UtxoStorage;
+use stryi_core::storage::{StorageReader, UtxoStorage};
 use stryi_core::transactions::{OutPoint, UTXO};
 use stryi_storage::StryiStorage;
 use tracing::{debug, trace};
@@ -20,7 +20,7 @@ static MINIMAL_TOTAL_AVAILABLE_BALANCE_FUNDING_ACCOUNT: u64 = 1_000_000;
 impl FundAccount {
     /// Builds FundAccount
     /// Queries all the available utxos for this account, checks if it has enough balance to be the funder
-    pub async fn load_from_private_key(
+    pub fn load_from_private_key(
         private_key: PrivateKey,
         storage: &StryiStorage,
     ) -> Result<Self, String> {
@@ -32,11 +32,12 @@ impl FundAccount {
             funder_address
         );
 
-        let utxos = storage
+        let view = storage.read().map_err(|e| e.to_string())?;
+        let utxos = view
             .get_utxos_for_address(funder_address)
-            .await
             .map_err(|e| format!("failed to load funder UTXOs from storage: {e}"))?;
         let utxos = IndexMap::from_iter(utxos);
+
         debug!("All the available utxos of funder account : {:#?}", utxos);
 
         if utxos.is_empty() {
@@ -46,6 +47,7 @@ impl FundAccount {
         }
 
         let balance = utxos.values().map(|utxo| utxo.value).sum::<u64>();
+
         if balance < MINIMAL_TOTAL_AVAILABLE_BALANCE_FUNDING_ACCOUNT {
             return Err(format!(
                 "Funder account has not enough balance to be funder. It has {} out of {} minimal",
@@ -59,6 +61,7 @@ impl FundAccount {
             utxos,
         })
     }
+
     /// Gets a list of all the available UTXOs for this address mapped by their outputs.
     pub fn utxos(&self) -> IndexMap<OutPoint, UTXO> {
         self.utxos.clone()

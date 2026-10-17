@@ -1,6 +1,5 @@
 use crate::chaingen::state::GenerationState;
 pub use config::*;
-use std::sync::Arc;
 use std::time::Instant;
 
 mod config;
@@ -33,7 +32,6 @@ use stryi_core::consensus::{
 };
 use stryi_core::difficulty::DifficultyCalc;
 use stryi_storage::StryiStorage;
-use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 /// Generator for synthetic blockchain data.
@@ -61,26 +59,30 @@ pub struct ChainGenerator {
     consensus_engine: StryiConsensusEngine<StryiStorage>,
 
     /// Storage instance.
-    storage: Arc<RwLock<StryiStorage>>,
+    storage: StryiStorage,
 }
 
 impl ChainGenerator {
-    pub async fn start(mut self) -> Result<(), String> {
+    pub fn start(mut self) -> Result<(), String> {
         check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
         info!("Starting chain generation and persistence...");
 
         // Number of post-genesis blocks to generate.
         // If a chain already has blocks, num_blocks means "blocks after current tip".
         let total_to_generate = self.config.chain.num_blocks;
+
         if total_to_generate == 0 {
             info!("Nothing to generate.");
+
             return Ok(());
         }
 
         // chain height where distributor will be placed
         let distributor_height = self.pre_generation_height + 1;
+
         // the first normal block should start after distributor
         let normal_blocks = distributor_height + 1;
+
         // last chain height we will generate to (inclusive)
         let end_height = self.pre_generation_height + total_to_generate;
 
@@ -94,140 +96,43 @@ impl ChainGenerator {
             current_seed
         );
 
-        // Pre-generate all accounts deterministically using the initial seed
-        // And build generation_state
-        info!("Building GenerationState");
-        let mut generation_state = GenerationState::new_with_random_accounts(
-            self.config.blocks.active_addresses_count as usize,
-            self.fund_account.clone(),
-            current_seed,
-            self.pre_generation_height,
-            self.generation_deadline,
-        )?;
+        let mut generation_state = self.prepare_generation_state(current_seed, end_height)?;
 
-        // log current top addresses and some stuff
-        {
-            info!("Analyzing chain before generation start..");
-
-            let s = self.storage.read().await;
-            generation_state
-                .log_utxos_state(&s, true)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-
-        // print all generated accounts
-        for (idx, address) in generation_state.accounts.keys().enumerate() {
-            check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
-            info!("[{}] {address}", idx + 1);
-        }
-
-        info!(
-            "Generated {} deterministic accounts",
-            &generation_state.accounts.len()
-        );
-
-        // Back up keys before any generated balances can be persisted.
-        check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
-        generation_state.save_accounts(
-            self.config.chain.output_path.clone(),
-            self.pre_generation_height,
-            end_height,
-        )?;
-        check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
-
-        // Insert block that distributes balances
-        // distributing block always will be first after the pre-generation state.
-        info!("Building distributing block");
-
-        info!(
-            "Distribution block will be placed at height #{}.",
-            distributor_height
-        );
-
-        let distributor = self.build_distributing_block(&mut generation_state).await?;
-        debug!("Distributor block : {:#?}", distributor);
-
-        check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
-
-        // Persist distribution block with a short-lived write lock
-        let dist_utxo_count = distributor.data.transactions[1].data.outputs.len();
-        let engine = &mut self.consensus_engine;
-        // try to apply the block
-        match engine
-            .on_block(distributor.clone())
-            .await
-            .map_err(|e| format!("Consensus engine failed: {:?}", e))?
-        {
-            // Applied successfully
-            ConsensusVerdict::Applied { chain_work } => {
-                info!(
-                    "Distributor persisted via ConsensusEngine. chain_work={}",
-                    chain_work
-                );
-            }
-
-            // Rejected by consensus
-            ConsensusVerdict::Rejected(err) => {
-                return Err(format!(
-                    "Distributor block rejected by consensus: {:?}",
-                    err
-                ));
-            }
-
-            other => {
-                error!(
-                    "Unexpected ConsensusVerdict ({:?}) for distributor block: {:#?}",
-                    other, distributor
-                );
-                return Err("Unexpected ConsensusVerdict".to_string());
-            }
-        }
-
-        check_generation_deadline(self.generation_deadline, Some(distributor_height))?;
-
-        // Apply the block to update the state
-        generation_state.apply_block(&distributor);
-
-        info!(
-            "|->  persisted Distributor Block (seed {}) on height {}, it created {} outputs",
-            current_seed, distributor_height, dist_utxo_count
-        );
-
-        // acc for tx count; include distributor transactions if you want to count them
-        let mut tx_count = distributor.data.transactions.len();
+        let mut tx_count =
+            self.distribute_balances(&mut generation_state, current_seed, distributor_height)?;
 
         // Main generation loop
         for height in normal_blocks..=end_height {
             check_generation_deadline(self.generation_deadline, Some(height - 1))?;
+
             debug!("Building block at height {}...", height);
 
             // If this exact chain height is a switch point, reseed before building the block.
             if schedule.is_switch_height(height) {
                 current_seed = schedule.seed_at(height);
                 rng = SeedSchedule::rng_from_seed(current_seed);
+
                 info!("Switching seed at height {} -> {}", height, current_seed);
             }
 
             let block = self
                 .build_block(height, &mut rng, &mut generation_state)
-                .await
                 .map_err(|e| format!("failed to build block at chain height {} : {}", height, e))?;
 
             check_generation_deadline(self.generation_deadline, Some(height - 1))?;
 
-            let engine = &mut self.consensus_engine;
             let blk_for_engine = block.clone();
-            match engine
+
+            match self
+                .consensus_engine
                 .on_block(blk_for_engine)
-                .await
                 .map_err(|e| format!("Consensus engine failed at height {}: {:?}", height, e))?
             {
                 // Applied successfully
-                ConsensusVerdict::Applied { chain_work } => {
+                ConsensusVerdict::Applied { transition } => {
                     debug!(
                         "Block at height {} persisted via ConsensusEngine. chain_work={}",
-                        height, chain_work
+                        height, transition.chain_work
                     );
                 }
 
@@ -244,6 +149,7 @@ impl ChainGenerator {
                         "Unexpected ConsensusVerdict ({:?}) for block at height {}: {:?}",
                         other, height, block
                     );
+
                     return Err("Unexpected ConsensusVerdict".to_string());
                 }
             }
@@ -294,12 +200,11 @@ impl ChainGenerator {
         }
 
         check_generation_deadline(self.generation_deadline, Some(end_height))?;
+
         // log current top addresses and some stuff
         {
-            let s = self.storage.read().await;
             generation_state
-                .log_utxos_state(&s, false)
-                .await
+                .log_utxos_state(&self.storage, false)
                 .map_err(|e| e.to_string())?;
 
             info!(
@@ -309,7 +214,126 @@ impl ChainGenerator {
         }
 
         check_generation_deadline(self.generation_deadline, Some(end_height))?;
+
         Ok(())
+    }
+
+    fn prepare_generation_state(
+        &self,
+        seed: u64,
+        end_height: u64,
+    ) -> Result<GenerationState, String> {
+        // Pre-generate all accounts deterministically using the initial seed
+        // And build generation_state
+        info!("Building GenerationState");
+        let mut generation_state = GenerationState::new_with_random_accounts(
+            self.config.blocks.active_addresses_count as usize,
+            self.fund_account.clone(),
+            seed,
+            self.pre_generation_height,
+            self.generation_deadline,
+        )?;
+
+        // log current top addresses and some stuff
+        {
+            info!("Analyzing chain before generation start..");
+
+            generation_state
+                .log_utxos_state(&self.storage, true)
+                .map_err(|e| e.to_string())?;
+        }
+
+        // print all generated accounts
+        for (idx, address) in generation_state.accounts.keys().enumerate() {
+            check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
+
+            info!("[{}] {address}", idx + 1);
+        }
+
+        info!(
+            "Generated {} deterministic accounts",
+            &generation_state.accounts.len()
+        );
+
+        check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
+
+        // Back up keys before any generated balances can be persisted.
+        generation_state.save_accounts(
+            self.config.chain.output_path.clone(),
+            self.pre_generation_height,
+            end_height,
+        )?;
+
+        check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
+
+        Ok(generation_state)
+    }
+
+    fn distribute_balances(
+        &mut self,
+        generation_state: &mut GenerationState,
+        seed: u64,
+        distributor_height: u64,
+    ) -> Result<usize, String> {
+        // Insert block that distributes balances
+        // distributing block always will be first after the pre-generation state.
+        info!("Building distributing block");
+
+        info!(
+            "Distribution block will be placed at height #{}.",
+            distributor_height
+        );
+
+        let distributor = self.build_distributing_block(generation_state)?;
+        debug!("Distributor block : {:#?}", distributor);
+
+        check_generation_deadline(self.generation_deadline, Some(self.pre_generation_height))?;
+
+        let dist_utxo_count = distributor.data.transactions[1].data.outputs.len();
+
+        // try to apply the block
+        match self
+            .consensus_engine
+            .on_block(distributor.clone())
+            .map_err(|e| format!("Consensus engine failed: {:?}", e))?
+        {
+            // Applied successfully
+            ConsensusVerdict::Applied { transition } => {
+                info!(
+                    "Distributor persisted via ConsensusEngine. chain_work={}",
+                    transition.chain_work
+                );
+            }
+
+            // Rejected by consensus
+            ConsensusVerdict::Rejected(err) => {
+                return Err(format!(
+                    "Distributor block rejected by consensus: {:?}",
+                    err
+                ));
+            }
+
+            other => {
+                error!(
+                    "Unexpected ConsensusVerdict ({:?}) for distributor block: {:#?}",
+                    other, distributor
+                );
+
+                return Err("Unexpected ConsensusVerdict".to_string());
+            }
+        }
+
+        check_generation_deadline(self.generation_deadline, Some(distributor_height))?;
+
+        // Apply the block to update the state
+        generation_state.apply_block(&distributor);
+
+        info!(
+            "|->  persisted Distributor Block (seed {}) on height {}, it created {} outputs",
+            seed, distributor_height, dist_utxo_count
+        );
+
+        Ok(distributor.data.transactions.len())
     }
 }
 
@@ -325,5 +349,6 @@ fn check_generation_deadline(
             None => "generation time limit exceeded during initialization".into(),
         });
     }
+
     Ok(())
 }

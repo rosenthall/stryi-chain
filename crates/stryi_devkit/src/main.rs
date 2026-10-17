@@ -1,6 +1,5 @@
 #![allow(incomplete_features)]
 #![cfg_attr(test, allow(deprecated))]
-
 #![feature(generic_const_exprs)]
 
 mod chaingen;
@@ -51,7 +50,7 @@ enum DevkitCommand {
     },
 }
 
-async fn run_chaingen(config_path: PathBuf) -> Result<(), i32> {
+fn run_chaingen(config_path: PathBuf) -> Result<(), i32> {
     // read the config
     let mut config = {
         if !config_path.is_file() {
@@ -65,10 +64,13 @@ async fn run_chaingen(config_path: PathBuf) -> Result<(), i32> {
         let mut buf = String::new();
         let mut file = File::open(&config_path).map_err(|e| {
             eprintln!("Cannot open config at path. Error : {e}");
+
             EXIT_IO_OR_PARSE
         })?;
+
         file.read_to_string(&mut buf).map_err(|e| {
             eprintln!("Cannot read config at path. Error : {e}");
+
             EXIT_IO_OR_PARSE
         })?;
 
@@ -76,6 +78,7 @@ async fn run_chaingen(config_path: PathBuf) -> Result<(), i32> {
             Ok(cfg) => cfg,
             Err(e) => {
                 eprintln!("Error while deserializing ChainGenConfig. Error : {e}");
+
                 return Err(EXIT_IO_OR_PARSE);
             }
         }
@@ -93,31 +96,32 @@ async fn run_chaingen(config_path: PathBuf) -> Result<(), i32> {
         Ok(()) => println!("Successfully validated the config."),
         Err(e) => {
             eprintln!("Invalid ChainGenConfig value: {e}");
+
             return Err(EXIT_CONFIG);
         }
     };
+
     println!("Successfully read and deserialized the config.");
 
     // initialize and run
-    let chaingen = ChainGenerator::initialize(config).await.map_err(|e| {
+    let chaingen = ChainGenerator::initialize(config).map_err(|e| {
         eprintln!("Failed to initialize ChainGenerator. Error: {e}");
+
         EXIT_IO_OR_PARSE
     })?;
 
-    chaingen.start().await.map_err(|e| {
+    chaingen.start().map_err(|e| {
         eprintln!("Failed during ChainGenerator run. Error: {e}");
+
         EXIT_UNKNOWN
     })
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
     // Set the default log level to info if RUST_LOG is not set
     let env_layer = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
-        .from_env_lossy()
-        .add_directive("fjall=error".parse().unwrap())
-        .add_directive("lsm_tree=error".parse().unwrap());
+        .from_env_lossy();
 
     if use_json_logs() {
         tracing_subscriber::registry()
@@ -141,7 +145,7 @@ async fn main() -> ExitCode {
 
     // process command
     let cmd_result = match cli.cmd {
-        DevkitCommand::Chaingen { config_path } => run_chaingen(config_path).await,
+        DevkitCommand::Chaingen { config_path } => run_chaingen(config_path),
         DevkitCommand::Loadgen { .. } => {
             eprintln!("Loadgen is not yet implemented.");
             Err(EXIT_UNKNOWN)

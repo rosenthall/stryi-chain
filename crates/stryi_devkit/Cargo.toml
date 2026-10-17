@@ -16,7 +16,6 @@ serde_json = { workspace = true }
 stryi_core = { path = "../stryi_core" }
 stryi_storage = { path = "../stryi_storage", features = ["chaingen"] }
 toml = "1.1.3"
-tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }
 tracing-subscriber = { workspace = true }
 rand = { workspace = true }
 rand_chacha = "0.10.0"

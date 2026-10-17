@@ -12,8 +12,8 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::collections::HashSet;
 use std::time::Instant;
 use stryi_core::block::{Block, BlockHash};
-use stryi_core::consensus::BlockStorage;
 use stryi_core::difficulty::{MAX_FUTURE_BLOCK_TIME_SECS, median_time_past};
+use stryi_core::storage::{BlockStorage, StorageReader};
 use stryi_core::transactions::{
     OutPoint, Transaction, TransactionData, TransactionKind, TransactionOut,
 };
@@ -22,10 +22,7 @@ use tracing::{debug, info, warn};
 impl ChainGenerator {
     /// Generates a deterministic and valid block at `height` that has only one payment transaction which evenly distributes all the balance of the funding account.
     /// It uses all the existing UTXOs outputs of funder.
-    pub async fn build_distributing_block(
-        &self,
-        state: &mut GenerationState,
-    ) -> Result<Block, String> {
+    pub fn build_distributing_block(&self, state: &mut GenerationState) -> Result<Block, String> {
         if !state.account_utxos.is_empty() {
             return Err(
                 "Distributor block can only be built as the first generated block".to_string(),
@@ -38,10 +35,9 @@ impl ChainGenerator {
 
         // Get the current tip to build on: it provides the parent, timestamp and version
         let (prev_block, hash_threshold, median_time) = {
-            let s = self.storage.read().await;
+            let s = self.storage.read().map_err(|e| e.to_string())?;
             let prev_block = s
                 .get_block_by_height(self.pre_generation_height)
-                .await
                 .map_err(|e| format!("Failed to read previous block for distributor: {}", e))?
                 .ok_or_else(|| {
                     format!(
@@ -54,12 +50,10 @@ impl ChainGenerator {
             // the parent, so a resumed generation and the validator agree.
             let hash_threshold = self
                 .difficulty_calc
-                .next_hash_threshold(&*s, prev_block.block_hash())
-                .await
+                .next_hash_threshold(&s, prev_block.block_hash())
                 .map_err(|e| format!("Failed to compute next hash threshold: {e}"))?;
 
-            let median_time = median_time_past(&*s, prev_block.block_hash())
-                .await
+            let median_time = median_time_past(&s, prev_block.block_hash())
                 .map_err(|e| format!("Failed to read distributor timestamp history: {e}"))?;
 
             (prev_block, hash_threshold, median_time)
@@ -73,6 +67,7 @@ impl ChainGenerator {
             median_time,
             generation_now_secs()?,
         )?;
+
         let version = prev_block.header.version;
         let subsidy = consts.block_subsidy(distributor_chain_height);
 
@@ -91,6 +86,7 @@ impl ChainGenerator {
 
         let dist_tx = generate_distributing_transaction(state)
             .map_err(|e| format!("Failed to generate distributing transaction: {}", e))?;
+
         info!(
             "Distribution transaction created with {} inputs and {} outputs",
             dist_tx.data.inputs.len(),
@@ -127,7 +123,7 @@ impl ChainGenerator {
     ///
     /// Returns an error if the requested height is reserved, the previous block cannot be loaded,
     /// the configured miner address is invalid, or block mining fails.
-    pub async fn build_block(
+    pub fn build_block(
         &self,
         height: u64,
         rng: &mut ChaCha8Rng,
@@ -138,26 +134,26 @@ impl ChainGenerator {
                 "build_block called with height=0 (genesis) or 1 (distributor)".to_string(),
             );
         }
-        // Hold a shared lock long enough to load the previous block.
-        let storage_guard = self.storage.read().await;
 
-        // Load previous block once
-        let prev = storage_guard
-            .get_block_by_height(height - 1)
-            .await
-            .map_err(|e| format!("cannot read prev block at height {}: {e}", height - 1))?
-            .ok_or_else(|| format!("prev block at height {} not found", height - 1))?;
+        // Parent, difficulty and timestamp history must belong to the same branch view.
+        let (prev, hash_threshold, median_time) = {
+            let view = self.storage.read().map_err(|e| e.to_string())?;
+            let prev = view
+                .get_block_by_height(height - 1)
+                .map_err(|e| format!("cannot read prev block at height {}: {e}", height - 1))?
+                .ok_or_else(|| format!("prev block at height {} not found", height - 1))?;
 
-        // Consensus fields for this height, from the same view as the parent.
-        let hash_threshold = self
-            .difficulty_calc
-            .next_hash_threshold(&*storage_guard, prev.block_hash())
-            .await
-            .map_err(|e| format!("cannot compute next hash threshold: {e}"))?;
+            // Consensus fields for this height, from the same view as the parent.
+            let hash_threshold = self
+                .difficulty_calc
+                .next_hash_threshold(&view, prev.block_hash())
+                .map_err(|e| format!("cannot compute next hash threshold: {e}"))?;
 
-        let median_time = median_time_past(&*storage_guard, prev.block_hash())
-            .await
-            .map_err(|e| format!("cannot read generation timestamp history: {e}"))?;
+            let median_time = median_time_past(&view, prev.block_hash())
+                .map_err(|e| format!("cannot read generation timestamp history: {e}"))?;
+
+            (prev, hash_threshold, median_time)
+        };
 
         // Add deterministic variance to block times using the RNG
         let base_time = self.config.blocks.average_block_time_secs;
@@ -346,6 +342,7 @@ fn mine_block_parallel_ordered(
 ) -> Result<(), String> {
     let last_saved_height = Some(block.header.height.saturating_sub(1));
     check_generation_deadline(generation_deadline, last_saved_height)?;
+
     let threshold = block.header.hash_threshold;
 
     // Take a snapshot of the header without changing the shared `block` during the search.
@@ -356,6 +353,7 @@ fn mine_block_parallel_ordered(
         if generation_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return true;
         }
+
         let mut hdr = base_header;
         hdr.nonce = nonce;
 
@@ -365,8 +363,10 @@ fn mine_block_parallel_ordered(
     });
 
     check_generation_deadline(generation_deadline, last_saved_height)?;
+
     if let Some(nonce) = found {
         block.header.nonce = nonce;
+
         return Ok(());
     }
 

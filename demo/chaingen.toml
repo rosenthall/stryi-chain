@@ -1,4 +1,5 @@
 [chain]
+chain_name = "demo"
 num_blocks = 20
 # Optional generation time limit in seconds; omit for no limit.
 # max_generation_time_secs = 300
