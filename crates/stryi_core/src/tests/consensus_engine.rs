@@ -6,6 +6,7 @@ use crate::consensus::{
 };
 use crate::difficulty::{ChainWork, HashThreshold};
 use crate::error::StryiCoreError;
+use crate::storage::StorageReader;
 use crate::storage::StryiInMemoryStorage;
 use crate::tests::{
     keypair_from_seed, make_block_mined, make_coinbase_tx, make_engine, make_genesis_tx,
@@ -23,13 +24,13 @@ fn genesis_outpoint(genesis: &crate::block::Block) -> OutPoint {
     }
 }
 
-#[tokio::test]
-async fn test_on_block_rejects_block_with_overspending_transaction() {
+#[test]
+fn test_on_block_rejects_block_with_overspending_transaction() {
     let consts = ConsensusConsts::default();
     let (alice_key, alice_addr) = keypair_from_seed(1);
     let (miner_key, miner_addr) = keypair_from_seed(0);
     let (genesis, db) = make_test_genesis(&[(alice_addr, 1_000)], consts);
-    let mut engine = make_engine(db, consts).await;
+    let mut engine = make_engine(db, consts);
 
     let coinbase = make_coinbase_tx(
         &miner_key,
@@ -52,7 +53,7 @@ async fn test_on_block_rejects_block_with_overspending_transaction() {
         genesis.block_hash(),
     );
 
-    let verdict = engine.on_block(block).await.unwrap();
+    let verdict = engine.on_block(block).unwrap();
     match verdict {
         ConsensusVerdict::Rejected(StryiCoreError::TxInsufficientInputValue {
             input_sum,
@@ -68,14 +69,14 @@ async fn test_on_block_rejects_block_with_overspending_transaction() {
     }
 }
 
-#[tokio::test]
-async fn test_on_block_rejects_block_with_wrong_owner() {
+#[test]
+fn test_on_block_rejects_block_with_wrong_owner() {
     let consts = ConsensusConsts::default();
     let (_, alice_addr) = keypair_from_seed(1);
     let (bob_key, bob_addr) = keypair_from_seed(2);
     let (miner_key, miner_addr) = keypair_from_seed(0);
     let (genesis, db) = make_test_genesis(&[(alice_addr, 100_000)], consts);
-    let mut engine = make_engine(db, consts).await;
+    let mut engine = make_engine(db, consts);
 
     let coinbase = make_coinbase_tx(
         &miner_key,
@@ -98,7 +99,7 @@ async fn test_on_block_rejects_block_with_wrong_owner() {
         genesis.block_hash(),
     );
 
-    let verdict = engine.on_block(block).await.unwrap();
+    let verdict = engine.on_block(block).unwrap();
     match verdict {
         // In block validation: expected = utxo.owner (Alice), actual = signer (Bob)
         ConsensusVerdict::Rejected(StryiCoreError::TxWrongOwner { expected, actual }) => {
@@ -110,12 +111,12 @@ async fn test_on_block_rejects_block_with_wrong_owner() {
     }
 }
 
-#[tokio::test]
-async fn test_on_block_buffers_weaker_fork() {
+#[test]
+fn test_on_block_buffers_weaker_fork() {
     let consts = ConsensusConsts::default();
     let (miner_key, miner_addr) = keypair_from_seed(0);
     let (genesis, db) = make_test_genesis(&[(miner_addr, 100_000)], consts);
-    let mut engine = make_engine(db, consts).await;
+    let mut engine = make_engine(db, consts);
 
     // build a 3-block canonical chain
     let mut prev = genesis.block_hash();
@@ -123,7 +124,7 @@ async fn test_on_block_buffers_weaker_fork() {
         let coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(h), miner_addr, h, prev);
         let block = make_block_mined(vec![coinbase], h, consts.pow.initial_hash_threshold, prev);
         prev = block.block_hash();
-        let v = engine.on_block(block).await.unwrap();
+        let v = engine.on_block(block).unwrap();
         assert!(
             matches!(v, ConsensusVerdict::Applied { .. }),
             "Canonical block at height {h} should be Applied"
@@ -145,16 +146,16 @@ async fn test_on_block_buffers_weaker_fork() {
         genesis.block_hash(),
     );
 
-    let verdict = engine.on_block(fork_block).await.unwrap();
-    assert_eq!(verdict, ConsensusVerdict::Buffered);
+    let verdict = engine.on_block(fork_block).unwrap();
+    assert!(matches!(verdict, ConsensusVerdict::Buffered));
 }
 
-#[tokio::test]
-async fn test_on_block_causes_reorganization_when_fork_is_heavier() {
+#[test]
+fn test_on_block_causes_reorganization_when_fork_is_heavier() {
     let consts = ConsensusConsts::default();
     let (miner_key, miner_addr) = keypair_from_seed(0);
     let (genesis, db) = make_test_genesis(&[(miner_addr, 100_000)], consts);
-    let mut engine = make_engine(db, consts).await;
+    let mut engine = make_engine(db, consts);
 
     // build 1-block canonical chain
     let canonical_coinbase = make_coinbase_tx(
@@ -171,11 +172,11 @@ async fn test_on_block_causes_reorganization_when_fork_is_heavier() {
         genesis.block_hash(),
     );
     let canonical_hash = canonical_block.block_hash();
-    let v = engine.on_block(canonical_block).await.unwrap();
+    let v = engine.on_block(canonical_block).unwrap();
     match v {
-        ConsensusVerdict::Applied { chain_work } => {
+        ConsensusVerdict::Applied { transition } => {
             // Genesis work is zero, so the first applied block carries only its own work.
-            assert_eq!(chain_work, ChainWork::from(2u64));
+            assert_eq!(transition.chain_work, ChainWork::from(2u64));
         }
         other => panic!("Expected Applied for the canonical block, got: {other:?}"),
     }
@@ -197,8 +198,8 @@ async fn test_on_block_causes_reorganization_when_fork_is_heavier() {
     );
 
     // the first fork block has the same work as canonical, so it gets buffered
-    let v = engine.on_block(fork1.clone()).await.unwrap();
-    assert_eq!(v, ConsensusVerdict::Buffered);
+    let v = engine.on_block(fork1.clone()).unwrap();
+    assert!(matches!(v, ConsensusVerdict::Buffered));
 
     let fork2_coinbase = make_coinbase_tx(
         &miner_key,
@@ -215,12 +216,16 @@ async fn test_on_block_causes_reorganization_when_fork_is_heavier() {
     );
 
     // the second fork block tips the balance and causes reorg
-    let verdict = engine.on_block(fork2).await.unwrap();
+    let verdict = engine.on_block(fork2).unwrap();
     match verdict {
-        ConsensusVerdict::CausedReorganization { deleted_blocks } => {
+        ConsensusVerdict::CausedReorganization { transition } => {
             assert!(
-                deleted_blocks.values().any(|h| *h == canonical_hash),
-                "Deleted blocks should contain the original canonical block. Got: {deleted_blocks:?}"
+                transition
+                    .detached
+                    .iter()
+                    .any(|(_, hash)| *hash == canonical_hash),
+                "Deleted blocks should contain the original canonical block. Got: {:?}",
+                transition.detached
             );
         }
         other => panic!("Expected CausedReorganization, got: {other:?}"),
@@ -252,8 +257,8 @@ fn make_test_block(
     panic!("Failed to mine test block within {MAX_ATTEMPTS} attempts for the given hash threshold");
 }
 
-#[tokio::test]
-async fn coinbase_rewards_remain_distinct_and_undo_preserves_previous_reward() {
+#[test]
+fn coinbase_rewards_remain_distinct_and_undo_preserves_previous_reward() {
     use crate::storage::UndoStorage;
     use crate::transactions::UtxoProcessor;
 
@@ -261,33 +266,35 @@ async fn coinbase_rewards_remain_distinct_and_undo_preserves_previous_reward() {
     let (key, miner) = keypair_from_seed(0);
     let (_, alice) = keypair_from_seed(1);
     let (genesis, db) = make_test_genesis(&[(alice, 100_000)], consts);
-    let mut engine = make_engine(db, consts).await;
+    let mut engine = make_engine(db, consts);
     let mut parent = genesis.block_hash();
     let mut reward_ids = Vec::new();
+
     for height in 1..=2 {
         let tx = make_coinbase_tx(&key, consts.block_subsidy(height), miner, height, parent);
         reward_ids.push(tx.data.hash());
         let block = make_test_block(vec![tx], height, consts.pow.initial_hash_threshold, parent);
         parent = block.block_hash();
         assert!(matches!(
-            engine.on_block(block).await.unwrap(),
+            engine.on_block(block).unwrap(),
             ConsensusVerdict::Applied { .. }
         ));
     }
+
     assert_ne!(reward_ids[0], reward_ids[1]);
-    let mut db = engine.db.write().await;
-    let rewards = db.get_utxos_for_address(miner).await.unwrap();
+
+    let mut db = engine.db.read().unwrap();
+    let rewards = db.get_utxos_for_address(miner).unwrap();
     assert_eq!(rewards.len(), 2);
     assert_eq!(
         rewards.values().map(|u| u.value).sum::<u64>(),
         2 * consts.block_subsidy(1)
     );
-    let undo = db.get_block_undo(parent).await.unwrap().unwrap();
-    UtxoProcessor::new()
-        .rewind_block(undo, &mut *db)
-        .await
-        .unwrap();
-    let remaining = db.get_utxos_for_address(miner).await.unwrap();
+
+    let undo = db.get_block_undo(parent).unwrap().unwrap();
+    UtxoProcessor::new().rewind_block(undo, &mut db).unwrap();
+
+    let remaining = db.get_utxos_for_address(miner).unwrap();
     assert_eq!(remaining.len(), 1);
     assert!(remaining.contains_key(&OutPoint {
         txid: reward_ids[0],
@@ -302,15 +309,16 @@ struct EngineSnapshot {
     miner_utxos: HashMap<OutPoint, UTXO>,
 }
 
-async fn capture_snapshot(
+fn capture_snapshot(
     engine: &StryiConsensusEngine<StryiInMemoryStorage>,
     alice_addr: AccountAddress,
     miner_addr: AccountAddress,
 ) -> EngineSnapshot {
-    let db = engine.db.read().await;
+    let db = engine.db.read().unwrap();
     let tip = engine.tip();
-    let alice_utxos = db.get_utxos_for_address(alice_addr).await.unwrap();
-    let miner_utxos = db.get_utxos_for_address(miner_addr).await.unwrap();
+    let alice_utxos = db.get_utxos_for_address(alice_addr).unwrap();
+    let miner_utxos = db.get_utxos_for_address(miner_addr).unwrap();
+
     EngineSnapshot {
         tip,
         alice_utxos,
@@ -394,8 +402,8 @@ fn test_validate_block_structure_scenarios() {
     }
 }
 
-#[tokio::test]
-async fn test_on_block_rejects_canonical_blocks_with_extra_minting_txs() {
+#[test]
+fn test_on_block_rejects_canonical_blocks_with_extra_minting_txs() {
     let consts = ConsensusConsts::default();
     let (alice_key, alice_addr) = keypair_from_seed(1);
     let (miner_key, miner_addr) = keypair_from_seed(0);
@@ -415,8 +423,8 @@ async fn test_on_block_rejects_canonical_blocks_with_extra_minting_txs() {
 
     for (name, extra_tx, expected_error) in cases {
         let (genesis, db) = make_test_genesis(&[(alice_addr, 100_000)], consts);
-        let mut engine = make_engine(db, consts).await;
-        let snapshot_before = capture_snapshot(&engine, alice_addr, miner_addr).await;
+        let mut engine = make_engine(db, consts);
+        let snapshot_before = capture_snapshot(&engine, alice_addr, miner_addr);
 
         let coinbase = make_coinbase_tx(
             &miner_key,
@@ -432,7 +440,7 @@ async fn test_on_block_rejects_canonical_blocks_with_extra_minting_txs() {
             genesis.block_hash(),
         );
 
-        let verdict = engine.on_block(block).await.unwrap();
+        let verdict = engine.on_block(block).unwrap();
         match verdict {
             ConsensusVerdict::Rejected(StryiCoreError::ConsensusValidationFailed { details }) => {
                 assert_eq!(
@@ -443,7 +451,7 @@ async fn test_on_block_rejects_canonical_blocks_with_extra_minting_txs() {
             other => panic!("{name}: expected Rejected(ConsensusValidationFailed), got: {other:?}"),
         }
 
-        let snapshot_after = capture_snapshot(&engine, alice_addr, miner_addr).await;
+        let snapshot_after = capture_snapshot(&engine, alice_addr, miner_addr);
         assert_eq!(
             snapshot_before, snapshot_after,
             "{name}: canonical tip and UTXO state must remain unchanged"
@@ -451,24 +459,24 @@ async fn test_on_block_rejects_canonical_blocks_with_extra_minting_txs() {
     }
 }
 
-#[tokio::test]
-async fn test_on_block_rejects_fork_block_with_additional_coinbase() {
+#[test]
+fn test_on_block_rejects_fork_block_with_additional_coinbase() {
     let consts = ConsensusConsts::default();
     let (alice_key, alice_addr) = keypair_from_seed(1);
     let (miner_key, miner_addr) = keypair_from_seed(0);
     let (genesis, db) = make_test_genesis(&[(miner_addr, 100_000)], consts);
-    let mut engine = make_engine(db, consts).await;
+    let mut engine = make_engine(db, consts);
 
     let mut prev = genesis.block_hash();
     for h in 1..=2 {
         let coinbase = make_coinbase_tx(&miner_key, consts.block_subsidy(h), miner_addr, h, prev);
         let block = make_test_block(vec![coinbase], h, consts.pow.initial_hash_threshold, prev);
         prev = block.block_hash();
-        let v = engine.on_block(block).await.unwrap();
+        let v = engine.on_block(block).unwrap();
         assert!(matches!(v, ConsensusVerdict::Applied { .. }));
     }
 
-    let snapshot_before = capture_snapshot(&engine, alice_addr, miner_addr).await;
+    let snapshot_before = capture_snapshot(&engine, alice_addr, miner_addr);
 
     // Fork block branches from genesis (known canonical ancestor that is not current tip).
     let fork_coinbase1 = make_coinbase_tx(
@@ -486,7 +494,7 @@ async fn test_on_block_rejects_fork_block_with_additional_coinbase() {
         genesis.block_hash(),
     );
 
-    let verdict = engine.on_block(fork_block).await.unwrap();
+    let verdict = engine.on_block(fork_block).unwrap();
     match verdict {
         ConsensusVerdict::Rejected(StryiCoreError::ConsensusValidationFailed { details }) => {
             assert_eq!(
@@ -500,7 +508,7 @@ async fn test_on_block_rejects_fork_block_with_additional_coinbase() {
         }
     }
 
-    let snapshot_after = capture_snapshot(&engine, alice_addr, miner_addr).await;
+    let snapshot_after = capture_snapshot(&engine, alice_addr, miner_addr);
     assert_eq!(
         snapshot_before, snapshot_after,
         "Canonical tip and UTXOs must remain unchanged after rejecting fork block"
@@ -512,37 +520,38 @@ async fn test_on_block_rejects_fork_block_with_additional_coinbase() {
     );
 }
 
-#[tokio::test]
-async fn test_genesis_initialization_succeeds() {
+#[test]
+fn test_genesis_initialization_succeeds() {
     let consts = ConsensusConsts::default();
     let (_, alice_addr) = keypair_from_seed(1);
     let (genesis, db) = make_test_genesis(&[(alice_addr, 50_000)], consts);
+
     assert!(genesis.header.is_genesis());
     assert!(validate_block_structure(&genesis).is_ok());
 
-    let engine = make_engine(db, consts).await;
+    let engine = make_engine(db, consts);
     let tip = engine.tip();
     // Genesis contributes zero work to the chain.
     assert_eq!(tip, Some((0, genesis.block_hash(), ChainWork::ZERO)));
+
     let alice_utxos = engine
         .db
         .read()
-        .await
+        .unwrap()
         .get_utxos_for_address(alice_addr)
-        .await
         .unwrap();
     assert_eq!(alice_utxos.len(), 1);
     assert_eq!(alice_utxos.values().next().unwrap().value, 50_000);
 }
 
-#[tokio::test]
-async fn test_on_block_rejects_genesis_marker_at_normal_height() {
+#[test]
+fn test_on_block_rejects_genesis_marker_at_normal_height() {
     let consts = ConsensusConsts::default();
     let (_, alice_addr) = keypair_from_seed(1);
     let (miner_key, miner_addr) = keypair_from_seed(0);
     let (genesis, db) = make_test_genesis(&[(alice_addr, 100_000)], consts);
-    let mut engine = make_engine(db, consts).await;
-    let snapshot_before = capture_snapshot(&engine, alice_addr, miner_addr).await;
+    let mut engine = make_engine(db, consts);
+    let snapshot_before = capture_snapshot(&engine, alice_addr, miner_addr);
 
     // A normal-height header carrying the genesis marker would hash to the zero
     // block hash and claim zero genesis work while skipping proof of work.
@@ -561,7 +570,7 @@ async fn test_on_block_rejects_genesis_marker_at_normal_height() {
     );
     block.header.genesis_state = Some(GenesisState::default());
 
-    let verdict = engine.on_block(block).await.unwrap();
+    let verdict = engine.on_block(block).unwrap();
 
     match verdict {
         ConsensusVerdict::Rejected(StryiCoreError::ConsensusValidationFailed { details }) => {
@@ -575,7 +584,7 @@ async fn test_on_block_rejects_genesis_marker_at_normal_height() {
         ),
     }
 
-    let snapshot_after = capture_snapshot(&engine, alice_addr, miner_addr).await;
+    let snapshot_after = capture_snapshot(&engine, alice_addr, miner_addr);
     assert_eq!(
         snapshot_before, snapshot_after,
         "Canonical tip and UTXOs must remain unchanged after the rejected marker block"

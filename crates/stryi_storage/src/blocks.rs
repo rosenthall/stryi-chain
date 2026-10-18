@@ -1,533 +1,106 @@
-use crate::StryiStorage;
-use crate::error::StryiStorageError;
-use crate::index::BlockIndexData;
-use crate::stats::StorageStateInformation;
-use crate::tx_index::TransactionIndexData;
-use fjall::Slice;
-use futures::future::BoxFuture;
-use std::collections::HashMap;
-use std::convert::TryFrom;
-use std::ops::RangeInclusive;
+use crate::{ReadSource, StorageView};
 use stryi_core::block::{Block, BlockHash};
-use stryi_core::difficulty::add_work;
-use stryi_core::storage::BlockStorage;
+use stryi_core::storage::{
+    BlockIndexData, BlockStorage, ConfirmedTransaction, StorageError, TransactionIndexData,
+    verify_genesis_work_shape,
+};
+use stryi_core::transactions::TransactionHash;
 
-impl StryiStorage {
-    fn height_to_key(height: usize) -> Result<[u8; 8], StryiStorageError> {
-        u64::try_from(height)
-            .map(|h| h.to_be_bytes())
-            .map_err(|_| StryiStorageError::InvalidHeight(height))
-    }
-
-    fn bytes_to_block_hash(bytes: &[u8]) -> Result<BlockHash, StryiStorageError> {
-        BlockHash::try_from(bytes.to_vec()).map_err(|e| {
-            StryiStorageError::IncorrectHashValue(format!(
-                "Invalid block hash data in database: {}",
-                e
-            ))
-        })
-    }
-
-    fn serialize_block(block: &Block) -> Result<Vec<u8>, StryiStorageError> {
-        postcard::to_stdvec(block).map_err(StryiStorageError::SerializationError)
-    }
-
-    fn deserialize_block(data: &[u8]) -> Result<Block, StryiStorageError> {
-        let block = postcard::from_bytes(data).map_err(StryiStorageError::DeserializationError)?;
-        Ok(block)
-    }
-}
-
-impl BlockStorage for StryiStorage {
-    type StorageError = StryiStorageError;
-
-    fn put_block(&mut self, block: &Block) -> BoxFuture<'_, Result<(), Self::StorageError>> {
-        let block = block.clone();
-
-        Box::pin(async move {
-            let serialized_block = Self::serialize_block(&block)?;
-            let height_key = Self::height_to_key(block.header.height as usize)?;
-            let block_hash = block.block_hash();
-            let current_state = self.get_current_storage_state()?;
-
-            // Validate genesis before trusting its zero work.
-            if block.header.is_genesis() {
-                crate::validate_genesis(&block)
-                    .map_err(|e| StryiStorageError::InvalidGenesisBlock(e.to_string()))?;
-            }
-
-            let work = block.work();
-
-            // The checked sum fails here, before the batch below writes anything.
-            let new_chain_work = add_work(current_state.chain_work, work)
-                .map_err(|e| StryiStorageError::ChainWorkOverflow(e.to_string()))?;
-
-            let new_state = StorageStateInformation {
-                latest_block: (block.header.height as usize, block_hash),
-                last_update_time: block.header.timestamp as usize,
-                blocks_count: current_state.blocks_count + 1,
-                chain_work: new_chain_work,
-            };
-
-            let index_data = BlockIndexData {
-                parent_hash: block.header.previous_block_hash,
-                height: block.header.height,
-                chain_work: new_chain_work,
-            };
-
-            let index_bytes = postcard::to_stdvec(&index_data)?;
-            // Keep block data, indexes, and chain state in one atomic batch.
-            let mut batch = self.db.batch();
-
-            batch.insert(
-                &self.blocks_partition,
-                Slice::from(&block_hash.data[..]),
-                Slice::from(serialized_block),
-            );
-
-            batch.insert(
-                &self.heights_partition,
-                Slice::from(&height_key[..]),
-                Slice::from(&block_hash.data[..]),
-            );
-
-            batch.insert(
-                &self.block_index_partition,
-                Slice::from(&block_hash.data[..]),
-                Slice::from(index_bytes),
-            );
-
-            for (tx_index, transaction) in block.data.transactions.iter().enumerate() {
-                let tx_hash = transaction.data.hash();
-                let tx_index_data = TransactionIndexData {
-                    block_hash,
-                    block_height: block.header.height,
-                    tx_index: tx_index as u32,
-                };
-                let tx_index_bytes = postcard::to_stdvec(&tx_index_data)?;
-
-                batch.insert(
-                    &self.transaction_index_partition,
-                    Slice::from(&tx_hash.data[..]),
-                    Slice::from(tx_index_bytes),
-                );
-            }
-
-            let state_key = fjall::UserKey::from([0u8; 32]);
-            let state_value: fjall::UserValue = new_state.try_into()?;
-            batch.insert(&self.stats_partition, state_key, state_value);
-
-            batch.commit().map_err(StryiStorageError::FjallError)?;
-            Ok(())
-        })
-    }
-
-    fn batch_get_blocks_by_hashes(
-        &self,
-        hashes: Vec<BlockHash>,
-    ) -> BoxFuture<'_, Result<HashMap<BlockHash, Block>, Self::StorageError>> {
-        // Fjall does not expose a bulk read here, so this loops over hashes.
-        Box::pin(async move {
-            let mut result_map = HashMap::new();
-            for hash in hashes {
-                let raw = self
-                    .blocks_partition
-                    .get(Slice::from(&hash.data[..]))
-                    .map_err(StryiStorageError::FjallError)?;
-                if let Some(bytes) = raw {
-                    let block = StryiStorage::deserialize_block(&bytes)?;
-                    result_map.insert(hash, block);
-                }
-            }
-            Ok(result_map)
-        })
-    }
-
-    fn batch_get_blocks_by_heights<I>(
-        &self,
-        heights: I,
-    ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>>
-    where
-        I: IntoIterator<Item = u64> + Send,
-        I::IntoIter: Send,
-    {
-        let heights_partition = self.heights_partition.clone();
-        let blocks_partition = self.blocks_partition.clone();
-        let heights_vec: Vec<u64> = heights.into_iter().collect();
-
-        Box::pin(async move {
-            let mut result_map = HashMap::new();
-            for height in heights_vec {
-                let key = StryiStorage::height_to_key(height as usize)?;
-                if let Some(hash_bytes) = heights_partition
-                    .get(Slice::from(&key[..]))
-                    .map_err(StryiStorageError::FjallError)?
-                {
-                    let hash = StryiStorage::bytes_to_block_hash(&hash_bytes)?;
-                    if let Some(bytes) = blocks_partition
-                        .get(Slice::from(&hash.data[..]))
-                        .map_err(StryiStorageError::FjallError)?
-                    {
-                        let block = StryiStorage::deserialize_block(&bytes)?;
-                        result_map.insert(height, block);
-                    }
-                }
-            }
-            Ok(result_map)
-        })
-    }
-
-    fn blocks_range(
-        &self,
-        range: RangeInclusive<usize>,
-    ) -> BoxFuture<'_, Result<HashMap<u64, Block>, Self::StorageError>> {
-        let blocks_partition = self.blocks_partition.clone();
-        let heights_partition = self.heights_partition.clone();
-        let start = *range.start();
-        let end = *range.end();
-
-        Box::pin(async move {
-            StryiStorage::validate_range(&range)?;
-            let mut result_map = HashMap::with_capacity(end - start + 1);
-
-            for height in (start..=end).map(|n| n as u64) {
-                let key = StryiStorage::height_to_key(height as usize)?;
-                match heights_partition
-                    .get(Slice::from(&key[..]))
-                    .map_err(StryiStorageError::FjallError)?
-                {
-                    None => {
-                        return Err(StryiStorageError::NotFound(format!(
-                            "BlockHash of block with height: {height}"
-                        )));
-                    }
-
-                    Some(hash_bytes) => {
-                        let hash = StryiStorage::bytes_to_block_hash(&hash_bytes)?;
-                        match blocks_partition
-                            .get(Slice::from(&hash.data[..]))
-                            .map_err(StryiStorageError::FjallError)?
-                        {
-                            None => {
-                                return Err(StryiStorageError::NotFound(format!(
-                                    "block with hash: {hash}"
-                                )));
-                            }
-
-                            Some(block_bytes) => {
-                                let block = StryiStorage::deserialize_block(&block_bytes)?;
-                                result_map.insert(height, block);
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(result_map)
-        })
-    }
-
-    fn block_exists(&self, hash: BlockHash) -> BoxFuture<'_, Result<bool, Self::StorageError>> {
-        Box::pin(async move {
-            let present = self
-                .blocks_partition
-                .get(Slice::from(&hash.data[..]))
-                .map_err(StryiStorageError::FjallError)?
-                .is_some();
-            Ok(present)
-        })
-    }
-}
-
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-    use crate::GenesisInitConfig;
-    use fjall::{Database, KeyspaceCreateOptions};
-    use stryi_core::address::AccountAddress;
-    use stryi_core::block::{Block, BlockHeader, GenesisState};
-    use stryi_core::difficulty::{ChainWork, DifficultyCalc, HashThreshold};
-    use stryi_core::merkletree::MerkleHash;
-    use tempfile::TempDir;
-
-    /// Helper function to create a test block with given height.
-    /// Height 0 is a real genesis block carrying the strict genesis shape.
-    fn create_test_block(height: usize) -> Block {
-        if height == 0 {
-            return Block::new_genesis(
-                1,
-                HashMap::from([(AccountAddress::new(&[1u8; 20]), 1_000_000)]),
-                GenesisState::default(),
-            );
-        }
-
-        Block {
-            header: BlockHeader {
-                version: 1,
-                merkle_root_hash: MerkleHash::empty(),
-                previous_block_hash: BlockHash::empty(),
-                height: height as u64,
-                // Explicit easy threshold, work is 2.
-                hash_threshold: HashThreshold::MAX >> 1,
-                timestamp: 1234567,
-                nonce: height as u32,
-                genesis_state: None,
-            },
-            data: stryi_core::block::BlockData {
-                transactions: vec![],
-            },
-        }
-    }
-
-    /// Helper function to create StryiStorage with temp directory
-    pub fn create_test_storage(setup_state_storage: bool) -> (StryiStorage, TempDir) {
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let db = Database::builder(temp_dir.path())
-            .open()
-            .expect("Failed to open database");
-
-        let blocks_partition = db
-            .keyspace("blocks", KeyspaceCreateOptions::default)
-            .expect("Failed to create blocks keyspace");
-
-        let heights_partition = db
-            .keyspace("heights", KeyspaceCreateOptions::default)
-            .expect("Failed to create heights keyspace");
-
-        let utxo_partition = db
-            .keyspace("utxo", KeyspaceCreateOptions::default)
-            .expect("Failed to create utxo keyspace");
-
-        let addresses_partition = db
-            .keyspace("addresses", KeyspaceCreateOptions::default)
-            .expect("Failed to create addresses keyspace");
-
-        let stats_partition = db
-            .keyspace("stats", KeyspaceCreateOptions::default)
-            .expect("Failed to create stats keyspace");
-
-        let undo_partition = db
-            .keyspace("undo", KeyspaceCreateOptions::default)
-            .expect("Failed to create undo keyspace");
-
-        let block_index_partition = db
-            .keyspace("block_indexes", KeyspaceCreateOptions::default)
-            .expect("Failed to create block_indexes keyspace");
-        let transaction_index_partition = db
-            .keyspace("transaction_indexes", KeyspaceCreateOptions::default)
-            .expect("Failed to create transaction index keyspace");
-
-        let mut storage = StryiStorage {
-            db,
-            blocks_partition,
-            heights_partition,
-            utxo_partition,
-            addresses_partition,
-            stats_partition,
-            undo_partition,
-            block_index_partition,
-            transaction_index_partition,
+impl<R: ReadSource> BlockStorage for StorageView<'_, R> {
+    fn get_block_hash_by_height(&self, height: u64) -> Result<Option<BlockHash>, StorageError> {
+        let Some(bytes) = self.raw_get("heights", &height.to_be_bytes())? else {
+            return Ok(None);
         };
 
-        // Some tests require correct storage state, while some of them creating own, so I kept this optional
-        if setup_state_storage {
-            // Create an empty initial state
-            let initial_state = StorageStateInformation {
-                latest_block: (0, BlockHash::empty()),
-                last_update_time: 0,
-                blocks_count: 0,
-                chain_work: ChainWork::ZERO,
-            };
+        let bytes: [u8; 32] = bytes.try_into().map_err(|_| {
+            self.report_corruption(format!("Invalid block hash at height {height}"))
+        })?;
+        let hash = BlockHash::try_from(bytes.as_slice()).map_err(|error| {
+            self.report_corruption(format!("Invalid block hash at height {height}: {error}"))
+        })?;
 
-            // Store initial state
-            storage.update_storage_state(initial_state).unwrap();
-        }
-
-        (storage, temp_dir)
+        Ok(Some(hash))
     }
 
-    #[tokio::test]
-    async fn test_stryi_block_storage_basics() -> Result<(), StryiStorageError> {
-        let (mut storage, _temp_dir) = create_test_storage(true);
-
-        // Test 1: Store and retrieve genesis block
-        let genesis = create_test_block(0);
-        storage.put_block(&genesis).await?;
-
-        let retrieved = storage
-            .get_block_by_hash(genesis.block_hash())
-            .await?
-            .expect("Must return `Some(block)`");
-        assert_eq!(retrieved.header.height, 0);
-        assert!(retrieved.header.is_genesis());
-
-        // Test 2: Store more blocks
-        for i in 1..=5 {
-            storage.put_block(&create_test_block(i)).await?;
-        }
-
-        // Test 3: Get by height
-        let block3 = storage
-            .get_block_by_height(3)
-            .await?
-            .expect("Must return `Some(block)`");
-        assert_eq!(block3.header.height, 3);
-
-        // Test 4: Latest block TODO: refactor get_latest_block as well
-        // let latest = storage.get_latest_block().await?;
-        // assert_eq!(latest.header.height, 5);
-
-        // Test 5: Get valid range
-        let range = storage.blocks_range(2usize..=4usize).await?;
-        assert_eq!(range.len(), 3);
-
-        assert_eq!(range[&2].header.height, 2);
-        assert_eq!(range[&3].header.height, 3);
-        assert_eq!(range[&4].header.height, 4);
-
-        // Check that storage state exists
-        assert!(storage.get_current_storage_state().is_ok(),);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_stryi_storage_gaps() -> Result<(), StryiStorageError> {
-        let (mut storage, _temp_dir) = create_test_storage(true);
-
-        // Insert blocks 0,1,2,3,5 (gap at 4)
-        for i in 0..=3 {
-            storage.put_block(&create_test_block(i)).await?;
-        }
-        storage.put_block(&create_test_block(5)).await?;
-
-        // Test: Range that includes gap
-        let empty_range = storage.blocks_range(3usize..=5usize).await;
-        assert!(empty_range.is_err()); // should return error because of a gap
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_chain_work_overflow_fails_before_writes() -> Result<(), StryiStorageError> {
-        let (mut storage, _temp_dir) = create_test_storage(true);
-
-        // Saturate the persisted work so the next block's work cannot be added.
-        let saturated = StorageStateInformation {
-            latest_block: (0, BlockHash::empty()),
-            last_update_time: 0,
-            blocks_count: 0,
-            chain_work: ChainWork::MAX,
+    fn get_block_by_hash(&self, hash: BlockHash) -> Result<Option<Block>, StorageError> {
+        let Some(block): Option<Block> = self.get("blocks", &hash.data)? else {
+            return Ok(None);
         };
-        storage.update_storage_state(saturated.clone())?;
 
-        let block = create_test_block(7);
-        let block_hash = block.block_hash();
+        verify_genesis_work_shape(&block)
+            .map_err(|error| self.report_corruption(error.to_string()))?;
+        if block.block_hash() != hash {
+            return Err(self.report_corruption(format!("Block body does not match key {hash}")));
+        }
 
-        let err = storage
-            .put_block(&block)
-            .await
-            .expect_err("chain work overflow must not be accepted");
-        assert!(
-            matches!(err, StryiStorageError::ChainWorkOverflow(_)),
-            "unexpected error: {err:?}"
-        );
-
-        // The checked sum fails before the batch: stats and all indexes stay intact.
-        assert_eq!(storage.get_current_storage_state()?, saturated);
-        assert!(!storage.block_exists(block_hash).await?);
-        assert!(!storage.has_block_index(&block_hash)?);
-        assert!(storage.get_block_by_height(7).await?.is_none());
-
-        Ok(())
+        Ok(Some(block))
     }
 
-    #[tokio::test]
-    async fn test_invalid_pow_params_rejected_before_writes_and_reopen_recovers()
-    -> Result<(), StryiStorageError> {
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let path = temp_dir.path().join("db");
-
-        let mut bad = GenesisInitConfig::new_test();
-        bad.genesis_state.consensus_consts.pow.target_spacing_secs = 0;
-
-        // A genesis with invalid PoW params must be rejected on admission.
-        let err = match StryiStorage::initialize_in_path(path.clone(), Some(bad.clone())).await {
-            Ok(_) => panic!("genesis with target_spacing_secs = 0 must be rejected"),
-            Err(e) => e,
+    fn get_block_by_height(&self, height: u64) -> Result<Option<Block>, StorageError> {
+        let Some(hash) = self.get_block_hash_by_height(height)? else {
+            return Ok(None);
         };
-        assert!(
-            matches!(err, StryiStorageError::InvalidGenesisBlock(_)),
-            "unexpected error: {err:?}"
-        );
 
-        // The rejected attempt must have no durable effect: the corrected config
-        // initializes a valid genesis instead of being ignored.
-        let storage =
-            StryiStorage::initialize_in_path(path.clone(), Some(GenesisInitConfig::new_test()))
-                .await?;
-        let genesis = storage
-            .get_block_by_height(0)
-            .await?
-            .expect("corrected config must initialize genesis");
-        let pow = genesis
-            .header
-            .genesis_state
-            .expect("genesis carries state")
-            .consensus_consts
-            .pow;
-        assert_eq!(pow.target_spacing_secs, 10);
-        assert!(DifficultyCalc::new(pow).is_ok());
+        let block = self.get_block_by_hash(hash)?.ok_or_else(|| {
+            self.report_corruption(format!("Height {height} references absent block {hash}"))
+        })?;
+        if block.header.height != height {
+            return Err(self.report_corruption(format!(
+                "Height {height} references a block at height {}",
+                block.header.height
+            )));
+        }
 
-        // A direct genesis initialization reports the same rejection without writes.
-        let mut fresh =
-            StryiStorage::initialize_in_path(temp_dir.path().join("fresh-db"), None).await?;
-        let err = fresh
-            .init_with_genesis(bad)
-            .await
-            .expect_err("direct genesis init must reject invalid PoW params");
-        assert!(
-            matches!(err, StryiStorageError::InvalidGenesisBlock(_)),
-            "unexpected error: {err:?}"
-        );
-        assert!(fresh.get_block_by_height(0).await?.is_none());
-        assert_eq!(fresh.get_current_storage_state()?.blocks_count, 0);
-
-        Ok(())
+        Ok(Some(block))
     }
 
-    #[tokio::test]
-    async fn test_malformed_genesis_shape_rejected_by_validate_and_put_block()
-    -> Result<(), StryiStorageError> {
-        let cfg = GenesisInitConfig::new_test();
-        let mut genesis = Block::new_genesis(
-            cfg.version,
-            HashMap::from_iter(cfg.wanted_balances),
-            cfg.genesis_state,
-        );
-        genesis.header.hash_threshold = HashThreshold::MAX;
-        genesis.header.timestamp = 12_345;
-        genesis.header.nonce = 7;
+    fn get_block_index(&self, hash: &BlockHash) -> Result<Option<BlockIndexData>, StorageError> {
+        self.get("block_indexes", &hash.data)
+    }
 
-        assert!(
-            crate::validate_genesis(&genesis).is_err(),
-            "a marker header without the genesis shape must fail validation"
-        );
+    fn get_transaction(
+        &self,
+        hash: &TransactionHash,
+    ) -> Result<Option<ConfirmedTransaction>, StorageError> {
+        let Some(location): Option<TransactionIndexData> =
+            self.get("transaction_indexes", &hash.data)?
+        else {
+            return Ok(None);
+        };
 
-        let (mut storage, _temp_dir) = create_test_storage(true);
-        let err = storage
-            .put_block(&genesis)
-            .await
-            .expect_err("put_block must reject a malformed genesis marker");
-        assert!(
-            matches!(err, StryiStorageError::InvalidGenesisBlock(_)),
-            "unexpected error: {err:?}"
-        );
+        // A locator is only useful when its retained body agrees. Do not require a
+        // canonical height mapping: detachment removes it before reading locators.
+        let block = self
+            .get_block_by_hash(location.block_hash)?
+            .ok_or_else(|| {
+                self.report_corruption(format!(
+                    "Transaction {hash} references absent block {}",
+                    location.block_hash
+                ))
+            })?;
+        if block.header.height != location.block_height {
+            return Err(self.report_corruption(format!(
+                "Transaction {hash} height {} disagrees with block {} height {}",
+                location.block_height, location.block_hash, block.header.height
+            )));
+        }
 
-        // The rejected write must not index, count or store the block.
-        assert!(!storage.block_exists(genesis.block_hash()).await?);
-        assert!(storage.get_block_by_height(0).await?.is_none());
-        assert_eq!(storage.get_current_storage_state()?.blocks_count, 0);
+        let transaction = block
+            .data
+            .transactions
+            .into_iter()
+            .nth(location.tx_index as usize)
+            .filter(|transaction| transaction.data.hash() == *hash)
+            .ok_or_else(|| {
+                self.report_corruption(format!(
+                    "Transaction {hash} does not match block {} index {}",
+                    location.block_hash, location.tx_index
+                ))
+            })?;
 
-        Ok(())
+        Ok(Some(ConfirmedTransaction {
+            transaction,
+            location,
+        }))
     }
 }

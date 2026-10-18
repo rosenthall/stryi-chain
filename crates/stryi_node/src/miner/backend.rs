@@ -1,12 +1,10 @@
 use futures_util::future::BoxFuture;
-use std::sync::Arc;
 use stryi_core::StryiCoreError;
 use stryi_core::block::BlockHash;
 use stryi_core::consensus::ConsensusConsts;
 use stryi_core::difficulty::{DifficultyCalc, HashThreshold, median_time_past};
-use stryi_core::storage::StorageStats;
+use stryi_core::storage::{StorageReader, StorageStats};
 use stryi_storage::StryiStorage;
-use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 
 pub struct MiningContext {
@@ -32,30 +30,34 @@ pub trait MinerBackend: Send + Sync {
 /// Concrete implementation of [`MinerBackend`] that bridges the miner
 /// to the node's storage and consensus constants.
 pub struct NodeMinerBackend {
-    pub(crate) storage: Arc<RwLock<StryiStorage>>,
+    pub(crate) storage: StryiStorage,
     pub(crate) consensus_consts: ConsensusConsts,
     pub(crate) tip_updates: broadcast::Receiver<BlockHash>,
 }
 
 impl MinerBackend for NodeMinerBackend {
     fn mining_context(&self) -> BoxFuture<'_, Result<MiningContext, StryiCoreError>> {
+        let storage = self.storage.clone();
+        let pow = self.consensus_consts.pow;
+
         Box::pin(async move {
-            let storage = self.storage.read().await;
-            let (parent_height, parent_hash) = storage
-                .tip()
-                .await
-                .map_err(|e| StryiCoreError::other(format!("cannot read chain tip: {e}")))?;
+            tokio::task::spawn_blocking(move || {
+                let view = storage.read()?;
+                let (parent_height, parent_hash) = view.tip()?;
 
-            let calc = DifficultyCalc::new(self.consensus_consts.pow)?;
-            let hash_threshold = calc.next_hash_threshold(&*storage, parent_hash).await?;
-            let median_time_past = median_time_past(&*storage, parent_hash).await?;
+                let calc = DifficultyCalc::new(pow)?;
+                let hash_threshold = calc.next_hash_threshold(&view, parent_hash)?;
+                let median_time_past = median_time_past(&view, parent_hash)?;
 
-            Ok(MiningContext {
-                parent_height,
-                parent_hash,
-                hash_threshold,
-                median_time_past,
+                Ok(MiningContext {
+                    parent_height,
+                    parent_hash,
+                    hash_threshold,
+                    median_time_past,
+                })
             })
+            .await
+            .map_err(|e| StryiCoreError::other(format!("mining context worker failed: {e}")))?
         })
     }
 

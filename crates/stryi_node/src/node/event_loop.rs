@@ -3,21 +3,21 @@ use crate::grpc::{GRPC_SERVICE_TAG, StryiSyncService, StryiSyncServiceConfig};
 use crate::grpc_services::blockchain_sync_server::BlockchainSyncServer;
 use crate::http::{HTTP_SERVICE_TAG, StryiHttpServiceConfig};
 use crate::middleware::ready::{ReadyFlag, ReadyGateLayer};
-use crate::node::ibd::ingest_ibd_batch;
+use crate::node::consensus_runtime::{ConsensusOutcome, ConsensusRuntime};
 use crate::node::lca::find_lca;
 use crate::node::miner_bridge::MinerBridge;
-use crate::node::prune_reorg_transaction_indexes;
 use crate::node::remote_peer::RemotePeer;
 use crate::node::sync::{connect_to_peer, query_sync_peers};
 use crate::tls::NodeTlsIdentity;
 use multiaddr::Multiaddr;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use stryi_core::block::{Block, BlockHash};
-use stryi_core::consensus::{ConsensusEngine, ConsensusVerdict, StryiConsensusEngine};
+use stryi_core::consensus::StryiConsensusEngine;
 use stryi_core::difficulty::ChainWork;
 use stryi_core::mempool::MemPool;
-use stryi_core::storage::StorageStats;
+use stryi_core::storage::{BlockStorage, StorageReader, StorageStats};
 use stryi_network::{
     BroadcastBlock, ChainTipAnnouncement, NetworkCommand, NetworkEvent, PeerId, ServiceRecord,
     ServiceTransportSecurity, StryiNetworkError,
@@ -36,7 +36,7 @@ use tracing::{debug, info, trace, warn};
 
 /// Main event loop of the node.
 pub struct EventLoop {
-    pub(crate) storage: Arc<RwLock<StryiStorage>>,
+    pub(crate) storage: StryiStorage,
     pub(crate) mempool: Arc<RwLock<MemPool>>,
     pub(crate) consensus_engine: Arc<Mutex<StryiConsensusEngine<StryiStorage>>>,
     pub(crate) sync_service_config: StryiSyncServiceConfig,
@@ -74,16 +74,26 @@ impl EventLoop {
             cancellation_token: cancel_token,
         } = self;
 
-        *grpc_is_ready.write().await = true;
-        *http_is_ready.write().await = true;
+        grpc_is_ready.store(true, Ordering::Release);
+        http_is_ready.store(true, Ordering::Release);
+
+        if storage.is_failed() || cancel_token.is_cancelled() {
+            grpc_is_ready.store(false, Ordering::Release);
+            http_is_ready.store(false, Ordering::Release);
+
+            return Err(StryiNodeError::other(
+                "node stopped before serving requests",
+            ));
+        }
+
         info!("Node synchronized. HTTP and gRPC services are now ready.");
 
         let peer_id = http_service_config.peer_id;
 
         let mut mined_blocks_receiver = miner_bridge.map(|mb| mb.mined_blocks_receiver);
 
-        let storage_for_http = Arc::clone(&storage);
-        let storage_for_grpc = Arc::clone(&storage);
+        let storage_for_http = storage.clone();
+        let storage_for_grpc = storage.clone();
         let grpc_cert_pem = tls_identity.cert_pem.clone();
         let grpc_key_pem = tls_identity.key_pem.clone();
 
@@ -95,7 +105,7 @@ impl EventLoop {
                 http_service_config.clone(),
                 mempool.clone(),
                 tx_broadcaster,
-                http_is_ready,
+                http_is_ready.clone(),
                 http_cancel,
             )
             .await
@@ -191,11 +201,13 @@ impl EventLoop {
         // it may trigger other nodes to reorganize if the local node has a better chain
         let mut last_announced_tip: Option<BlockHash> = {
             let engine = consensus_engine.lock().await;
+
             if let Some(ann) = build_tip_announcement(&engine) {
                 info!(
                     "Publishing initial chain tip: height={}, work={}",
                     ann.height, ann.chain_work
                 );
+
                 let hash = ann.tip_hash;
                 let (respond_to, rx) = oneshot::channel();
                 let _ = net_cmd
@@ -204,6 +216,7 @@ impl EventLoop {
                         respond_to,
                     })
                     .await;
+
                 if let Ok(Err(e)) = rx.await {
                     if e.is_gossipsub_insufficient_peers() {
                         info!(
@@ -213,6 +226,7 @@ impl EventLoop {
                         warn!("Failed to publish initial chain tip: {e}");
                     }
                 }
+
                 Some(hash)
             } else {
                 None
@@ -222,26 +236,40 @@ impl EventLoop {
         let sync_semaphore = Arc::new(Semaphore::new(1));
         let event_cancel = cancel_token.child_token();
         let mempool_for_events = Arc::clone(&mempool);
-        let storage_for_sync = Arc::clone(&storage);
         let sync_config_for_events = sync_service_config.clone();
+        let runtime = ConsensusRuntime {
+            engine: consensus_engine.clone(),
+            storage: storage.clone(),
+            mempool: mempool.clone(),
+            tip_updates: tip_updates_sender,
+            cancel: cancel_token.clone(),
+        };
 
+        let grpc_ready_for_events = grpc_is_ready.clone();
+        let http_ready_for_events = http_is_ready.clone();
         let event_loop_fut = async move {
             let mut tip_heartbeat = tokio::time::interval(Duration::from_secs(30));
+
             // Tick one time immediately because we already published our tip
             tip_heartbeat.tick().await;
+
+            let mut sync_tasks = tokio::task::JoinSet::new();
 
             loop {
                 tokio::select! {
                     // --- periodic chain tip announcement heartbeat ---
                     _ = tip_heartbeat.tick() => {
                         let engine = consensus_engine.lock().await;
+
                         if let Some(ann) = build_tip_announcement(&engine)
                             && last_announced_tip.as_ref() != Some(&ann.tip_hash)
                         {
                             trace!("Tip heartbeat: height={}, work={}", ann.height, ann.chain_work);
+
                             last_announced_tip = Some(ann.tip_hash);
                             let (respond_to, rx) = oneshot::channel();
                             let _ = net_cmd.send(NetworkCommand::PublishChainTip { announcement: ann, respond_to }).await;
+
                             if let Ok(Err(e)) = rx.await {
                                 if e.is_gossipsub_insufficient_peers() {
                                     info!("Skipping chain tip heartbeat publish: no gossipsub peers connected yet");
@@ -266,37 +294,20 @@ impl EventLoop {
                         info!("Transactions: {}", mined_block.data.transactions.len());
                         info!("=========================================");
 
-                        let mut engine = consensus_engine.lock().await;
-                        match engine.on_block(mined_block.clone()).await {
-                            Ok(verdict) => {
-                                info!("Mined block consensus verdict: {:?}", verdict);
-                                let deleted_blocks = match &verdict {
-                                    ConsensusVerdict::CausedReorganization { deleted_blocks } => {
-                                        Some(deleted_blocks.clone())
-                                    }
-                                    _ => None,
-                                };
+                        match runtime.apply_block(mined_block.clone()).await {
+                            Ok(None) => continue,
+                            Ok(Some(verdict)) => {
+                                log_consensus_verdict("miner", &verdict);
 
-                                if matches!(verdict,ConsensusVerdict::Applied { .. } | ConsensusVerdict::CausedReorganization { .. }) {
-                                    let is_reorg = matches!(verdict, ConsensusVerdict::CausedReorganization { .. });
-                                    let tip_ann = if is_reorg { build_tip_announcement(&engine) } else { None };
-
-                                    let _ = tip_updates_sender.send(mined_block.block_hash());
-                                    drop(engine);
-
-                                    if let Some(deleted_blocks) = deleted_blocks
-                                        && let Err(e) = prune_reorg_transaction_indexes(&storage, &deleted_blocks).await
-                                    {
-                                        warn!("Failed to prune transaction index after reorg: {e}");
-                                    }
-
-                                    let mut pool = mempool_for_events.write().await;
-                                    pool.update_on_block(mined_block.data.clone());
-                                    drop(pool);
+                                if matches!(verdict, ConsensusOutcome::Applied { .. } | ConsensusOutcome::CausedReorganization { .. }) {
+                                    let tip_ann = if matches!(verdict, ConsensusOutcome::CausedReorganization { .. }) {
+                                        build_tip_announcement(&*consensus_engine.lock().await)
+                                    } else { None };
 
                                     let wrapped = BroadcastBlock::new(mined_block, peer_id);
                                     let (respond_to, rx) = oneshot::channel();
                                     let _ = net_cmd.send(NetworkCommand::PublishBlock { block: wrapped, respond_to }).await;
+
                                     if let Ok(Err(e)) = rx.await {
                                         warn!("Failed to publish mined block: {e}");
                                     }
@@ -340,49 +351,24 @@ impl EventLoop {
                                 let orig_origin_peer_id = broadcast_block.origin_peer_id;
                                 let block = broadcast_block.block;
 
-                                let mut engine = consensus_engine.lock().await;
-                                match engine.on_block(block.clone()).await {
-                                    Ok(verdict) => {
-                                        info!("Consensus verdict: {:?}", verdict);
-                                        let deleted_blocks = match &verdict {
-                                            ConsensusVerdict::CausedReorganization { deleted_blocks } => {
-                                                Some(deleted_blocks.clone())
-                                            }
-                                            _ => None,
-                                        };
+                                match runtime.apply_block(block.clone()).await {
+                                    Ok(None) => continue,
+                                    Ok(Some(verdict)) => {
+                                        log_consensus_verdict("network", &verdict);
 
-                                        let is_reorg = matches!(verdict, ConsensusVerdict::CausedReorganization { .. });
+                                        if matches!(verdict, ConsensusOutcome::CausedReorganization { .. }) {
+                                            let ann = build_tip_announcement(&*consensus_engine.lock().await);
 
-                                        if matches!(verdict,
-                                            ConsensusVerdict::Applied { .. } | ConsensusVerdict::CausedReorganization { .. }
-                                        ) {
-                                            debug!("Block applied, updating tip and clearing mempool.");
-                                            let tip_ann = if is_reorg { build_tip_announcement(&engine) } else { None };
-
-                                            let _ = tip_updates_sender.send(block.block_hash());
-                                            drop(engine);
-
-                                            if let Some(deleted_blocks) = deleted_blocks
-                                                && let Err(e) = prune_reorg_transaction_indexes(&storage, &deleted_blocks).await
-                                            {
-                                                warn!("Failed to prune transaction index after reorg: {e}");
-                                            }
-
-                                            let mut pool = mempool_for_events.write().await;
-                                            pool.update_on_block(block.data.clone());
-                                            drop(pool);
-
-                                            if let Some(ann) = tip_ann {
+                                            if let Some(ann) = ann {
                                                 publish_reorg_tip_announcement(&net_cmd, &mut last_announced_tip, ann).await;
                                             }
-                                        } else {
-                                            drop(engine);
                                         }
 
                                         // Re-broadcast all NEW valid blocks to gossipsub.
                                         let should_relay = matches!(verdict,
-                                            ConsensusVerdict::Applied { .. } | ConsensusVerdict::Buffered | ConsensusVerdict::CausedReorganization { .. }
+                                            ConsensusOutcome::Applied { .. } | ConsensusOutcome::Buffered | ConsensusOutcome::CausedReorganization { .. }
                                         );
+
                                         if should_relay {
                                             let wrapped = BroadcastBlock::new(
                                                 block,
@@ -390,6 +376,7 @@ impl EventLoop {
                                             );
                                             let (respond_to, rx) = oneshot::channel();
                                             let _ = net_cmd.send(NetworkCommand::PublishBlock { block: wrapped, respond_to }).await;
+
                                             if let Ok(Err(e)) = rx.await {
                                                 warn!("Failed to re-broadcast block: {e}");
                                             }
@@ -403,7 +390,9 @@ impl EventLoop {
                             // -- new transaction --
                             Ok(NetworkEvent::NewTransaction(tx)) => {
                                 debug!("Received transaction from network: {:?}", tx.data.hash());
+
                                 let mut pool = mempool_for_events.write().await;
+
                                 match pool.add_transaction(tx).await {
                                     Ok(()) => debug!("Transaction added to mempool"),
                                     Err(e) => debug!("Transaction rejected by mempool: {:?}", e),
@@ -436,22 +425,16 @@ impl EventLoop {
                                         ann.chain_work, local_work, source
                                     );
 
-                                    let engine_for_sync = Arc::clone(&consensus_engine);
-                                    let storage_for_sync = Arc::clone(&storage_for_sync);
+                                    let runtime_for_sync = runtime.clone();
                                     let net_cmd_for_sync = net_cmd.clone();
-                                    let tip_sender = tip_updates_sender.clone();
                                     let sync_config = sync_config_for_events.clone();
 
-                                    tokio::task::Builder::new()
-                                        .name("peer-sync")
-                                        .spawn(async move {
-                                            match sync_from_peer(engine_for_sync, storage_for_sync, net_cmd_for_sync, tip_sender, sync_config, source).await {
-                                                Ok(()) => info!("Peer sync completed"),
-                                                Err(e) => warn!("Peer sync failed: {e:?}"),
-                                            }
-                                            drop(permit);
-                                        })
-                                        .expect("failed to spawn peer-sync task");
+                                    sync_tasks.spawn(async move {
+                                        let result = sync_from_peer(runtime_for_sync, net_cmd_for_sync, sync_config, source).await;
+                                        drop(permit);
+
+                                        result
+                                    });
                                 }
                             }
 
@@ -473,10 +456,32 @@ impl EventLoop {
 
                         }
                     }
+                    Some(result) = sync_tasks.join_next(), if !sync_tasks.is_empty() => {
+                        match result {
+                            Ok(Ok(())) => info!("Peer sync completed"),
+                            Ok(Err(e)) => warn!("Peer sync failed: {e}"),
+                            Err(e) => {
+                                runtime.storage.mark_failed();
+                                runtime.cancel.cancel();
+
+                                warn!("Peer sync task failed: {e}");
+                            }
+                        }
+                    }
                     _ = event_cancel.cancelled() => {
                         info!("Network event loop cancelled");
                         break;
                     }
+                }
+            }
+
+            runtime.cancel.cancel();
+            grpc_ready_for_events.store(false, Ordering::Release);
+            http_ready_for_events.store(false, Ordering::Release);
+
+            while let Some(result) = sync_tasks.join_next().await {
+                if let Err(e) = result {
+                    warn!("Peer sync task failed during shutdown: {e}");
                 }
             }
         };
@@ -484,6 +489,10 @@ impl EventLoop {
         let (grpc_res, http_res, _event_res) = join!(grpc_fut, http_fut, event_loop_fut);
         grpc_res?;
         http_res?;
+
+        if storage.is_failed() {
+            return Err(StryiNodeError::other("storage failed; node stopped"));
+        }
 
         Ok(())
     }
@@ -496,6 +505,36 @@ async fn recv_mined_block(rx: &mut Option<mpsc::Receiver<Block>>) -> Option<Bloc
     }
 }
 
+fn log_consensus_verdict(source: &str, verdict: &ConsensusOutcome) {
+    let (outcome, new_head, chain_work, attached, detached) = match verdict {
+        ConsensusOutcome::Applied {
+            new_head,
+            chain_work,
+        } => ("applied", new_head, chain_work, 1, 0),
+        ConsensusOutcome::CausedReorganization {
+            new_head,
+            chain_work,
+            attached,
+            detached,
+        } => ("reorganized", new_head, chain_work, *attached, *detached),
+        _ => {
+            info!(source, ?verdict, "Consensus verdict");
+            return;
+        }
+    };
+
+    info!(
+        source,
+        outcome,
+        height = new_head.0,
+        tip = %new_head.1,
+        work = %chain_work,
+        attached,
+        detached,
+        "Consensus verdict"
+    );
+}
+
 async fn publish_reorg_tip_announcement(
     net_cmd: &mpsc::Sender<NetworkCommand>,
     last_announced_tip: &mut Option<BlockHash>,
@@ -505,6 +544,7 @@ async fn publish_reorg_tip_announcement(
         "Reorg: announcing new tip height={}, work={}",
         ann.height, ann.chain_work
     );
+
     let tip_hash = ann.tip_hash;
     *last_announced_tip = Some(tip_hash);
 
@@ -515,6 +555,7 @@ async fn publish_reorg_tip_announcement(
             respond_to,
         })
         .await;
+
     if let Ok(Err(e)) = rx.await {
         if e.is_gossipsub_insufficient_peers() {
             info!("Skipping reorg chain tip publish: no gossipsub peers connected yet");
@@ -540,91 +581,112 @@ const SYNC_PEER_CONNECT_MAX_RETRIES: u32 = 10;
 const SYNC_PEER_CONNECT_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 async fn sync_from_peer(
-    consensus_engine: Arc<Mutex<StryiConsensusEngine<StryiStorage>>>,
-    storage: Arc<RwLock<StryiStorage>>,
+    runtime: ConsensusRuntime,
     net_cmd: mpsc::Sender<NetworkCommand>,
-    tip_updates_sender: Sender<BlockHash>,
     sync_config: StryiSyncServiceConfig,
     source_peer: PeerId,
 ) -> Result<(), StryiNodeError> {
-    // Retry until the source peer publishes its gRPC service, then fall back to another sync peer.
-    let (grpc_client, actual_peer) = {
-        let mut attempt = 1u32;
-        loop {
-            match connect_to_peer(&net_cmd, &sync_config, source_peer).await {
-                Ok(client) => break (client, source_peer),
-                Err(err) if attempt >= SYNC_PEER_CONNECT_MAX_RETRIES => {
-                    warn!(
-                        "Source peer {} unreachable after {} attempts, trying other peers",
-                        source_peer, SYNC_PEER_CONNECT_MAX_RETRIES
-                    );
-                    let candidates = query_sync_peers(&net_cmd, &sync_config)
-                        .await
-                        .unwrap_or_default();
+    let prepared = tokio::select! {
+        _ = runtime.cancel.cancelled() => return Ok(()),
+        result = prepare_peer_sync(&runtime, &net_cmd, &sync_config, source_peer) => result?,
+    };
 
-                    let mut found = None;
-                    for (peer_id, _) in &candidates {
-                        if *peer_id == source_peer {
-                            continue;
-                        }
-                        if let Ok(client) = connect_to_peer(&net_cmd, &sync_config, *peer_id).await
-                        {
-                            info!("Fallback: connected to peer {} for sync", peer_id);
-                            found = Some((client, *peer_id));
-                            break;
-                        }
-                    }
-                    match found {
-                        Some(pair) => break pair,
-                        None => {
-                            return Err(StryiNodeError::other(format!(
-                                "connect_to_peer failed after {} attempts: {} (no fallback peers)",
-                                SYNC_PEER_CONNECT_MAX_RETRIES, err
-                            )));
-                        }
-                    }
-                }
-                Err(err) => {
-                    warn!(
-                        "connect_to_peer attempt {}/{} for peer {} failed: {}. Retrying in {:?}...",
-                        attempt,
-                        SYNC_PEER_CONNECT_MAX_RETRIES,
-                        source_peer,
-                        err,
-                        SYNC_PEER_CONNECT_RETRY_DELAY
-                    );
-                    let (respond_to, rx) = oneshot::channel();
-                    let _ = net_cmd
-                        .send(NetworkCommand::RefreshPeerServices {
-                            peer: source_peer,
-                            respond_to,
-                        })
-                        .await;
-                    let _ = rx.await;
-                    tokio::time::sleep(SYNC_PEER_CONNECT_RETRY_DELAY).await;
-                    attempt += 1;
-                }
+    let Some((mut remote_peer, remote_height, sync_start_height)) = prepared else {
+        return Ok(());
+    };
+
+    let batch_size = sync_config.max_blocks_range_per_request;
+    let mut current_height = sync_start_height;
+
+    while current_height <= remote_height {
+        let blocks = tokio::select! {
+            _ = runtime.cancel.cancelled() => return Ok(()),
+            result = remote_peer.request_blocks_by_height_range(current_height, remote_height, batch_size as u32) => result?,
+        };
+
+        if blocks.is_empty() {
+            warn!(
+                "Peer returned empty batch at height {}, stopping",
+                current_height
+            );
+            break;
+        }
+
+        let fetched_count = blocks.len() as u64;
+
+        let verdicts = runtime.apply_blocks(blocks).await?;
+
+        for verdict in verdicts {
+            if let ConsensusOutcome::Rejected(error) = verdict {
+                return Err(StryiNodeError::other(format!(
+                    "Sync block rejected: {error}"
+                )));
             }
         }
+
+        current_height += fetched_count;
+    }
+
+    info!(
+        "Peer sync complete, synced to height {}",
+        current_height - 1
+    );
+
+    Ok(())
+}
+
+async fn prepare_peer_sync(
+    runtime: &ConsensusRuntime,
+    net_cmd: &mpsc::Sender<NetworkCommand>,
+    sync_config: &StryiSyncServiceConfig,
+    source_peer: PeerId,
+) -> Result<Option<(RemotePeer, u64, u64)>, StryiNodeError> {
+    let Some(mut remote_peer) =
+        connect_sync_peer(&runtime.cancel, net_cmd, sync_config, source_peer).await?
+    else {
+        return Ok(None);
     };
-    let mut remote_peer = RemotePeer::new(actual_peer, grpc_client);
+
+    let actual_peer = remote_peer.peer_id();
 
     let remote_chain_info = remote_peer.request_chain_info().await?;
     let remote_height = remote_chain_info.height;
 
-    let (local_tip_height, local_tip_hash) = {
-        let s = storage.read().await;
-        s.tip()
-            .await
-            .map_err(|e| StryiNodeError::other(format!("tip(): {e}")))?
+    if remote_chain_info.chain_name != sync_config.chain_name
+        || remote_chain_info.protocol_version as usize != sync_config.protocol_version
+    {
+        return Err(StryiNodeError::other(
+            "peer chain metadata does not match local configuration",
+        ));
+    }
+
+    let remote_genesis = remote_peer.request_genesis().await?;
+    let local_genesis = runtime
+        .storage
+        .read()?
+        .get_block_by_height(0)?
+        .ok_or_else(|| StryiNodeError::other("local genesis is missing"))?;
+
+    if remote_genesis != local_genesis {
+        return Err(StryiNodeError::other(
+            "peer genesis does not match the local chain",
+        ));
+    }
+
+    let (local_tip_height, local_tip_hash, local_work) = {
+        let s = runtime.storage.read()?;
+        let (height, hash) = s.tip()?;
+
+        (height, hash, s.chain_work()?)
     };
 
-    if local_tip_height >= remote_height {
+    if local_work >= remote_chain_info.chain_work {
         info!(
-            "Local height ({}) >= remote ({}), nothing to sync",
-            local_tip_height, remote_height
+            "Local work ({}) >= remote ({}), nothing to sync",
+            local_work, remote_chain_info.chain_work
         );
-        return Ok(());
+
+        return Ok(None);
     }
 
     // Compare the peer's canonical block at our tip height, not just block presence in storage.
@@ -641,14 +703,21 @@ async fn sync_from_peer(
             local_tip_height + 1,
             remote_height
         );
+
         local_tip_height + 1
     } else {
         info!(
             "Peer {} does NOT include our tip - chains diverged. Finding LCA...",
             actual_peer
         );
-        let (lca_height, lca_hash) =
-            find_lca(&storage, &mut remote_peer, remote_height, local_tip_height).await?;
+
+        let (lca_height, lca_hash) = find_lca(
+            &runtime.storage,
+            &mut remote_peer,
+            remote_height,
+            local_tip_height,
+        )
+        .await?;
 
         info!(
             "LCA found at height={}, hash={}. Syncing from {} to {}",
@@ -657,43 +726,90 @@ async fn sync_from_peer(
             lca_height + 1,
             remote_height
         );
+
         lca_height + 1
     };
 
-    let batch_size = sync_config.max_blocks_range_per_request;
-    let mut current_height = sync_start_height;
+    Ok(Some((remote_peer, remote_height, sync_start_height)))
+}
 
-    while current_height <= remote_height {
-        let blocks = remote_peer
-            .request_blocks_by_height_range(current_height, remote_height, batch_size as u32)
-            .await?;
+async fn connect_sync_peer(
+    cancel: &CancellationToken,
+    net_cmd: &mpsc::Sender<NetworkCommand>,
+    sync_config: &StryiSyncServiceConfig,
+    source_peer: PeerId,
+) -> Result<Option<RemotePeer>, StryiNodeError> {
+    // Retry until the source peer publishes its gRPC service, then fall back to another sync peer.
+    let mut attempt = 1u32;
 
-        if blocks.is_empty() {
-            warn!(
-                "Peer returned empty batch at height {}, stopping",
-                current_height
-            );
-            break;
+    loop {
+        let result = tokio::select! {
+            _ = cancel.cancelled() => return Ok(None),
+            result = connect_to_peer(net_cmd, sync_config, source_peer) => result,
+        };
+
+        match result {
+            Ok(client) => return Ok(Some(RemotePeer::new(source_peer, client))),
+            Err(err) if attempt >= SYNC_PEER_CONNECT_MAX_RETRIES => {
+                warn!(
+                    "Source peer {} unreachable after {} attempts, trying other peers",
+                    source_peer, SYNC_PEER_CONNECT_MAX_RETRIES
+                );
+
+                return connect_fallback_sync_peer(net_cmd, sync_config, source_peer, err)
+                    .await
+                    .map(Some);
+            }
+            Err(err) => {
+                warn!(
+                    "connect_to_peer attempt {}/{} for peer {} failed: {}. Retrying in {:?}...",
+                    attempt,
+                    SYNC_PEER_CONNECT_MAX_RETRIES,
+                    source_peer,
+                    err,
+                    SYNC_PEER_CONNECT_RETRY_DELAY
+                );
+
+                let (respond_to, rx) = oneshot::channel();
+                let _ = net_cmd
+                    .send(NetworkCommand::RefreshPeerServices {
+                        peer: source_peer,
+                        respond_to,
+                    })
+                    .await;
+                let _ = rx.await;
+
+                tokio::time::sleep(SYNC_PEER_CONNECT_RETRY_DELAY).await;
+                attempt += 1;
+            }
+        }
+    }
+}
+
+async fn connect_fallback_sync_peer(
+    net_cmd: &mpsc::Sender<NetworkCommand>,
+    sync_config: &StryiSyncServiceConfig,
+    source_peer: PeerId,
+    source_error: StryiNodeError,
+) -> Result<RemotePeer, StryiNodeError> {
+    let candidates = query_sync_peers(net_cmd, sync_config)
+        .await
+        .unwrap_or_default();
+
+    for (peer_id, _) in &candidates {
+        if *peer_id == source_peer {
+            continue;
         }
 
-        let fetched_count = blocks.len() as u64;
+        if let Ok(client) = connect_to_peer(net_cmd, sync_config, *peer_id).await {
+            info!("Fallback: connected to peer {} for sync", peer_id);
 
-        let mut engine = consensus_engine.lock().await;
-        ingest_ibd_batch(&mut *engine, &storage, blocks)
-            .await
-            .map_err(|e| StryiNodeError::other(format!("Sync batch failed: {e}")))?;
-
-        if let Some((_, tip_hash, _)) = engine.tip() {
-            let _ = tip_updates_sender.send(tip_hash);
+            return Ok(RemotePeer::new(*peer_id, client));
         }
-        drop(engine);
-
-        current_height += fetched_count;
     }
 
-    info!(
-        "Peer sync complete, synced to height {}",
-        current_height - 1
-    );
-    Ok(())
+    Err(StryiNodeError::other(format!(
+        "connect_to_peer failed after {} attempts: {} (no fallback peers)",
+        SYNC_PEER_CONNECT_MAX_RETRIES, source_error
+    )))
 }

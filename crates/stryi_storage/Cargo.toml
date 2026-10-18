@@ -10,19 +10,13 @@ license = "BSD-3-Clause"
 chaingen = []
 
 [dependencies]
-fjall = "3.1.8"
+rocksdb = { version = "=0.25.0", default-features = false, features = ["bindgen-runtime", "lz4"] }
 stryi_core = { path = "../stryi_core" }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 postcard = { workspace = true }
 serde = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
-futures = { workspace = true }
-blake3 = { workspace = true }
-futures-core = "0.3.33"
 indexmap = { workspace = true, features = ["serde"] }
 
 [dev-dependencies] # Need these to perform tests
 tempfile = "3.27.0"
-tokio = { workspace = true, features = ["rt", "macros"] }
 rand = { workspace = true }

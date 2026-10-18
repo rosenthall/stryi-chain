@@ -6,7 +6,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use std::sync::Arc;
 use stryi_core::block::BlockHash;
-use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
+use stryi_core::storage::{BlockStorage, StorageReader};
 use tracing::error;
 
 /// GET /api/block/{param}
@@ -54,59 +54,60 @@ pub async fn get_block<DB>(
     Path(param): Path<String>,
 ) -> Result<Json<BlockResponse>, StryiNodeHttpApiError>
 where
-    DB: BlockStorage + UtxoStorage + StorageStats + Send + Sync + 'static,
+    DB: StorageReader,
 {
-    let store = svc.storage.read().await;
+    // Parse before opening storage so invalid identifiers remain client errors.
+    let identifier = if let Ok(height) = param.parse::<u64>() {
+        BlockIdentifier::Height(height)
+    } else {
+        let hash = BlockHash::from_hash_string(param.as_str()).map_err(|e| {
+            StryiNodeHttpApiError::InvalidResourceId {
+                resource_kind: "block".to_string(),
+                requested: param,
+                message: e.to_string(),
+            }
+        })?;
 
-    // Try as height first
-    if let Ok(height) = param.parse::<u64>() {
-        return match store.get_block_by_height(height).await {
-            Ok(Some(block)) => {
-                let hash = block.block_hash();
-                Ok(Json(BlockResponse {
+        BlockIdentifier::Hash(hash)
+    };
+    let storage = svc.storage.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let store = storage
+            .read()
+            .map_err(|e| StryiNodeHttpApiError::Unexpected(e.to_string()))?;
+
+        match identifier {
+            BlockIdentifier::Height(height) => match store.get_block_by_height(height) {
+                Ok(Some(block)) => Ok(Json(BlockResponse {
+                    hash: block.block_hash(),
+                    block: serde_json::to_value(block)
+                        .map_err(|e| StryiNodeHttpApiError::Unexpected(e.to_string()))?,
+                })),
+                Ok(None) => Err(StryiNodeHttpApiError::ResourceNotFound {
+                    resource: ResourceKind::Block(BlockIdentifier::Height(height)),
+                }),
+                Err(e) => {
+                    error!("get_block_by_height({height}) failed: {e}");
+                    Err(StryiNodeHttpApiError::Unexpected(e.to_string()))
+                }
+            },
+            BlockIdentifier::Hash(hash) => match store.get_block_by_hash(hash) {
+                Ok(Some(block)) => Ok(Json(BlockResponse {
                     hash,
                     block: serde_json::to_value(block)
                         .map_err(|e| StryiNodeHttpApiError::Unexpected(e.to_string()))?,
-                }))
-            }
-
-            Ok(None) => Err(StryiNodeHttpApiError::ResourceNotFound {
-                resource: ResourceKind::Block(BlockIdentifier::Height(height)),
-            }),
-
-            Err(e) => {
-                error!("get_block_by_height({height}) failed: {e}");
-                Err(StryiNodeHttpApiError::Unexpected(e.to_string()))
-            }
-        };
-    }
-
-    // If not a height, try as hash
-    let hash = BlockHash::from_hash_string(param.as_str()).map_err(|e| {
-        StryiNodeHttpApiError::InvalidResourceId {
-            resource_kind: "block".to_string(),
-            requested: param,
-            message: e.to_string(),
+                })),
+                Ok(None) => Err(StryiNodeHttpApiError::ResourceNotFound {
+                    resource: ResourceKind::Block(BlockIdentifier::Hash(hash)),
+                }),
+                Err(e) => {
+                    error!("get_block_by_hash({hash}) failed: {e}");
+                    Err(StryiNodeHttpApiError::Unexpected(e.to_string()))
+                }
+            },
         }
-    })?;
-
-    match store.get_block_by_hash(hash).await {
-        // If the block is found, serialize it to JSON and return
-        Ok(Some(block)) => Ok(Json(BlockResponse {
-            hash,
-            block: serde_json::to_value(block)
-                .map_err(|e| StryiNodeHttpApiError::Unexpected(e.to_string()))?,
-        })),
-
-        // If the block is not found, return a 404 error
-        Ok(None) => Err(StryiNodeHttpApiError::ResourceNotFound {
-            resource: ResourceKind::Block(BlockIdentifier::Hash(hash)),
-        }),
-
-        // If there was an error retrieving the block, log it and return an error
-        Err(e) => {
-            error!("get_block_by_hash({hash}) failed: {e}");
-            Err(StryiNodeHttpApiError::Unexpected(e.to_string()))
-        }
-    }
+    })
+    .await
+    .map_err(|e| StryiNodeHttpApiError::Unexpected(e.to_string()))?
 }

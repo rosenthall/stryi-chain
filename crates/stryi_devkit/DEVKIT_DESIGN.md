@@ -54,7 +54,7 @@ stryi-devkit chaingen --config-path <path_to_config_file>
 
 Configuration is read from a TOML file provided via `--config-path`. The file contains two main areas: `[chain]` for
 chain-wide settings and `[blocks]` for block-generation rules. Values are validated at startup and the tool emits clear
-errors for unknown or invalid keys.
+errors for invalid values. Unknown keys are ignored.
 
 Top-level `[chain]` keys (comments kept immediately above fields)
 
@@ -93,14 +93,6 @@ output_path = "/tmp/testchain1"
 # This genesis defines initial state of the chain: balances, consensus constants, etc.
 genesis_path = "/path/to/genesis.json"
 
-# How generated blocks are persisted/applied.
-# Allowed values: "consensus_engine", "direct_insert"
-# Default: "consensus_engine"
-# - "consensus_engine" - Build and feed blocks into StryiConsensusEngine; validates and applies blocks as a real node would. Recommended for most tests and benchmarks.
-# - "direct_insert" - Write blocks directly to storage without consensus validation. Faster, useful for low-level tests, but may create chains that real nodes reject. Use only when you know what you are doing.
-persistence_mode = "consensus_engine"
-
-
 [blocks]
 
 # Private key (hex) of an account that has pre-defined balance in genesis.
@@ -124,29 +116,15 @@ max_transactions_per_block = 25
 # All transactions will be created between these addresses.
 active_addresses_count = 50
 
-# Whether to insert BlockUndo records for each block.
-# BlockUndo records are used to roll back the chain to previous state.
-# Usually not needed for testing; disable to save disk space and speed up generation.
-# NOTE:
-# - `need_undo = true` requires `persistence_mode = "consensus_engine"`
-# - in consensus-engine mode, undo data is already produced by the engine
-need_undo = true
-
 ```
 
 #### Implementation details
 
-Chaingen has two persistence modes.
-
-- `consensus_engine`
-  This is the normal mode. Generated blocks go through `StryiConsensusEngine`, so the chain is checked the same way a
-  real node would check it.
-- `direct_insert`
-  This skips consensus validation and writes blocks straight to storage. It is useful for lower-level experiments and
-  some storage benchmarks, but it can also produce chains a real node would reject.
-  DO NOT USE IT FOR OTHER REASONS THAN EXPERIMENTING
+Generated blocks go through `StryiConsensusEngine`, so the chain is checked the same way a
+real node would check it. Each accepted block is applied through an atomic storage transition.
 
 Chaingen is resume-friendly: it opens existing storage, reads the current tip, and keeps going from there.
+Optional `chain_name` and `protocol_version` in `[chain]` default to `dev` and `1` and must match the node configuration.
 That also means rerunning the same config against the same `output_path` is different from starting fresh.
 The funding account may already be drained by an older run, so for clean benchmark runs it is usually better to use a
 fresh directory.
@@ -155,7 +133,7 @@ fresh directory.
 
 After config validation, chaingen deterministically generates the active addresses used for synthetic transactions.
 Payment transactions are created between those addresses.
-When the run finishes, their private keys are written to a file in the output directory.
+Before the distribution block is persisted, their private keys are written and synced to a file in the output directory.
 The file name includes the start and end heights of the generated segment, so it is easy to match the backup to a
 specific run.
 

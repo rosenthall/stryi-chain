@@ -7,7 +7,6 @@ use crate::node::event_loop::EventLoop;
 use crate::node::miner_bridge::MinerBridge;
 use crate::tls::NodeTlsIdentity;
 use multiaddr::Multiaddr;
-use std::collections::HashMap;
 use std::sync::Arc;
 use stryi_core::block::BlockHash;
 use stryi_core::consensus::StryiConsensusEngine;
@@ -33,13 +32,15 @@ pub(crate) mod sync;
 /// Helpers for performing Initial Block Download and mass applying blocks.
 mod ibd;
 
+mod consensus_runtime;
+
 /// **Main** event loop of the node
 mod event_loop;
 
 /// The first stage of node initialization.
 /// At this point this node is not yet connected and has no `ConsensusEngine` initialized
 pub struct StryiChainNode {
-    pub(crate) storage: Arc<RwLock<StryiStorage>>,
+    pub(crate) storage: StryiStorage,
     pub(crate) mempool: Arc<RwLock<MemPool>>,
     pub(crate) network_manager: StryiNetworkManager,
     pub(crate) genesis_bootstrap: GenesisBootstrap,
@@ -49,7 +50,7 @@ pub struct StryiChainNode {
 /// Node after connect().
 /// Has live network channels, ready for sync.
 pub struct ConnectedNode {
-    pub(crate) storage: Arc<RwLock<StryiStorage>>,
+    pub(crate) storage: StryiStorage,
     pub(crate) mempool: Arc<RwLock<MemPool>>,
     pub(crate) net_cmd: mpsc::Sender<NetworkCommand>,
     pub(crate) net_events: broadcast::Receiver<NetworkEvent>,
@@ -59,7 +60,7 @@ pub struct ConnectedNode {
 
 /// Node after synchronize() or bootstrap(). Has a consensus engine ready to go.
 pub struct SyncedNode {
-    pub(crate) storage: Arc<RwLock<StryiStorage>>,
+    pub(crate) storage: StryiStorage,
     pub(crate) mempool: Arc<RwLock<MemPool>>,
     pub(crate) net_cmd: mpsc::Sender<NetworkCommand>,
     pub(crate) net_events: broadcast::Receiver<NetworkEvent>,
@@ -89,7 +90,7 @@ pub(crate) struct EventLoopContext {
 
 impl StryiChainNode {
     pub fn new(
-        storage: Arc<RwLock<StryiStorage>>,
+        storage: StryiStorage,
         mempool: Arc<RwLock<MemPool>>,
         network_manager: StryiNetworkManager,
         genesis_bootstrap: GenesisBootstrap,
@@ -149,23 +150,4 @@ impl SyncedNode {
             cancellation_token: ctx.cancel_token,
         }
     }
-}
-
-pub(crate) async fn prune_reorg_transaction_indexes(
-    storage: &Arc<RwLock<StryiStorage>>,
-    deleted_blocks: &HashMap<u64, BlockHash>,
-) -> Result<(), StryiNodeError> {
-    if deleted_blocks.is_empty() {
-        return Ok(());
-    }
-
-    let mut storage = storage.write().await;
-    storage
-        .prune_confirmed_transaction_indexes_for_blocks(deleted_blocks.values().copied())
-        .await
-        .map_err(|e| {
-            StryiNodeError::other(format!(
-                "failed to prune confirmed transaction index after reorg: {e}"
-            ))
-        })
 }

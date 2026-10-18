@@ -1,4 +1,4 @@
-FROM rust:1.86.0-bullseye AS chef
+FROM rust:1.86.0-bookworm AS chef
 
 WORKDIR /build
 
@@ -6,6 +6,8 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     clang \
+    libclang-dev \
+    g++ \
     ca-certificates \
     protobuf-compiler \
  && rm -rf /var/lib/apt/lists/*
@@ -29,10 +31,11 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
 RUN cargo build --release -p stryi_devkit
-FROM debian:bullseye-slim AS runner
+FROM debian:bookworm-slim AS runner
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    libstdc++6 \
     curl \
  && rm -rf /var/lib/apt/lists/*
 

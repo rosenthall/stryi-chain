@@ -3,8 +3,6 @@ num_blocks = 1000
 seed = 42
 output_path = "/tmp/testchain1"
 genesis_path = "../demo_genesis.json"
-persistence_mode = "consensus_engine"
-#persistence_mode = "direct_insert"
 
 [blocks]
 # This key is bound to the @4940b1f59b833d557c330b3f1805c204bdcc9029 address from demo_genesis.json
@@ -14,4 +12,3 @@ miner_address = "@ee4a3a385d2bc7c46bc0925a5b3052f70e5f7b87"
 min_transactions_per_block = 5
 max_transactions_per_block = 15
 active_addresses_count = 10
-need_undo = true

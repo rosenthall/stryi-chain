@@ -1,8 +1,10 @@
 use crate::block::BlockData;
 use crate::consensus::ConsensusConsts;
 use crate::mempool::{MemPool, MemPoolConfig, MemPoolError, MempoolValidationError};
+use crate::storage::StorageError;
 use crate::tests::{keypair_from_seed, make_payment_tx, make_test_genesis, make_utxo_lookup};
 use crate::transactions::{OutPoint, UTXO};
+use std::sync::Arc;
 
 /// Builds a mempool with default config and a lookup backed by given UTXOs.
 fn setup_mempool(utxos: Vec<(OutPoint, UTXO)>) -> MemPool {
@@ -53,6 +55,49 @@ async fn test_add_transaction_rejects_wrong_owner() {
         }
         other => panic!("Expected ValidationError(OwnershipMismatch), got: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn test_add_transaction_preserves_storage_error() {
+    let (alice_key, alice_addr) = keypair_from_seed(1);
+    let (op, _, _) = alice_funded(100_000);
+    let tx = make_payment_tx(&alice_key, vec![op], vec![(50_000, alice_addr)]);
+
+    let source: Arc<dyn std::error::Error + Send + Sync> =
+        Arc::new(std::io::Error::other("read failed"));
+    let failure = StorageError::Backend {
+        operation: "read transaction inputs".into(),
+        source: source.clone(),
+    };
+    let lookup: crate::mempool::UtxoLookup = Box::new(move |outpoints: Vec<OutPoint>| {
+        assert_eq!(outpoints, vec![op]);
+        let failure = failure.clone();
+        Box::pin(async move { Err(failure) })
+    });
+
+    let mut failed_pool = MemPool::new(MemPoolConfig::default(), lookup);
+
+    match failed_pool.add_transaction(tx.clone()).await.unwrap_err() {
+        MemPoolError::Storage(error) => {
+            let Some(StorageError::Backend {
+                operation,
+                source: actual,
+            }) = error.downcast_ref::<StorageError>()
+            else {
+                panic!("Expected backend error, got: {error:?}");
+            };
+
+            assert_eq!(operation, "read transaction inputs");
+            assert!(Arc::ptr_eq(actual, &source));
+        }
+        other => panic!("Expected Storage error, got: {other:?}"),
+    }
+
+    assert_eq!(failed_pool.transaction_count(), 0);
+
+    let mut empty_pool = setup_mempool(vec![]);
+    assert!(matches!(empty_pool.add_transaction(tx).await.unwrap_err(),
+        MemPoolError::ValidationError(MempoolValidationError::MissingOutPoint(missing)) if missing == op));
 }
 
 #[tokio::test]

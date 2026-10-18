@@ -11,77 +11,13 @@ use axum::response::Response;
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 
-use futures_util::future::BoxFuture;
 use http::StatusCode;
 use std::sync::Arc;
 use stryi_core::address::AccountAddress;
 use stryi_core::mempool::{MemPoolError, MempoolValidationError};
-use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
+use stryi_core::storage::{BlockStorage, StorageReader};
 use stryi_core::transactions::{Transaction, TransactionHash};
-use stryi_storage::{StryiStorage, StryiStorageError};
 use tracing::{debug, info};
-
-#[derive(Debug, Clone)]
-pub(crate) struct ConfirmedTransactionRecord {
-    pub tx_hash: TransactionHash,
-    pub transaction: Transaction,
-    pub block_hash: stryi_core::block::BlockHash,
-    pub block_height: u64,
-    pub tx_index: u32,
-}
-
-pub(crate) trait ConfirmedTransactionLookup {
-    type LookupError: std::error::Error + Send + Sync + 'static;
-
-    fn get_confirmed_transaction(
-        &self,
-        tx_hash: TransactionHash,
-    ) -> BoxFuture<'_, Result<Option<ConfirmedTransactionRecord>, Self::LookupError>>;
-}
-
-impl ConfirmedTransactionLookup for StryiStorage {
-    type LookupError = StryiStorageError;
-
-    fn get_confirmed_transaction(
-        &self,
-        tx_hash: TransactionHash,
-    ) -> BoxFuture<'_, Result<Option<ConfirmedTransactionRecord>, Self::LookupError>> {
-        Box::pin(async move {
-            let Some(index) = self.get_transaction_index(&tx_hash)? else {
-                return Ok(None);
-            };
-
-            let Some(block) = self.get_block_by_hash(index.block_hash).await? else {
-                return Err(StryiStorageError::NotFound(format!(
-                    "block {} for transaction {}",
-                    index.block_hash, tx_hash
-                )));
-            };
-
-            let Some(transaction) = block.data.transactions.get(index.tx_index as usize) else {
-                return Err(StryiStorageError::NotFound(format!(
-                    "transaction index {} in block {}",
-                    index.tx_index, index.block_hash
-                )));
-            };
-
-            if transaction.data.hash() != tx_hash {
-                return Err(StryiStorageError::NotFound(format!(
-                    "transaction {} no longer matches block {} at index {}",
-                    tx_hash, index.block_hash, index.tx_index
-                )));
-            }
-
-            Ok(Some(ConfirmedTransactionRecord {
-                tx_hash,
-                transaction: transaction.clone(),
-                block_hash: index.block_hash,
-                block_height: index.block_height,
-                tx_index: index.tx_index,
-            }))
-        })
-    }
-}
 
 /// Send a postcard-encoded transaction wrapped in base64 to the node.
 ///
@@ -116,7 +52,7 @@ pub async fn send_tx<DB>(
     Json(req): Json<SendTransactionRequest>,
 ) -> Result<Response, StryiNodeHttpApiError>
 where
-    DB: BlockStorage + UtxoStorage + StorageStats + Send + Sync + 'static,
+    DB: StorageReader,
 {
     // decode the base64-encoded transaction
     let raw_tx =
@@ -132,8 +68,8 @@ where
     );
 
     // Try to deserialize the raw transaction into a Transaction object from postcard format
-    let transaction: Transaction = postcard::from_bytes(&raw_tx)
-        .map_err(|_| StryiNodeHttpApiError::BadTransaction {
+    let transaction: Transaction =
+        postcard::from_bytes(&raw_tx).map_err(|_| StryiNodeHttpApiError::BadTransaction {
             reason: BadTxReason::Deserialize,
             message: Some("Cannot deserialize transaction (postcard)".to_string()),
         })?;
@@ -226,13 +162,7 @@ pub async fn get_tx<DB>(
     Path(hash): Path<String>,
 ) -> Result<Json<TransactionQueryResponse>, StryiNodeHttpApiError>
 where
-    DB: BlockStorage
-        + UtxoStorage
-        + StorageStats
-        + ConfirmedTransactionLookup
-        + Send
-        + Sync
-        + 'static,
+    DB: StorageReader,
 {
     let tx_hash = TransactionHash::from_hash_string(hash.as_str()).map_err(|e| {
         StryiNodeHttpApiError::InvalidResourceId {
@@ -242,26 +172,33 @@ where
         }
     })?;
 
-    let storage = state.storage.read().await;
-    let record = storage
-        .get_confirmed_transaction(tx_hash)
-        .await
-        .map_err(|e| StryiNodeHttpApiError::Unexpected(e.to_string()))?;
-    drop(storage);
+    let storage = state.storage.clone();
 
-    if let Some(record) = record {
+    let confirmed = tokio::task::spawn_blocking(move || {
+        let view = storage
+            .read()
+            .map_err(|e| StryiNodeHttpApiError::Unexpected(e.to_string()))?;
+
+        view.get_transaction(&tx_hash)
+            .map_err(|e| StryiNodeHttpApiError::Unexpected(e.to_string()))
+    })
+    .await
+    .map_err(|e| StryiNodeHttpApiError::Unexpected(e.to_string()))??;
+
+    if let Some(record) = confirmed {
         return Ok(Json(TransactionQueryResponse {
             status: TransactionQueryStatus::Confirmed,
-            tx_hash: record.tx_hash,
+            tx_hash,
             transaction: TransactionResponse::from(record.transaction),
-            block_hash: Some(record.block_hash),
-            block_height: Some(record.block_height),
-            tx_index: Some(record.tx_index),
+            block_hash: Some(record.location.block_hash),
+            block_height: Some(record.location.block_height),
+            tx_index: Some(record.location.tx_index),
         }));
     }
 
     {
         let mempool = state.mempool.read().await;
+
         if let Some(transaction) = mempool.get_transaction(&tx_hash) {
             return Ok(Json(TransactionQueryResponse {
                 status: TransactionQueryStatus::Pending,

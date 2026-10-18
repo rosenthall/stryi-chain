@@ -36,6 +36,12 @@ pub enum StryiNodeError {
     #[error(transparent)]
     TonicTransport(#[from] tonic::transport::Error),
 
+    #[error(transparent)]
+    Storage(#[from] stryi_core::storage::StorageError),
+
+    #[error(transparent)]
+    Core(#[from] stryi_core::StryiCoreError),
+
     // fallback / misc
     #[error("unexpected error: {0}")]
     Other(String),

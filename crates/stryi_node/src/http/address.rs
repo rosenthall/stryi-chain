@@ -5,7 +5,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use std::sync::Arc;
 use stryi_core::address::AccountAddress;
-use stryi_core::storage::{BlockStorage, StorageStats, UtxoStorage};
+use stryi_core::storage::{StorageReader, UtxoStorage};
 use tracing::error;
 
 /// GET /api/address/{addr}/balance
@@ -44,7 +44,7 @@ pub async fn get_balance<DB>(
     Path(addr): Path<String>,
 ) -> Result<Json<AddressBalanceResponse>, StryiNodeHttpApiError>
 where
-    DB: BlockStorage + UtxoStorage + StorageStats + Send + Sync + 'static,
+    DB: StorageReader,
 {
     let address = AccountAddress::from_hash_string(addr.as_str()).map_err(|e| {
         StryiNodeHttpApiError::InvalidResourceId {
@@ -54,11 +54,20 @@ where
         }
     })?;
 
-    let store = svc.storage.read().await;
-    let utxo_map = store.get_utxos_for_address(address).await.map_err(|e| {
-        error!("get_utxos_for_address({address}) failed: {e}");
-        StryiNodeHttpApiError::Unexpected(e.to_string())
-    })?;
+    let storage = svc.storage.clone();
+
+    let utxo_map = tokio::task::spawn_blocking(move || {
+        let view = storage
+            .read()
+            .map_err(|e| StryiNodeHttpApiError::Unexpected(e.to_string()))?;
+
+        view.get_utxos_for_address(address).map_err(|e| {
+            error!("get_utxos_for_address({address}) failed: {e}");
+            StryiNodeHttpApiError::Unexpected(e.to_string())
+        })
+    })
+    .await
+    .map_err(|e| StryiNodeHttpApiError::Unexpected(e.to_string()))??;
 
     let mut balance: u64 = 0;
     let utxos: Vec<UtxoEntry> = utxo_map

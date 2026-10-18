@@ -16,7 +16,6 @@ use crate::transactions::{
 use k256::ecdsa::SigningKey;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// Deterministic keypair from a single seed byte
 pub(crate) fn keypair_from_seed(seed: u8) -> (SigningKey, AccountAddress) {
@@ -127,28 +126,33 @@ pub(crate) fn make_block_mined(
 }
 
 /// Creates a fully wired `StryiConsensusEngine` from an already-initialized storage.
-pub(crate) async fn make_engine(
+pub(crate) fn make_engine(
     db: StryiInMemoryStorage,
     consts: ConsensusConsts,
 ) -> StryiConsensusEngine<StryiInMemoryStorage> {
     let diff_calc = DifficultyCalc::new(consts.pow).expect("test pow params must be valid");
     let validator = BlockValidator::new(consts, diff_calc);
     let utxo_proc = UtxoProcessor::new();
-    let db = Arc::new(RwLock::new(db));
+    let db = Arc::new(db);
 
     StryiConsensusEngine::new(consts, validator, utxo_proc, db)
-        .await
         .expect("Engine initialization must succeed with valid genesis")
 }
 
 /// Builds a `UtxoLookup` closure from a flat list of UTXOs.
-/// The closure captures an `Arc<HashMap>` and resolves OutPoint to Option<UTXO>.
+/// Each lookup returns the present inputs from one immutable view.
 pub(crate) fn make_utxo_lookup(utxos: Vec<(OutPoint, UTXO)>) -> UtxoLookup {
     let map: HashMap<OutPoint, UTXO> = utxos.into_iter().collect();
     let shared = Arc::new(map);
-    Box::new(move |op: &OutPoint| {
+
+    Box::new(move |outpoints: Vec<OutPoint>| {
         let shared = Arc::clone(&shared);
-        let op = *op;
-        Box::pin(async move { shared.get(&op).cloned() })
+
+        Box::pin(async move {
+            Ok(outpoints
+                .into_iter()
+                .filter_map(|outpoint| shared.get(&outpoint).copied().map(|utxo| (outpoint, utxo)))
+                .collect())
+        })
     })
 }

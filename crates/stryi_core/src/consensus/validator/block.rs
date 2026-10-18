@@ -2,13 +2,13 @@ use crate::{
     block::{Block, BlockData},
     consensus::{ConsensusConsts, validator::tx},
     dependencies::DependencyGraph,
-    error::StryiCoreError,
-    storage::UtxoStorage,
+    error::{StorageLayer, StryiCoreError},
+    storage::{StorageError, UtxoStorage},
     transactions::{OutPoint, TransactionKind, UTXO},
 };
 use dashmap::{DashMap, DashSet};
+use rayon::prelude::*;
 use std::{collections::HashSet, sync::Arc};
-use tokio::task::JoinSet;
 
 /// Performs all the cheap checks that do **not** touch the UTXO set.
 pub fn validate_block_structure(block: &Block) -> Result<(), StryiCoreError> {
@@ -16,6 +16,7 @@ pub fn validate_block_structure(block: &Block) -> Result<(), StryiCoreError> {
     ensure_transaction_composition(block)?;
     ensure_unique_inputs(&block.data)?;
     ensure_coinbase_context(block)?;
+
     Ok(())
 }
 
@@ -35,17 +36,20 @@ fn ensure_coinbase_context(block: &Block) -> Result<(), StryiCoreError> {
             details: "Coinbase height and parent must match the block header".into(),
         });
     }
+
     Ok(())
 }
 
 /// Rejects blocks with duplicated transactions.
 fn ensure_unique_txs(block: &Block) -> Result<(), StryiCoreError> {
     let uniq: HashSet<_> = block.data.transactions.iter().cloned().collect();
+
     if uniq.len() != block.data.transactions.len() {
         return Err(StryiCoreError::ConsensusValidationFailed {
             details: "Block contains duplicated transactions".into(),
         });
     }
+
     Ok(())
 }
 
@@ -107,6 +111,7 @@ fn ensure_unique_inputs(data: &BlockData) -> Result<(), StryiCoreError> {
         if tx.data.kind != TransactionKind::Payment {
             continue;
         }
+
         for inp in &tx.data.inputs {
             if !seen.insert(inp.previous_output) {
                 return Err(StryiCoreError::TxDoubleSpend {
@@ -116,6 +121,7 @@ fn ensure_unique_inputs(data: &BlockData) -> Result<(), StryiCoreError> {
             }
         }
     }
+
     Ok(())
 }
 
@@ -124,28 +130,29 @@ fn ensure_unique_inputs(data: &BlockData) -> Result<(), StryiCoreError> {
 /// 1. Build dependency graph & pull required UTXOs;  
 /// 2. Run per-tx validation in **parallel execution groups**;  
 /// 3. Ensure `coinbase <= subsidy + sum(fees)` (non-genesis).
-pub async fn validate_transactions<US: UtxoStorage + Send>(
+pub fn validate_transactions<US: UtxoStorage + Send>(
     block: &Block,
     rules: &ConsensusConsts,
     utxo_storage: &US,
 ) -> Result<(), StryiCoreError> {
-    let (graph, managed) = build_dependency_context(&block.data, utxo_storage).await?;
+    let (graph, managed) = build_dependency_context(&block.data, utxo_storage)?;
 
     let in_block = Arc::new(DashMap::<OutPoint, UTXO>::new());
     let spent = Arc::new(DashSet::<OutPoint>::new());
 
     for grp in graph.get_parallel_execution_groups() {
-        validate_group(&grp, &block.data, &managed, &in_block, &spent).await?;
+        validate_group(&grp, &block.data, &managed, &in_block, &spent)?;
     }
 
     if !block.header.is_genesis() {
         reward_rule(block, rules, &managed, &in_block)?;
     }
+
     Ok(())
 }
 
 /// Builds a dependency graph and fetches external UTXOs in one go.
-async fn build_dependency_context<US: UtxoStorage>(
+fn build_dependency_context<US: UtxoStorage>(
     data: &BlockData,
     utxo_storage: &US,
 ) -> Result<(DependencyGraph, Arc<DashMap<OutPoint, UTXO>>), StryiCoreError> {
@@ -156,9 +163,7 @@ async fn build_dependency_context<US: UtxoStorage>(
     let managed_utxos = Arc::new(DashMap::<OutPoint, UTXO>::new());
 
     if !external_deps.is_empty() {
-        let utxos_result = utxo_storage
-            .batch_get_utxos(external_deps.iter().map(|u| u.to_owned()))
-            .await;
+        let utxos_result = utxo_storage.batch_get_utxos(external_deps.iter().map(|u| u.to_owned()));
 
         match utxos_result {
             Ok(existing) => {
@@ -166,15 +171,13 @@ async fn build_dependency_context<US: UtxoStorage>(
                     managed_utxos.insert(op, utxo);
                 }
             }
-            Err(_) => {
-                // pick any missing out-point to report
-                if let Some(first_missing) = external_deps.iter().next() {
-                    return Err(StryiCoreError::TxMissingUtxo {
-                        txid: first_missing.txid,
-                        vout: first_missing.vout,
-                    });
-                }
+            Err(StorageError::UtxoNotFound(outpoint)) => {
+                return Err(StryiCoreError::TxMissingUtxo {
+                    txid: outpoint.txid,
+                    vout: outpoint.vout,
+                });
             }
+            Err(error) => return Err(StryiCoreError::storage(StorageLayer::Utxo, error)),
         }
     }
 
@@ -182,40 +185,16 @@ async fn build_dependency_context<US: UtxoStorage>(
 }
 
 /// Validates all txs of the *parallel* execution group concurrently.
-async fn validate_group(
+fn validate_group(
     idxs: &[usize],
     data: &BlockData,
     managed: &Arc<DashMap<OutPoint, UTXO>>,
     in_block: &Arc<DashMap<OutPoint, UTXO>>,
     spent: &Arc<DashSet<OutPoint>>,
 ) -> Result<(), StryiCoreError> {
-    let mut set = JoinSet::new();
-
-    for &i in idxs {
-        let tx = data.transactions[i].clone();
-        let managed = Arc::clone(managed);
-        let in_block = Arc::clone(in_block);
-        let spent = Arc::clone(spent);
-
-        set.spawn(async move { tx::validate_transaction(&tx, &managed, &in_block, &spent).await });
-    }
-
-    while let Some(res) = set.join_next().await {
-        match res {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                set.abort_all();
-                return Err(e);
-            }
-            Err(e) => {
-                set.abort_all();
-                return Err(StryiCoreError::ConsensusValidationFailed {
-                    details: format!("Tokio join error: {e:?}"),
-                });
-            }
-        }
-    }
-    Ok(())
+    idxs.par_iter().try_for_each(|&index| {
+        tx::validate_transaction(&data.transactions[index], managed, in_block, spent)
+    })
 }
 
 /// Ensures `coinbase <= block_subsidy(height) + sum(fees)`.
@@ -242,5 +221,6 @@ fn reward_rule(
             actual: coinbase_val,
         });
     }
+
     Ok(())
 }

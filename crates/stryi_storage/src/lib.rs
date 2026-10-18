@@ -1,5 +1,5 @@
-//! Storage backend for blocks, UTXOs, chain state, and rollback data.
-//! See `TABLES.md` for the reference for all the partitions, and storage schema
+//! RocksDB storage for blocks, UTXOs, canonical indexes, and rollback data.
+//! See `TABLES.md` for the persistent schema.
 
 #![allow(incomplete_features)]
 // This feature was added to avoid a known bug: https://github.com/rust-lang/rust/issues/133199
@@ -7,70 +7,101 @@
 
 mod blocks;
 mod error;
+mod meta;
+mod open;
+mod stats;
+mod undo;
 mod utxo;
-
-#[cfg(test)]
-mod tests;
+mod write;
 
 /// Utilities specific to `chaingen` feature.
 /// It provides APIs used exclusively by the chain generation tooling (`stryi_chaingen`).
 #[cfg(feature = "chaingen")]
 pub mod chaingen;
+#[cfg(test)]
+mod tests;
 
-mod index;
-mod meta;
-mod stats;
-mod tx_index;
-mod undo;
+pub use error::StryiStorageError;
+pub use meta::{STORAGE_SCHEMA_VERSION, StorageStatus};
+pub use stryi_core::storage::{
+    BlockIndexData, ChainMetadata, TransactionIndexData, validate_genesis,
+};
 
-pub use meta::*;
-
-use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use tracing::{debug, info};
-
-pub use crate::error::StryiStorageError;
-use std::collections::{HashMap, HashSet};
-use std::error::Error;
-use std::io;
+use rocksdb::{
+    ColumnFamily, SingleThreaded, SnapshotWithThreadMode, Transaction, TransactionDB,
+    TransactionOptions, WriteOptions,
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use stryi_core::address::AccountAddress;
+use stryi_core::block::{Block, GenesisState};
+use stryi_core::storage::{
+    ChainTransition, ChainTransitionResult, FullNodeStorage, StorageError, StorageReader,
+    apply_transition,
+};
+use stryi_core::transactions::{OutPoint, UTXO};
 
-use crate::stats::StorageStateInformation;
-use stryi_core::block::{Block, BlockHash, GenesisState};
-use stryi_core::difficulty::ChainWork;
-use stryi_core::storage::{BlockStorage, UtxoStorage, verify_genesis_work_shape};
-use stryi_core::transactions::{OutPoint, TransactionKind, UTXO};
+pub(crate) type Database = TransactionDB<SingleThreaded>;
+const TABLES: [&str; 9] = [
+    "blocks",
+    "heights",
+    "utxo",
+    "addresses",
+    "stats",
+    "undo",
+    "block_indexes",
+    "transaction_indexes",
+    "metadata",
+];
+const STATE_KEY: [u8; 32] = [0; 32];
+const METADATA_KEY: &[u8] = b"chain";
 
-/// Storage handle over the Fjall database and its opened keyspaces.
+/// Shared storage handle over the RocksDB database and its fixed column families.
+/// Cloning a handle shares the database and writer lock; it does not capture a snapshot.
+#[derive(Clone)]
 pub struct StryiStorage {
-    /// Partition storing blocks keyed by block hash
-    pub(crate) blocks_partition: Keyspace,
+    inner: Arc<StorageInner>,
+}
 
-    /// Partition storing block height -> block hash
-    pub(crate) heights_partition: Keyspace,
+struct StorageInner {
+    db: Database,
+    // One canonical transition at a time, including its reads and pending writes.
+    writer: Mutex<()>,
+    // A backend/commit failure or panic permanently stops this handle.
+    failed: AtomicBool,
+    failure_handler: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
 
-    /// Partition storing UTXOs
-    pub(crate) utxo_partition: Keyspace,
+/// Wrapper around a RocksDB snapshot or active transaction.
+pub struct StorageView<'a, R> {
+    inner: &'a StorageInner,
+    reader: R,
+}
 
-    /// Partition storing address -> set of OutPoints referencing that address
-    pub(crate) addresses_partition: Keyspace,
+/// Consistent read snapshot across blocks, chain state, UTXOs and their indexes.
+pub type StryiRead<'a> = StorageView<'a, SnapshotWithThreadMode<'a, Database>>;
+type WriteView<'a> = StorageView<'a, Transaction<'a, Database>>;
 
-    /// Singleton chain state record.
-    pub(crate) stats_partition: Keyspace,
+trait ReadSource {
+    fn get(&self, table: &ColumnFamily, key: &[u8]) -> Result<Option<Vec<u8>>, rocksdb::Error>;
+}
 
-    /// Partition storing block hash -> `stryi_core::undo::UndoData`
-    pub(crate) undo_partition: Keyspace,
+impl ReadSource for SnapshotWithThreadMode<'_, Database> {
+    fn get(&self, table: &ColumnFamily, key: &[u8]) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+        self.get_cf(table, key)
+    }
+}
 
-    /// Partition storing block hash -> `stryi_storage::index::BlockIndexData`
-    pub(crate) block_index_partition: Keyspace,
-
-    /// Partition storing transaction hash -> canonical block location metadata.
-    pub(crate) transaction_index_partition: Keyspace,
-
-    /// Database handle
-    pub db: Database,
+impl ReadSource for Transaction<'_, Database> {
+    fn get(&self, table: &ColumnFamily, key: &[u8]) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+        // TransactionOptions::set_snapshot does not pin ordinary transaction reads.
+        self.snapshot().get_cf(table, key)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -96,69 +127,6 @@ impl GenesisInitConfig {
             version: 0,
         }
     }
-}
-
-/// Validates genesis shape, allocations and PoW parameters before storage.
-pub fn validate_genesis(block: &Block) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let h = &block.header;
-
-    let invariant_err =
-        |msg: &str| io::Error::other(format!("genesis invariant failed: {msg}")).into();
-
-    verify_genesis_work_shape(block)?;
-
-    if !block.is_merkle_root_valid() {
-        return Err(invariant_err("header.merkle_root must be valid"));
-    }
-
-    if !h.is_genesis() {
-        return Err(invariant_err("header.is_genesis() must be true"));
-    }
-
-    let genesis_state = h
-        .genesis_state
-        .as_ref()
-        .expect("is_genesis() means genesis_state is Some");
-
-    genesis_state
-        .consensus_consts
-        .pow
-        .validate()
-        .map_err(|e| invariant_err(&format!("genesis pow params must be valid: {e}")))?;
-
-    if block.data.transactions.len() != 1 {
-        return Err(invariant_err("exactly one transaction is required"));
-    }
-
-    let tx = &block.data.transactions[0];
-
-    if tx.data.kind != TransactionKind::Genesis {
-        return Err(invariant_err("transaction must have genesis kind"));
-    }
-
-    if !tx.data.inputs.is_empty() {
-        return Err(invariant_err("transaction must have no inputs"));
-    }
-
-    if tx.data.outputs.is_empty() {
-        return Err(invariant_err(
-            "genesis transaction must have at least one output",
-        ));
-    }
-
-    let mut seen_addresses = HashSet::new();
-
-    for output in &tx.data.outputs {
-        if !seen_addresses.insert(output.recipient) {
-            return Err(invariant_err("all allocation recipients must be unique"));
-        }
-
-        if output.value == 0 {
-            return Err(invariant_err("genesis allocations must be non-zero"));
-        }
-    }
-
-    Ok(())
 }
 
 /// Extract all block outputs as `(OutPoint, UTXO)` pairs.
@@ -192,155 +160,198 @@ pub fn extract_utxos_from_block(block: &Block) -> Vec<(OutPoint, UTXO)> {
 }
 
 impl StryiStorage {
-    /// Opens or creates the Fjall keyspace and all eight storage partitions.
-    ///
-    /// If `stats` already contains state, the existing storage is returned and
-    /// `genesis_config` is ignored. On a brand-new database, this either stores
-    /// genesis from `genesis_config` or initializes empty pre-genesis state.
-    pub async fn initialize_in_path(
-        path: PathBuf,
-        genesis_config: Option<GenesisInitConfig>,
-    ) -> Result<Self, StryiStorageError> {
-        info!("Trying to access Stryi storage at path {}", &path.display());
+    /// Whether a fatal failure has permanently stopped this storage handle.
+    pub fn is_failed(&self) -> bool {
+        self.inner.failed.load(Ordering::Acquire) || self.inner.writer.is_poisoned()
+    }
 
-        // Create or open the database
-        let db = Database::builder(&path).open()?;
+    /// Permanently marks storage as failed on critical errors or panics.
+    pub fn mark_failed(&self) {
+        self.inner.mark_failed();
+    }
 
-        info!("Successfully initialized key space!");
-        info!(
-            "Current database disk space is : {} bytes",
-            db.disk_space()?
-        );
+    /// Registers a callback invoked on fatal storage failure (fires immediately if already failed).
+    pub fn set_failure_handler(&self, handler: Arc<dyn Fn() + Send + Sync>) {
+        let handler = {
+            let mut registered = self
+                .inner
+                .failure_handler
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
 
-        // Open or create the eight keyspaces with default options
-        let blocks_partition = db.keyspace("blocks", KeyspaceCreateOptions::default)?;
-        let heights_partition = db.keyspace("heights", KeyspaceCreateOptions::default)?;
-        let utxo_partition = db.keyspace("utxo", KeyspaceCreateOptions::default)?;
-        let addresses_partition = db.keyspace("addresses", KeyspaceCreateOptions::default)?;
-        let stats_partition = db.keyspace("stats", KeyspaceCreateOptions::default)?;
-        let undo_partition = db.keyspace("undo", KeyspaceCreateOptions::default)?;
-        let block_index_partition = db.keyspace("block_indexes", KeyspaceCreateOptions::default)?;
-        let transaction_index_partition =
-            db.keyspace("transaction_indexes", KeyspaceCreateOptions::default)?;
-
-        // Create storage instance
-        let mut storage = Self {
-            blocks_partition,
-            heights_partition,
-            utxo_partition,
-            addresses_partition,
-            stats_partition,
-            undo_partition,
-            block_index_partition,
-            transaction_index_partition,
-            db,
+            registered.get_or_insert(handler).clone()
         };
 
-        // Attempt to load existing chain state
-        match storage.get_current_storage_state() {
-            Ok(state) => {
-                info!(
-                    "Storage already initialized. Current chain state: latest block = {:?}, last update time = {}, blocks count = {}, chain work = {}",
-                    state.latest_block,
-                    state.last_update_time,
-                    state.blocks_count,
-                    state.chain_work
-                );
-                // Storage is already initialized; return as-is.
-                return Ok(storage);
-            }
-            Err(StryiStorageError::NoStorageStatsFound(_)) => {
-                // Database is brand new - initialize it
-                debug!("Storage not initialized. Proceeding with initialization...");
+        if self.is_failed() {
+            handler();
+        }
+    }
 
-                if let Some(gconfig) = genesis_config {
-                    info!("Inserting genesis block (bootstrap mode)...");
-
-                    // Initialize with genesis block - this will also create initial stats
-                    storage.init_with_genesis(gconfig.clone()).await?;
-
-                    info!(
-                        "Genesis inserted: allocations={}, genesis_state={:#?}, version={}",
-                        gconfig.wanted_balances.len(),
-                        gconfig.genesis_state,
-                        gconfig.version
-                    );
-                } else {
-                    // Pre-Genesis: create empty layout with initial stats
-                    storage.initialize_storage_state()?;
-                    info!(
-                        "Initialized storage in Pre-Genesis mode (no genesis block). The caller must commit genesis later."
-                    );
-                }
-            }
-            Err(e) => {
-                // Some other error occurred while checking storage state.
-                return Err(e);
-            }
+    /// Runs `callback` inside a write transaction under the writer lock and commits on `Ok`.
+    /// On callback error the transaction is rolled back; on commit error or panic the handle is marked failed.
+    fn update<T>(
+        &self,
+        callback: impl FnOnce(&mut WriteView<'_>) -> Result<T, StorageError>,
+    ) -> Result<T, StorageError> {
+        if self.is_failed() {
+            return Err(StorageError::Unhealthy);
         }
 
-        Ok(storage)
-    }
-
-    /// Inserts a genesis block if the database is empty, using the user-provided config.
-    ///
-    /// 1) Constructs the genesis block
-    /// 2) Validates it
-    /// 3) Initializes storage state
-    /// 4) Calls self.put_block and self.put_utxos to store it and update the chain stats
-    pub async fn init_with_genesis(
-        &mut self,
-        cfg: GenesisInitConfig,
-    ) -> Result<(), StryiStorageError> {
-        // Build the genesis block from user config
-        let genesis_block = Block::new_genesis(
-            cfg.version,
-            HashMap::from_iter(cfg.wanted_balances),
-            cfg.genesis_state,
-        );
-
-        // Validate the genesis block before storing
-        validate_genesis(&genesis_block).map_err(|e| {
-            StryiStorageError::InvalidGenesisBlock(format!("Genesis validation failed: {}", e))
+        let _writer = self.inner.writer.lock().map_err(|_| {
+            self.mark_failed();
+            StorageError::Unhealthy
         })?;
 
-        self.initialize_storage_state()?;
+        if self.is_failed() {
+            return Err(StorageError::Unhealthy);
+        }
 
-        // Store it via put_block
-        self.put_block(&genesis_block).await?;
+        // Force WAL fsync on commit
+        let mut writes = WriteOptions::default();
+        writes.set_sync(true);
+        writes.disable_wal(false);
 
-        info!("Genesis block successfully stored.");
+        let mut options = TransactionOptions::default();
+        options.set_snapshot(true);
 
-        // And utxos via put_utxos
-        let utxos_to_insert: Vec<(OutPoint, UTXO)> = extract_utxos_from_block(&genesis_block);
-
-        self.batch_put_utxos(utxos_to_insert).await?;
-
-        info!("Genesis UTXOs successfully stored.");
-
-        Ok(())
-    }
-
-    /// Creates an initial storage state if it doesn't exist.
-    /// Note: This should only be called when we know state doesn't exist (after NoStorageStatsFound error).
-    fn initialize_storage_state(&mut self) -> Result<(), StryiStorageError> {
-        // Create an initial state
-        let initial_state = StorageStateInformation {
-            latest_block: (0, BlockHash::empty()), // Empty is basically genesis block
-            last_update_time: 0,
-            blocks_count: 0,
-            chain_work: ChainWork::ZERO,
+        let mut view = StorageView {
+            inner: &self.inner,
+            reader: self.inner.db.transaction_opt(&writes, &options),
         };
 
-        // Store initial state
-        self.update_storage_state(initial_state)
+        let result = match catch_unwind(AssertUnwindSafe(|| callback(&mut view))) {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => {
+                if error.is_fatal() {
+                    self.mark_failed();
+                }
+
+                return Err(error);
+            }
+            Err(panic) => {
+                self.mark_failed();
+                resume_unwind(panic);
+            }
+        };
+
+        if self.is_failed() {
+            return Err(StorageError::Unhealthy);
+        }
+
+        if let Err(error) = view.reader.commit() {
+            self.mark_failed();
+            return Err(StorageError::Commit(Arc::new(error)));
+        }
+
+        Ok(result)
+    }
+}
+
+impl StorageReader for StryiStorage {
+    type Read<'a> = StryiRead<'a>;
+
+    fn read(&self) -> Result<Self::Read<'_>, StorageError> {
+        if self.is_failed() {
+            return Err(StorageError::Unhealthy);
+        }
+
+        Ok(StorageView {
+            inner: &self.inner,
+            reader: self.inner.db.snapshot(),
+        })
+    }
+}
+
+impl FullNodeStorage for StryiStorage {
+    fn apply_transition(
+        &self,
+        transition: ChainTransition<'_>,
+    ) -> Result<ChainTransitionResult, StorageError> {
+        self.update(|view| {
+            if let ChainTransition::Genesis { metadata, .. } = &transition
+                && metadata.schema_version != STORAGE_SCHEMA_VERSION
+            {
+                return Err(StorageError::UnsupportedSchema(metadata.schema_version));
+            }
+
+            apply_transition(view, transition)
+        })
+    }
+}
+
+impl StorageInner {
+    fn mark_failed(&self) {
+        if !self.failed.swap(true, Ordering::AcqRel) {
+            let handler = self
+                .failure_handler
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .clone();
+
+            if let Some(handler) = handler {
+                handler();
+            }
+        }
     }
 
-    /// Durably persists all committed data to disk.
-    /// Should be called during graceful shutdown to avoid data loss.
-    pub fn persist(&self) -> Result<(), StryiStorageError> {
+    fn table(&self, name: &str) -> &ColumnFamily {
         self.db
-            .persist(fjall::PersistMode::SyncAll)
-            .map_err(StryiStorageError::FjallError)
+            .cf_handle(name)
+            .expect("column families are fixed and verified on open")
+    }
+}
+
+impl<R> StorageView<'_, R> {
+    fn raw_get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError>
+    where
+        R: ReadSource,
+    {
+        if self.inner.failed.load(Ordering::Acquire) || self.inner.writer.is_poisoned() {
+            return Err(StorageError::Unhealthy);
+        }
+
+        self.reader
+            .get(self.inner.table(table), key)
+            .map_err(|error| {
+                self.inner.mark_failed();
+                error::backend_error(format!("read {table}"), error)
+            })
+    }
+
+    fn get<T: DeserializeOwned>(&self, table: &str, key: &[u8]) -> Result<Option<T>, StorageError>
+    where
+        R: ReadSource,
+    {
+        self.raw_get(table, key)?
+            .map(|bytes| self.decode(table, &bytes))
+            .transpose()
+    }
+
+    fn decode<T: DeserializeOwned>(&self, table: &str, bytes: &[u8]) -> Result<T, StorageError> {
+        postcard::from_bytes(bytes)
+            .map_err(|error| self.report_corruption(format!("Invalid {table} value: {error}")))
+    }
+
+    /// Permanently fail the shared handle and notify its failure handler.
+    fn report_corruption(&self, details: impl Into<String>) -> StorageError {
+        self.inner.mark_failed();
+        StorageError::Corruption(details.into())
+    }
+}
+
+impl WriteView<'_> {
+    fn put<T: Serialize>(&self, table: &str, key: &[u8], value: &T) -> Result<(), StorageError> {
+        let bytes = postcard::to_stdvec(value)
+            .map_err(|error| error::backend_error(format!("serialize {table}"), error))?;
+
+        self.reader
+            .put_cf(self.inner.table(table), key, bytes)
+            .map_err(|error| error::backend_error(format!("write {table}"), error))
+    }
+
+    fn remove(&self, table: &str, key: &[u8]) -> Result<(), StorageError> {
+        self.reader
+            .delete_cf(self.inner.table(table), key)
+            .map_err(|error| error::backend_error(format!("remove {table}"), error))
     }
 }

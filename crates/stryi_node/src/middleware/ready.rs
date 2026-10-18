@@ -6,13 +6,13 @@ use std::{
 };
 
 use http::Request as HttpRequest;
-use tokio::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tonic::server::NamedService;
 use tower::{Layer, Service};
 
 /// Shared flag for controlling readiness of the API.
 /// Wrapped services will reject requests until this flag is `true`.
-pub type ReadyFlag = Arc<RwLock<bool>>;
+pub type ReadyFlag = Arc<AtomicBool>;
 
 /// Implemented by a service to emit a protocol-correct "not ready" reply.
 pub trait NotReadyResponder: Send + Sync + 'static {
@@ -82,9 +82,10 @@ where
         let reject_call = self.inner.clone(); // not-ready response
 
         Box::pin(async move {
-            if !*ready_flag.read().await {
+            if !ready_flag.load(Ordering::Acquire) {
                 return Ok(reject_call.not_ready());
             }
+
             ready_call.call(req).await
         })
     }

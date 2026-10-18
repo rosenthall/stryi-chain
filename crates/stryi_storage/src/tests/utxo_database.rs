@@ -3,11 +3,10 @@ use std::collections::HashMap;
 use rand::rngs::StdRng;
 use rand::{Rng, RngExt, SeedableRng, random_range};
 use tempfile::TempDir;
-use tokio::test;
 
 use stryi_core::{
     address::AccountAddress,
-    storage::UtxoStorage,
+    storage::{StorageReader, UtxoStorage, UtxoWrite},
     transactions::{OutPoint, TransactionHash, UTXO},
 };
 
@@ -43,11 +42,11 @@ fn shuffle<T>(slice: &mut [T], rng: &mut StdRng) {
 }
 
 #[test]
-async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError> {
+fn test_utxo_database_random_integration() -> Result<(), StryiStorageError> {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let genesis_config = GenesisInitConfig::new_test();
-    let mut storage =
-        StryiStorage::initialize_in_path(temp_dir.path().to_owned(), Some(genesis_config)).await?;
+    let storage =
+        StryiStorage::initialize_in_path(temp_dir.path().to_owned(), Some(genesis_config))?;
 
     let addresses = vec![
         AccountAddress::new(&[0xAA; 20]),
@@ -75,18 +74,19 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     let (singles, batch_group) = all_pairs.split_at(half);
 
     for (op, ut) in singles {
-        storage.put_utxo(*op, *ut).await?;
+        storage.update(|view| view.batch_put_utxos(vec![(*op, *ut)]))?;
         truth_map.insert(*op, *ut);
     }
 
     let batch_vec: Vec<_> = batch_group.iter().map(|(op, ut)| (*op, *ut)).collect();
-    storage.batch_put_utxos(batch_vec).await?;
+    storage.update(|view| view.batch_put_utxos(batch_vec))?;
+
     for (op, ut) in batch_group {
         truth_map.insert(*op, *ut);
     }
 
     for (op, local) in &truth_map {
-        let db = storage.get_utxo(*op).await?.unwrap();
+        let db = storage.read()?.get_utxo(*op)?.unwrap();
         assert_eq!(db.txid.data, local.txid.data);
         assert_eq!(db.vout, local.vout);
         assert_eq!(db.value, local.value);
@@ -100,7 +100,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     }
 
     for &addr in &addresses {
-        let from_db = storage.get_utxos_for_address(addr).await?;
+        let from_db = storage.read()?.get_utxos_for_address(addr)?;
         let local_ops = addr_map.get(&addr).cloned().unwrap_or_default();
         assert_eq!(
             from_db.len(),
@@ -113,6 +113,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
         for (op, db_ut) in from_db {
             db_map.insert(op, db_ut);
         }
+
         for op in local_ops {
             let local_ut = truth_map.get(&op).unwrap();
             let db_ut = db_map.get(&op).unwrap();
@@ -132,7 +133,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     let mut removed2 = Vec::new();
 
     for op in &all_ops[..remove_single] {
-        let res = storage.remove_utxo(*op).await;
+        let res = storage.update(|view| view.batch_remove_utxos(vec![*op]));
         if res.is_ok() {
             truth_map.remove(op);
             removed1.push(*op);
@@ -140,7 +141,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     }
 
     let batch_ops = &all_ops[remove_single..(remove_single + remove_batch)];
-    let result_batch = storage.batch_remove_utxos(batch_ops.to_vec()).await;
+    let result_batch = storage.update(|view| view.batch_remove_utxos(batch_ops.to_vec()));
     if result_batch.is_ok() {
         for op in batch_ops {
             truth_map.remove(op);
@@ -149,8 +150,8 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     }
 
     for op in removed1.iter().chain(removed2.iter()) {
-        let check = storage.get_utxo(*op).await;
-        assert!(check.is_err(), "removed outpoint should stay absent");
+        let check = storage.read()?.get_utxo(*op);
+        assert!(check?.is_none(), "removed outpoint should stay absent");
     }
 
     let mut final_addrs = HashMap::new();
@@ -162,7 +163,7 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     }
 
     for &addr in &addresses {
-        let from_db = storage.get_utxos_for_address(addr).await?;
+        let from_db = storage.read()?.get_utxos_for_address(addr)?;
         let local_list = final_addrs.remove(&addr).unwrap_or_default();
         assert_eq!(
             from_db.len(),
@@ -186,9 +187,10 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     }
 
     if let Some((some_op, some_ut)) = truth_map.iter().next() {
-        let res = storage.put_utxo(*some_op, *some_ut).await;
+        let res = storage.update(|view| view.batch_put_utxos(vec![(*some_op, *some_ut)]));
         assert!(res.is_ok(), "duplicate put should not fail");
-        let check = storage.get_utxo(*some_op).await?.unwrap();
+
+        let check = storage.read()?.get_utxo(*some_op)?.unwrap();
         assert_eq!(
             check.value, some_ut.value,
             "duplicate put should keep the stored value"
@@ -196,15 +198,15 @@ async fn test_utxo_database_random_integration() -> Result<(), StryiStorageError
     }
 
     let empty_put: Vec<(OutPoint, UTXO)> = Vec::new();
-    let ep = storage.batch_put_utxos(empty_put).await;
+    let ep = storage.update(|view| view.batch_put_utxos(empty_put));
     assert!(ep.is_ok(), "empty batch put should be a no-op");
 
     let empty_rem: Vec<OutPoint> = Vec::new();
-    let er = storage.batch_remove_utxos(empty_rem).await;
+    let er = storage.update(|view| view.batch_remove_utxos(empty_rem));
     assert!(er.is_ok(), "empty batch remove should be a no-op");
 
     let fake = random_outpoint(&mut rng);
-    let rem = storage.remove_utxo(fake).await;
+    let rem = storage.update(|view| view.batch_remove_utxos(vec![fake]));
     assert!(rem.is_err(), "missing outpoint remove should fail");
 
     Ok(())

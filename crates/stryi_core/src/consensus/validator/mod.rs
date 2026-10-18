@@ -32,7 +32,7 @@ impl BlockValidator {
     }
 
     /// Runs the full consensus pipeline.
-    pub async fn validate<DB>(&self, block: &Block, db: &DB) -> Result<(), StryiCoreError>
+    pub fn validate<DB>(&self, block: &Block, db: &DB) -> Result<(), StryiCoreError>
     where
         DB: BlockStorage + UtxoStorage + Send + Sync,
     {
@@ -45,13 +45,13 @@ impl BlockValidator {
         let hash = block.block_hash();
         let short_hash = &hash.to_string()[..8];
 
-        header::validate_header(block, &self.difficulty_calc, db).await?;
+        header::validate_header(block, &self.difficulty_calc, db)?;
         debug!("Block {short_hash} passed header validation");
 
         block::validate_block_structure(block)?;
         debug!("Block {short_hash} passed structure validation");
 
-        block::validate_transactions(block, &self.consensus_consts, db).await?;
+        block::validate_transactions(block, &self.consensus_consts, db)?;
         debug!("Block {short_hash} passed transaction validation");
 
         Ok(())
@@ -60,11 +60,7 @@ impl BlockValidator {
     /// Validates a block for a fork: header history and transactions are both
     /// resolved against the fork-local view, which reads through to canonical
     /// storage unless the fork overrides the entry.
-    pub async fn validate_for_fork<DB>(
-        &self,
-        block: &Block,
-        view: &DB,
-    ) -> Result<(), StryiCoreError>
+    pub fn validate_for_fork<DB>(&self, block: &Block, view: &DB) -> Result<(), StryiCoreError>
     where
         DB: BlockStorage + UtxoStorage + Send + Sync,
     {
@@ -77,13 +73,13 @@ impl BlockValidator {
         let hash = block.block_hash();
         let short_hash = &hash.to_string()[..8];
 
-        header::validate_header(block, &self.difficulty_calc, view).await?;
+        header::validate_header(block, &self.difficulty_calc, view)?;
         debug!("Fork block {short_hash} passed header validation");
 
         block::validate_block_structure(block)?;
         debug!("Fork block {short_hash} passed structure validation");
 
-        block::validate_transactions(block, &self.consensus_consts, view).await?;
+        block::validate_transactions(block, &self.consensus_consts, view)?;
         debug!("Fork block {short_hash} passed transaction validation");
 
         Ok(())

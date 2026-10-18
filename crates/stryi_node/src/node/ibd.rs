@@ -1,21 +1,16 @@
 use crate::error::StryiNodeError;
-use crate::node::prune_reorg_transaction_indexes;
-use std::sync::Arc;
 use std::time::Instant;
 use stryi_core::StryiCoreError;
 use stryi_core::block::{Block, BlockHash};
 use stryi_core::consensus::{ConsensusEngine, ConsensusVerdict};
-use stryi_storage::StryiStorage;
-use tokio::sync::RwLock;
 use tracing::{debug, error, info, trace, warn};
 
 /// IBD helper feeds blocks to the consensus engine in-order
 /// and logs everything (batch start/end, per-block details, verdicts, and summary).
 /// Immediately exists if any of the blocks is `Rejected`
-#[tracing::instrument(level = "info", skip(engine, storage, blocks_in_order))]
-pub async fn ingest_ibd_batch<E>(
+#[tracing::instrument(level = "info", skip(engine, blocks_in_order))]
+pub fn ingest_ibd_batch<E>(
     engine: &mut E,
-    storage: &Arc<RwLock<StryiStorage>>,
     mut blocks_in_order: Vec<Block>,
 ) -> Result<(), StryiNodeError>
 where
@@ -55,16 +50,12 @@ where
             tx_count
         );
 
-        match engine
-            .on_block(b)
-            .await
-            .map_err(|e| StryiNodeError::other(format!("IBD consensus failed: {e}")))?
-        {
-            ConsensusVerdict::Applied { chain_work } => {
+        match engine.on_block(b)? {
+            ConsensusVerdict::Applied { transition } => {
                 cnt_applied += 1;
                 info!(
                     "APPLIED: height={}, hash={}, chain_work={}",
-                    height, hash, chain_work
+                    height, hash, transition.chain_work
                 );
             }
 
@@ -78,17 +69,18 @@ where
                 trace!("ALREADY_IN_FORK_TREE: height={}, hash={}", height, hash);
             }
 
-            ConsensusVerdict::CausedReorganization { mut deleted_blocks } => {
+            ConsensusVerdict::CausedReorganization { transition } => {
                 cnt_reorgs += 1;
-                let removed_count = deleted_blocks.len();
-                prune_reorg_transaction_indexes(storage, &deleted_blocks).await?;
                 warn!(
                     "REORG: new_tip height={}, hash={}; removed_blocks_count={}",
-                    height, hash, removed_count
+                    transition.new_head.0,
+                    transition.new_head.1,
+                    transition.detached.len()
                 );
+
                 // A detailed list goes to TRACE to avoid noisy WARNs
-                for (h, del_hash) in deleted_blocks.drain() {
-                    trace!("REORG_REMOVED: height={}, old_hash={}", h, del_hash);
+                for (height, hash) in transition.detached {
+                    trace!("REORG_REMOVED: height={}, old_hash={}", height, hash);
                 }
             }
 
@@ -104,6 +96,7 @@ where
                     hash,
                     e.to_string()
                 );
+
                 return Err(StryiNodeError::other(format!(
                     "IBD rejected block {} at height {}: {}",
                     hash, height, e

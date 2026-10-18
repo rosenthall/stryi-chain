@@ -25,7 +25,7 @@ fn resolve_utxo<'a>(
 /// `managed` are UTXOs from previous blocks;
 /// `in_block` are UTXOs created earlier in this block;
 /// `spent` is a thread-safe reservation set to close the double-spend window.
-pub async fn validate_transaction(
+pub fn validate_transaction(
     tx: &Transaction,
     managed: &DashMap<OutPoint, UTXO>,
     in_block: &DashMap<OutPoint, UTXO>,
@@ -34,7 +34,7 @@ pub async fn validate_transaction(
     match tx.data.kind {
         TransactionKind::Genesis => validate_genesis_tx(tx),
         TransactionKind::Coinbase { .. } => validate_coinbase_tx(tx),
-        TransactionKind::Payment => validate_payment_tx(tx, managed, in_block, spent).await,
+        TransactionKind::Payment => validate_payment_tx(tx, managed, in_block, spent),
     }
 }
 
@@ -67,7 +67,7 @@ fn validate_coinbase_tx(tx: &Transaction) -> Result<(), StryiCoreError> {
 /// 2. Iterate inputs - reserve, check ownership, accumulate sum(inputs);
 /// 3. Accumulate sum(outputs);  
 /// 4. Require sum(inputs) >= sum(outputs).
-async fn validate_payment_tx(
+fn validate_payment_tx(
     tx: &Transaction,
     managed: &DashMap<OutPoint, UTXO>,
     in_block: &DashMap<OutPoint, UTXO>,

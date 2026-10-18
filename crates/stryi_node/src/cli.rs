@@ -117,6 +117,7 @@ pub struct CliArgs {
 
     /// Human-readable chain name (exposed via sync).
     #[arg(long)]
+    #[serde(rename = "chain_name")]
     pub sync_chain_name: Option<String>,
 
     /// Sync-protocol version.

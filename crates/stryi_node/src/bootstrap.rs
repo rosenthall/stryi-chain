@@ -1,26 +1,25 @@
-//! Lean bootstrap for saving this datadir to a chosen genesis (SSOT in storage::meta).
+//! Bootstrap for saving this datadir to a chosen genesis.
 //!
 //! Responsibilities:
-//!   - Probe storage meta to learn whether the datadir is already saved/initialized.
+//!   - Probe storage metadata to learn whether the datadir is initialized.
 //!   - Validate a candidate genesis block with strict, deterministic invariants.
-//!   - Ask for a concise confirmation and atomically save into `storage::meta`.
+//!   - Ask for confirmation and atomically save metadata, genesis and allocations.
 //!
-//! Out of scope (caller must do right after a successful save):
-//!   - Commit the genesis block into storage partitions (blocks/heights).
-//!   - Start IBD / enable external services.
-//!
-//!
+//! Starting IBD and enabling external services remain the caller's responsibility.
 
 use std::io;
 use std::io::Write;
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use colored::Colorize;
 use comfy_table::Table;
 use stryi_core::block::Block;
 use stryi_core::consensus::ConsensusConsts;
-use stryi_storage::{StorageStatus, validate_genesis, write_status_atomic};
+use stryi_core::storage::{
+    ChainMetadata, ChainTransition, FullNodeStorage, StorageReader, StorageStats,
+};
+use stryi_storage::StryiStorage;
+use stryi_storage::{STORAGE_SCHEMA_VERSION, StorageStatus, validate_genesis};
 
 use crate::error::StryiNodeError;
 
@@ -32,22 +31,22 @@ pub enum SaveOutcome {
 
 #[derive(Clone)]
 pub struct GenesisBootstrap {
-    /// Root datadir
-    datadir: PathBuf,
+    storage: StryiStorage,
 }
 
 impl GenesisBootstrap {
-    /// Create a new bootstrap bound to the given datadir.
-    pub fn new(datadir: PathBuf) -> Self {
-        Self { datadir }
+    /// Create a new bootstrap bound to the open storage.
+    pub fn new(storage: StryiStorage) -> Self {
+        Self { storage }
     }
 
     /// Probe current meta status from storage.
     pub fn probe_meta(&self) -> Result<StorageStatus, StryiNodeError> {
-        StorageStatus::from_path(&self.datadir)
+        self.storage
+            .status()
             .map_err(|e| StryiNodeError::other(format!("failed to probe storage meta: {e}")))
     }
-    /// Show a concise summary and atomically save into storage::meta.
+    /// Show a concise summary and atomically save the chain's initial state.
     ///
     /// Arguments:
     /// - `block`: validated candidate genesis block.
@@ -58,11 +57,8 @@ impl GenesisBootstrap {
     ///   Intended for non-interactive environments (e.g. E2E tests, CI, Docker).
     ///
     /// Returns:
-    /// - `AlreadySaved` if meta already indicates an initialized datadir.
-    /// - `SavedNow` after successfully writing meta.
-    ///
-    /// Note: committing the block into storage partitions is the caller's responsibility
-    /// and should happen immediately after this returns `SavedNow`.
+    /// - `AlreadySaved` when the stored genesis content and chain identity match.
+    /// - `SavedNow` after successfully committing metadata, genesis and allocations.
     pub fn confirm_and_save(
         &self,
         block: &Block,
@@ -84,70 +80,108 @@ impl GenesisBootstrap {
             StryiNodeError::other(format!("provided genesis candidate is invalid: {e}"))
         })?;
 
-        // If meta is already initialized, do nothing.
-        match self.probe_meta()? {
-            StorageStatus::Initialized { .. } => return Ok(SaveOutcome::AlreadySaved),
-            StorageStatus::Corrupted { reason } => {
-                return Err(StryiNodeError::other(format!(
-                    "storage meta is corrupted: {reason}"
-                )));
-            }
-            StorageStatus::NoGenesis => { /* continue */ }
+        // An initialized datadir must still match the supplied genesis and chain identity.
+        if matches!(self.probe_meta()?, StorageStatus::Initialized { .. }) {
+            self.verify_saved_genesis(block, chain_name, protocol_version)?;
+
+            return Ok(SaveOutcome::AlreadySaved);
         }
 
         // Present a concise summary
         self.print_block_summary(block);
 
-        // Confirmation prompt (skipped if --accept-genesis is provided)
         if !accept_genesis {
-            let mut input = String::new();
-
-            println!(
-                "{} You are about to accept the shown genesis for this node.\n \
-            This choice is permanent unless you reinitialize the node.",
-                "WARNING".on_yellow().black().bold(),
-            );
-            println!(
-                "Before continuing, verify origin, all the header values (height, state/Merkle root) \n \
-            and EVERY allocation (recipient -> amount)."
-            );
-            println!("Origin: {}", origin.unwrap_or("<unknown>").bold());
-            println!("Type 'yes' to confirm; anything else cancels.");
-            print!("Accept genesis (yes/no): ");
-
-            io::stdout()
-                .flush()
-                .map_err(|e| StryiNodeError::other(format!("stdout flush failed: {e}")))?;
-            io::stdin()
-                .read_line(&mut input)
-                .map_err(|e| StryiNodeError::other(format!("stdin read failed: {e}")))?;
-
-            if !input.trim().eq_ignore_ascii_case("yes") {
-                return Err(StryiNodeError::other("user rejected the provided genesis"));
-            }
+            Self::confirm_genesis(origin)?;
         }
 
-        // Atomically save into storage::meta
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-
-        let status = StorageStatus::Initialized {
-            chain_name: chain_name.to_string(),
-            protocol_version,
-            created_unix_ts: now,
-        };
-
-        write_status_atomic(&self.datadir, status)
-            .map_err(|e| StryiNodeError::other(format!("failed to write storage meta: {e}")))?;
-
-        // NOTE: committing the same `block` into storage partitions and initializing stats at height 0
-        // must be performed by the caller immediately after this function returns.
-        //
-        // TODO: introduce quorum of independent sources before the confirmation prompt.
+        self.save_genesis(block, chain_name, protocol_version)?;
 
         Ok(SaveOutcome::SavedNow)
+    }
+
+    fn verify_saved_genesis(
+        &self,
+        block: &Block,
+        chain_name: &str,
+        protocol_version: u64,
+    ) -> Result<(), StryiNodeError> {
+        let saved_metadata = self
+            .storage
+            .read()?
+            .metadata()?
+            .ok_or_else(|| StryiNodeError::other("initialized storage has no metadata"))?;
+
+        // Supply the expected identity without changing the stored creation timestamp.
+        let expected_metadata = ChainMetadata {
+            chain_name: chain_name.to_string(),
+            protocol_version,
+            ..saved_metadata
+        };
+
+        self.storage.apply_transition(ChainTransition::Genesis {
+            block,
+            metadata: &expected_metadata,
+        })?;
+
+        Ok(())
+    }
+
+    fn confirm_genesis(origin: Option<&str>) -> Result<(), StryiNodeError> {
+        // TODO: introduce quorum of independent sources before the confirmation prompt.
+        let mut input = String::new();
+
+        println!(
+            "{} You are about to accept the shown genesis for this node.\n \
+        This choice is permanent unless you reinitialize the node.",
+            "WARNING".on_yellow().black().bold(),
+        );
+        println!(
+            "Before continuing, verify origin, all the header values (height, state/Merkle root) \n \
+        and EVERY allocation (recipient -> amount)."
+        );
+        println!("Origin: {}", origin.unwrap_or("<unknown>").bold());
+        println!("Type 'yes' to confirm; anything else cancels.");
+        print!("Accept genesis (yes/no): ");
+
+        io::stdout()
+            .flush()
+            .map_err(|e| StryiNodeError::other(format!("stdout flush failed: {e}")))?;
+        io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| StryiNodeError::other(format!("stdin read failed: {e}")))?;
+
+        if !input.trim().eq_ignore_ascii_case("yes") {
+            return Err(StryiNodeError::other("user rejected the provided genesis"));
+        }
+
+        Ok(())
+    }
+
+    fn save_genesis(
+        &self,
+        block: &Block,
+        chain_name: &str,
+        protocol_version: u64,
+    ) -> Result<(), StryiNodeError> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| StryiNodeError::other(format!("cannot read local clock: {e}")))?
+            .as_secs();
+
+        let metadata = ChainMetadata {
+            schema_version: STORAGE_SCHEMA_VERSION,
+            chain_name: chain_name.to_string(),
+            protocol_version,
+            created_unix_ts: i64::try_from(now)
+                .map_err(|_| StryiNodeError::other("local clock exceeds metadata range"))?,
+        };
+
+        self.storage.apply_transition(ChainTransition::Genesis {
+            block,
+            metadata: &metadata,
+        })?;
+
+        Ok(())
     }
 
     fn print_consensus_consts(cs: &ConsensusConsts) {
@@ -236,7 +270,7 @@ impl GenesisBootstrap {
                 ]);
             }
         } else {
-            // Fallback: no txs (should not happen if validate_candidate was called).
+            // Fallback: no txs (should not happen after validate_genesis).
             table.add_row(vec!["<no outputs>".to_string(), "0".into(), "0".into()]);
         }
 

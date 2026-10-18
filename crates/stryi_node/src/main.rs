@@ -61,8 +61,8 @@ use std::time::Duration;
 use stryi_core::address::AccountAddress;
 use stryi_core::block::Block;
 use stryi_core::mempool::{MemPool, MemPoolConfig, RbfPolicy, UtxoLookup};
-use stryi_core::storage::UtxoStorage;
-use stryi_core::transactions::{FeePolicy, OutPoint};
+use stryi_core::storage::{StorageError, StorageReader, UtxoStorage};
+use stryi_core::transactions::{FeePolicy, OutPoint, UTXO};
 use stryi_network::{
     PeerId, RendezvousMode, StryiBehaviourConfig, StryiNetworkManager, StryiNetworkManagerConfig,
 };
@@ -117,6 +117,32 @@ fn use_json_logs() -> bool {
     )
 }
 
+async fn lookup_mempool_utxos(
+    storage: StryiStorage,
+    outpoints: Vec<OutPoint>,
+) -> Result<HashMap<OutPoint, UTXO>, StorageError> {
+    tokio::task::spawn_blocking(move || {
+        // Missing inputs are omitted for mempool validation to resolve; all reads
+        // must still describe one chain snapshot, and storage failures propagate.
+        let view = storage.read()?;
+
+        let mut utxos = HashMap::with_capacity(outpoints.len());
+
+        for outpoint in outpoints {
+            if let Some(utxo) = view.get_utxo(outpoint)? {
+                utxos.insert(outpoint, utxo);
+            }
+        }
+
+        Ok(utxos)
+    })
+    .await
+    .map_err(|e| StorageError::Backend {
+        operation: "mempool lookup".to_string(),
+        source: Arc::new(e),
+    })?
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Use EnvFilter to filter out some of the unnecessary logs (like h2, handshakes, etc.)
@@ -124,8 +150,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let filter_layer = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"))
         .add_directive("hyper=info".parse()?)
-        .add_directive("h2=info".parse()?)
-        .add_directive("lsm_tree=info".parse()?);
+        .add_directive("h2=info".parse()?);
 
     // With telemetry enabled we include the console layer
     #[cfg(feature = "telemetry")]
@@ -227,13 +252,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     info!("Start mode = {:?}", start_mode);
 
-    // Setup bootstrap helper
-    let genesis_bootstrap = GenesisBootstrap::new(cfg.storage_path.clone());
+    // All subsystems share cancellation; storage failures also clear readiness.
+    let master_cancel_token = CancellationToken::new();
+    let grpc_is_ready = ReadyFlag::new(std::sync::atomic::AtomicBool::new(false));
+    let http_is_ready = ReadyFlag::new(std::sync::atomic::AtomicBool::new(false));
+    let storage = StryiStorage::initialize_in_path(cfg.storage_path.clone(), None)?;
+
+    {
+        let grpc_ready = grpc_is_ready.clone();
+        let http_ready = http_is_ready.clone();
+        let cancel = master_cancel_token.clone();
+
+        storage.set_failure_handler(Arc::new(move || {
+            grpc_ready.store(false, std::sync::atomic::Ordering::Release);
+            http_ready.store(false, std::sync::atomic::Ordering::Release);
+            cancel.cancel();
+        }));
+    }
+
+    let genesis_bootstrap = GenesisBootstrap::new(storage.clone());
 
     // Initializing storage in the configured provided path
 
     // probe storage's meta-information
-    let storage_status = StorageStatus::from_path(&cfg.storage_path).map_err(|e| {
+    let storage_status = storage.status().map_err(|e| {
         error!(
             "Failed to probe storage at {}: {e}",
             cfg.storage_path.display()
@@ -246,20 +288,51 @@ async fn main() -> Result<(), Box<dyn Error>> {
         storage_status
     );
 
-    let storage: Arc<RwLock<StryiStorage>> = match (start_mode, &storage_status) {
-        // if already initialized - just open
-        (_start_mode, StorageStatus::Initialized { .. }) => {
-            let st = StryiStorage::initialize_in_path(cfg.storage_path.clone(), None).await?;
-            Arc::new(RwLock::new(st))
+    match (start_mode, &storage_status) {
+        // Verify the configured identity and any supplied genesis against the saved chain.
+        (
+            _,
+            StorageStatus::Initialized {
+                chain_name,
+                protocol_version,
+                ..
+            },
+        ) => {
+            if chain_name != &cfg.chain_name
+                || *protocol_version != cfg.sync_protocol_version as u64
+            {
+                return Err(StryiNodeError::invalid_config_value(
+                    "chain_name or sync_protocol_version does not match the stored chain",
+                )
+                .into());
+            }
+
+            if let Some(path) = &cfg.genesis_config_path {
+                let genesis = try_genesis_config_from_path(path)?;
+                let block = Block::new_genesis(
+                    genesis.version,
+                    HashMap::from_iter(genesis.wanted_balances),
+                    genesis.genesis_state,
+                );
+
+                genesis_bootstrap.confirm_and_save(
+                    &block,
+                    &cfg.chain_name,
+                    cfg.sync_protocol_version as u64,
+                    Some("local"),
+                    cfg.auto_accept_genesis,
+                )?;
+            }
         }
 
-        // if doing bootstrap and datadir is empty - setup meta
+        // Bootstrap storage with no committed genesis, including an open pre-genesis DB.
         (NodeStartMode::Bootstrap, StorageStatus::NoGenesis) => {
             let p = cfg.genesis_config_path.as_ref().ok_or_else(|| {
                 StryiNodeError::invalid_config_value(
                     "Bootstrap mode requires `genesis_config_path`",
                 )
             })?;
+
             let genesis_cfg = try_genesis_config_from_path(p)?;
 
             let preview_block = Block::new_genesis(
@@ -281,23 +354,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     error!("confirm_and_save failed: {e}");
                     e
                 })?;
-
-            let st = StryiStorage::initialize_in_path(cfg.storage_path.clone(), Some(genesis_cfg))
-                .await?;
-            Arc::new(RwLock::new(st))
         }
 
-        // if Join and datadir is empty it's a pre-Genesis layout
-        // genesis will be fetched and saved later.
-        (NodeStartMode::Join, StorageStatus::NoGenesis) => {
-            let st = StryiStorage::initialize_in_path(cfg.storage_path.clone(), None).await?;
-            Arc::new(RwLock::new(st))
-        }
-
-        // if meta is corrupted - halt
-        (_, StorageStatus::Corrupted { reason }) => {
-            return Err(StryiNodeError::other(format!("Storage meta corrupted: {reason}")).into());
-        }
+        (NodeStartMode::Join, StorageStatus::NoGenesis) => {}
 
         _ => panic!("unexpected (start_mode, storage_status) state"),
     };
@@ -310,22 +369,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         60 * 60,               // 1-hour expiry time
     );
 
-    // Create utxo_lookup closure for mempool that reads UTXO by the outpoint from storage
     let utxo_lookup: UtxoLookup = {
         let storage = storage.clone();
 
-        Box::new(move |out_point: &OutPoint| {
-            let storage = storage.clone();
-            let out_point = *out_point;
-
-            Box::pin(async move {
-                storage
-                    .read()
-                    .await
-                    .get_utxo(out_point)
-                    .await
-                    .unwrap_or(None)
-            })
+        Box::new(move |outpoints: Vec<OutPoint>| {
+            Box::pin(lookup_mempool_utxos(storage.clone(), outpoints))
         })
     };
 
@@ -399,10 +447,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Create a channel, in which Miner will be sending blocks once found nonce,
     // so nonce can process it (apply, or propagate to other nodes)
     let (mined_blocks_sender, mined_blocks_receiver) = mpsc::channel(4);
-
-    // Master cancellation token, it triggers by SIGINT/SIGTERM signals
-    // All subsystems receive child tokens derived from this one
-    let master_cancel_token = CancellationToken::new();
 
     let network_manager = StryiNetworkManager::new(
         &network_manager_config,
@@ -496,10 +540,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // -- Spawn the miner if enabled --
     // This must happen after connect() (thus channels exist) and after consensus engine init (thus difficulty calc available).
-    if let Some(miner_cfg) = miner_config {
+    let miner_task = if let Some(miner_cfg) = miner_config {
         info!("Spawning miner...");
 
-        let consensus_consts = build_consensus_constants(&storage).await?;
+        let consensus_consts = build_consensus_constants(&storage)?;
 
         let backend: Arc<dyn MinerBackend> = Arc::new(NodeMinerBackend {
             storage: storage.clone(),
@@ -515,9 +559,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             master_cancel_token.child_token(),
         );
 
-        miner.spawn();
+        let handle = miner.spawn();
         info!("Miner spawned successfully!");
-    }
+
+        Some(handle)
+    } else {
+        None
+    };
 
     // Spawn a signal listener that cancels the master token on SIGINT/SIGTERM.
     {
@@ -547,25 +595,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
         miner_bridge,
         tls_identity,
         http_service_config,
-        grpc_is_ready: ReadyFlag::new(RwLock::new(false)),
-        http_is_ready: ReadyFlag::new(RwLock::new(false)),
+        grpc_is_ready,
+        http_is_ready,
         http_advertise_address: http_advertise,
         grpc_advertise_address: grpc_advertise,
-        cancel_token: master_cancel_token.child_token(),
+        cancel_token: master_cancel_token.clone(),
     };
 
     // Transition into the event loop and run until canceled
     let event_loop = node.into_event_loop(ctx);
-    event_loop.run().await?;
-    /* now it blokchainin'*/
+    let result = event_loop.run().await;
 
-    info!("Services stopped. Flushing storage...");
-    if let Err(e) = storage.read().await.persist() {
-        error!("Failed to flush storage on shutdown: {e:?}");
-    } else {
-        info!("Storage flushed successfully.");
+    master_cancel_token.cancel();
+
+    if let Some(handle) = miner_task {
+        handle
+            .await
+            .map_err(|e| StryiNodeError::other(format!("miner task failed: {e}")))?;
     }
 
+    result?;
+    /* now it blokchainin'*/
+
     info!("Node shutdown complete.");
+
     Ok(())
 }

@@ -2,15 +2,13 @@ use crate::chaingen::seed;
 use crate::chaingen::seed::SeedValue;
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use stryi_core::PrivateKey;
 use stryi_core::address::AccountAddress;
-use tracing::trace;
 
 /// Top-level config for chain-generator tool.
 /// Includes two tables : `[chain]` and `[blocks]` for chain-wide and block-gen settings correspondingly.
-///
-/// **NOTE**: Some chain parameters (like `chain_name` and `chain_id`) and Consensus-critical consts
-/// are expected to be set in the genesis JSON file, not here.
+/// Consensus-critical constants are read from the genesis JSON file.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ChainGenConfig {
     /// Chain-wide settings.
@@ -20,52 +18,15 @@ pub struct ChainGenConfig {
     pub blocks: BlocksSettings,
 }
 
-/// How generated blocks are persisted/applied.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PersistenceMode {
-    ConsensusEngine,
-    DirectInsert,
-}
-
-impl std::str::FromStr for PersistenceMode {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "consensus_engine" => Ok(PersistenceMode::ConsensusEngine),
-            "direct_insert" => Ok(PersistenceMode::DirectInsert),
-            other => Err(format!(
-                "invalid persistence_mode: `{}`. Allowed values: \"consensus_engine\", \"direct_insert\"",
-                other
-            )),
-        }
-    }
-}
-
-impl TryFrom<String> for PersistenceMode {
-    type Error = String;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        value.as_str().parse()
-    }
-}
-
-impl<'de> Deserialize<'de> for PersistenceMode {
-    fn deserialize<D>(deserializer: D) -> Result<PersistenceMode, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        PersistenceMode::try_from(s).map_err(serde::de::Error::custom)
-    }
-}
-
 /// Chain-wide settings.
 /// Correspond to the `[chain]` block from the docs.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ChainSettings {
     /// Total number of blocks to generate after genesis, including distributor block.
     pub num_blocks: u64,
+
+    /// Maximum generation time in seconds. Omitted means no limit.
+    pub max_generation_time_secs: Option<u64>,
 
     /// Seed strategy: either a single seed (`42`) or multiple ranges.
     pub seed: SeedValue,
@@ -75,15 +36,10 @@ pub struct ChainSettings {
     /// Path to genesis JSON (same format as used by `stryi-node`).
     pub genesis_path: PathBuf,
 
-    /// How generated blocks are persisted/applied.
-    /// Allowed values: "consensus_engine", "direct_insert"
-    /// Default: "consensus_engine"
-    /// - "consensus_engine" - Build and feed blocks into StryiConsensusEngine;
-    ///   validates and applies blocks as a real node would.
-    /// - "direct_insert" - Write blocks directly to storage without consensus validation
-    ///   Faster, useful for low-level tests, but may create chains that real nodes reject.
-    ///   **Use only when you know what you are doing.**
-    pub persistence_mode: PersistenceMode,
+    /// Human-readable network name stored in metadata; defaults to "dev".
+    pub chain_name: Option<String>,
+    /// Sync protocol version stored in metadata; defaults to 1.
+    pub protocol_version: Option<u64>,
 }
 
 /// Block-generation rules for timestamps, miner, and synthetic traffic.
@@ -106,11 +62,6 @@ pub struct BlocksSettings {
 
     /// Number of unique active addresses participating in transfers.
     pub active_addresses_count: u32,
-
-    /// Whether to insert undo data for each block.
-    /// This will increase the size of the generated chain but allows testing of reorg-related logic
-    /// NOTE: Ignored when using persistence_mode consensus_engine, because it does it anyway
-    pub need_undo: bool,
 }
 
 impl ChainGenConfig {
@@ -133,6 +84,19 @@ impl ChainGenConfig {
             );
         }
 
+        if let Some(seconds) = self.chain.max_generation_time_secs {
+            if seconds == 0 {
+                return Err("max_generation_time_secs must be > 0".to_string());
+            }
+
+            if Instant::now()
+                .checked_add(Duration::from_secs(seconds))
+                .is_none()
+            {
+                return Err("max_generation_time_secs is too large to form a deadline".to_string());
+            }
+        }
+
         if self.blocks.average_block_time_secs == 0 {
             return Err("average_block_time_secs must be > 0".to_string());
         }
@@ -143,6 +107,7 @@ impl ChainGenConfig {
                     .to_string(),
             );
         }
+
         if self.blocks.min_transactions_per_block < 2 {
             return Err(
                 "min_transactions_per_block must be >= 2, since the first transaction slot is always reserved for a coinbase.".to_string()
@@ -164,18 +129,6 @@ impl ChainGenConfig {
                     .to_string(),
             );
         }
-
-        // undo + direct_insert is not supported - undo records are only produced
-        // by the consensus engine, so require consensus_engine mode when undo is requested.
-        if self.blocks.need_undo && self.chain.persistence_mode == PersistenceMode::DirectInsert {
-            return Err(
-                "need_undo=true requires persistence_mode=\"consensus_engine\". \
-                 Direct-insert mode cannot produce BlockUndo records."
-                    .to_string(),
-            );
-        }
-
-        trace!("Persistence mode set to {:?}", &self.chain.persistence_mode);
 
         // validate seed ranges via helper
         seed::validate(&self.chain.seed, self.chain.num_blocks)?;
@@ -202,11 +155,14 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time after epoch")
             .as_nanos();
+
         let path = std::env::temp_dir().join(format!(
             "stryi-chaingen-config-{unique}-{}.json",
             std::process::id()
         ));
+
         fs::write(&path, "{}").expect("write test genesis");
+
         path
     }
 
@@ -214,10 +170,12 @@ mod tests {
         ChainGenConfig {
             chain: ChainSettings {
                 num_blocks: 10,
+                max_generation_time_secs: None,
                 seed: SeedValue::Single(42),
                 output_path: std::env::temp_dir(),
                 genesis_path,
-                persistence_mode: PersistenceMode::ConsensusEngine,
+                chain_name: None,
+                protocol_version: None,
             },
             blocks: BlocksSettings {
                 funding_key: PrivateKey::try_from(
@@ -232,7 +190,6 @@ mod tests {
                 min_transactions_per_block: 2,
                 max_transactions_per_block: 6,
                 active_addresses_count: 10,
-                need_undo: false,
             },
         }
     }

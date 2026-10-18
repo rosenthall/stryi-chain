@@ -25,12 +25,21 @@ use crate::block::BlockData;
 use crate::mempool::dependencies::DependencyTracker;
 use crate::mempool::storage::TransactionStorage;
 use crate::mempool::validator::MempoolTxValidator;
+use crate::storage::StorageError;
 use crate::transactions::{OutPoint, Transaction, TransactionHash, UTXO};
 use tracing::warn;
 
 /// Async lookup used to resolve UTXOs that are not produced by the mempool.
-pub type UtxoLookup =
-    Box<dyn Fn(&OutPoint) -> Pin<Box<dyn Future<Output = Option<UTXO>> + Send>> + Send + Sync>;
+/// Resolve the batch from one stable view. Missing outpoints are omitted from the
+/// map; backend failures must propagate instead of looking like missing inputs.
+pub type UtxoLookup = Box<
+    dyn Fn(
+            Vec<OutPoint>,
+        )
+            -> Pin<Box<dyn Future<Output = Result<HashMap<OutPoint, UTXO>, StorageError>> + Send>>
+        + Send
+        + Sync,
+>;
 
 pub struct MemPool {
     storage: TransactionStorage,
@@ -69,6 +78,9 @@ impl MemPool {
 
         let utxos = match self.validator.validate(&tx, &self.storage).await {
             Ok(utxos) | Err(MempoolValidationError::PotentialRbf(utxos)) => utxos,
+            Err(MempoolValidationError::Storage(err)) => {
+                return Err(MemPoolError::Storage(Box::new(err)));
+            }
             Err(err) => return Err(MemPoolError::ValidationError(err)),
         };
 
@@ -149,8 +161,7 @@ impl MemPool {
     /// Restores storage and dependency state from a serialized snapshot.
     pub fn restore_state(&mut self, data: Vec<u8>) -> Result<(), MemPoolError> {
         let sync_data: MemPoolSyncData =
-            postcard::from_bytes(&data)
-                .map_err(|e| MemPoolError::Storage(Box::new(e)))?;
+            postcard::from_bytes(&data).map_err(|e| MemPoolError::Storage(Box::new(e)))?;
 
         self.storage.clear();
         self.dependency_tracker.clear();
