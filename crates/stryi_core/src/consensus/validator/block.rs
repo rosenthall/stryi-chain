@@ -42,7 +42,7 @@ fn ensure_coinbase_context(block: &Block) -> Result<(), StryiCoreError> {
 
 /// Rejects blocks with duplicated transactions.
 fn ensure_unique_txs(block: &Block) -> Result<(), StryiCoreError> {
-    let uniq: HashSet<_> = block.data.transactions.iter().cloned().collect();
+    let uniq: HashSet<_> = block.data.transactions.iter().collect();
 
     if uniq.len() != block.data.transactions.len() {
         return Err(StryiCoreError::ConsensusValidationFailed {

@@ -276,8 +276,8 @@ fn verify_current_state<S: StorageRead>(
         ));
     }
 
-    let block = storage
-        .get_block_by_hash(state.latest_block.1)?
+    let header = storage
+        .get_block_header_by_hash(state.latest_block.1)?
         .ok_or_else(|| StorageError::Corruption("Canonical tip body is absent".into()))?;
     let canonical = storage
         .get_block_hash_by_height(state.latest_block.0)?
@@ -286,11 +286,10 @@ fn verify_current_state<S: StorageRead>(
         .get_block_index(&state.latest_block.1)?
         .ok_or_else(|| StorageError::Corruption("Canonical tip index is absent".into()))?;
 
-    if block.block_hash() != state.latest_block.1
-        || block.header.height != state.latest_block.0
+    if header.height != state.latest_block.0
         || canonical != state.latest_block.1
         || index.height != state.latest_block.0
-        || index.parent_hash != block.header.previous_block_hash
+        || index.parent_hash != header.previous_block_hash
         || index.chain_work != state.chain_work
         || state.latest_block.0.checked_add(1) != Some(state.blocks_count)
     {

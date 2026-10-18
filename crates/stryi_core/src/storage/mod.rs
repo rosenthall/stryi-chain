@@ -8,7 +8,7 @@ pub use transition::{apply_transition, validate_genesis};
 
 use crate::BlockUndo;
 use crate::address::AccountAddress;
-use crate::block::{Block, BlockHash};
+use crate::block::{Block, BlockHash, BlockHeader};
 use crate::consensus::ForkDbDelta;
 use crate::difficulty::{ChainWork, HashThreshold};
 use crate::error::StryiCoreError;
@@ -199,6 +199,13 @@ pub trait BlockStorage {
     /// Returns `Ok(None)` if not found.
     fn get_block_by_height(&self, height: u64) -> Result<Option<Block>, StorageError>;
 
+    fn get_block_header_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<BlockHeader>, StorageError> {
+        Ok(self.get_block_by_hash(hash)?.map(|block| block.header))
+    }
+
     /// Ancestry and cumulative branch work (including detached blocks).
     fn get_block_index(&self, hash: &BlockHash) -> Result<Option<BlockIndexData>, StorageError>;
 
@@ -275,7 +282,7 @@ pub trait BlockStorage {
     /// Returns `Ok(false)` if the block is absent.
     /// Propagates storage errors from the backend.
     fn block_exists(&self, hash: BlockHash) -> Result<bool, StorageError> {
-        Ok(self.get_block_by_hash(hash)?.is_some())
+        Ok(self.get_block_header_by_hash(hash)?.is_some())
     }
 }
 
@@ -396,8 +403,10 @@ pub trait FullNodeStorage: StorageReader {
 /// is only valid at height 0 with an empty previous hash, zero threshold,
 /// zero timestamp and zero nonce.
 pub fn verify_genesis_work_shape(block: &Block) -> Result<(), StryiCoreError> {
-    let header = &block.header;
+    verify_genesis_header_work_shape(&block.header)
+}
 
+pub fn verify_genesis_header_work_shape(header: &BlockHeader) -> Result<(), StryiCoreError> {
     if header.is_genesis()
         && (header.height != 0
             || header.previous_block_hash != BlockHash::empty()

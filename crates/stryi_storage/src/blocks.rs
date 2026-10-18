@@ -1,8 +1,8 @@
 use crate::{ReadSource, StorageView};
-use stryi_core::block::{Block, BlockHash};
+use stryi_core::block::{Block, BlockHash, BlockHeader};
 use stryi_core::storage::{
     BlockIndexData, BlockStorage, ConfirmedTransaction, StorageError, TransactionIndexData,
-    verify_genesis_work_shape,
+    verify_genesis_header_work_shape, verify_genesis_work_shape,
 };
 use stryi_core::transactions::TransactionHash;
 
@@ -52,6 +52,23 @@ impl<R: ReadSource> BlockStorage for StorageView<'_, R> {
         }
 
         Ok(Some(block))
+    }
+
+    fn get_block_header_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<BlockHeader>, StorageError> {
+        let Some(bytes) = self.raw_get("blocks", &hash.data)? else {
+            return Ok(None);
+        };
+
+        let (header, _) = postcard::take_from_bytes::<BlockHeader>(&bytes)
+            .map_err(|error| self.report_corruption(format!("Invalid blocks value: {error}")))?;
+
+        verify_genesis_header_work_shape(&header)
+            .map_err(|error| self.report_corruption(error.to_string()))?;
+
+        Ok(Some(header))
     }
 
     fn get_block_index(&self, hash: &BlockHash) -> Result<Option<BlockIndexData>, StorageError> {

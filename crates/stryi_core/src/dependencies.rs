@@ -42,9 +42,10 @@ impl DependencyGraph {
 
         // Index transaction outputs and detect duplicates
         for (tx_idx, tx) in block_data.transactions.iter().enumerate() {
+            let txid = tx.data.hash();
             for (vout, _) in tx.data.outputs.iter().enumerate() {
                 let outpoint = OutPoint {
-                    txid: tx.data.hash(),
+                    txid,
                     vout: vout as u32,
                 };
 

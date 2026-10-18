@@ -2,7 +2,7 @@ use crate::StryiCoreError;
 use crate::block::{Block, BlockHash, BlockHeader};
 use crate::consensus::ConsensusConsts;
 use crate::error::StorageLayer;
-use crate::storage::{BlockStorage, StorageError, verify_genesis_work_shape};
+use crate::storage::{BlockStorage, StorageError, verify_genesis_header_work_shape};
 use crypto_bigint::{CheckedAdd, NonZero};
 use serde::{Deserialize, Serialize};
 
@@ -14,46 +14,41 @@ pub use crypto_bigint::U512 as ChainWork;
 
 pub const MAX_FUTURE_BLOCK_TIME_SECS: u64 = 120;
 
-fn read_required_block<S>(state: &S, hash: BlockHash) -> Result<Block, StryiCoreError>
+fn read_required_header<S>(state: &S, hash: BlockHash) -> Result<BlockHeader, StryiCoreError>
 where
     S: BlockStorage + Send + Sync,
 {
-    let block = state
-        .get_block_by_hash(hash)
+    state
+        .get_block_header_by_hash(hash)
         .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e))?
         .ok_or_else(|| StryiCoreError::ConsensusValidationFailed {
             details: format!("block {hash} is missing from the branch view"),
-        })?;
-
-    if block.block_hash() != hash {
-        return Err(StryiCoreError::storage(
-            StorageLayer::Block,
-            StorageError::Corruption(format!("block hash does not match storage key {hash}")),
-        ));
-    }
-
-    Ok(block)
+        })
 }
 
-fn read_required_block_by_height<S>(state: &S, height: u64) -> Result<Block, StryiCoreError>
+fn read_required_header_by_height<S>(
+    state: &S,
+    height: u64,
+) -> Result<(BlockHash, BlockHeader), StryiCoreError>
 where
     S: BlockStorage + Send + Sync,
 {
-    let block = state
-        .get_block_by_height(height)
+    let hash = state
+        .get_block_hash_by_height(height)
         .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e))?
         .ok_or_else(|| StryiCoreError::ConsensusValidationFailed {
             details: format!("block at height {height} is missing from the branch view"),
         })?;
 
-    if block.header.height != height {
+    let header = read_required_header(state, hash)?;
+    if header.height != height {
         return Err(StryiCoreError::storage(
             StorageLayer::Block,
             StorageError::Corruption(format!("block height does not match storage key {height}")),
         ));
     }
 
-    Ok(block)
+    Ok((hash, header))
 }
 
 /// Upper median of up to eleven ancestors, starting at the parent.
@@ -63,26 +58,26 @@ where
 {
     let mut timestamps = [0u64; 11];
     let mut count = 0;
-    let mut cursor = read_required_block(state, parent_hash)?;
+    let mut cursor = read_required_header(state, parent_hash)?;
 
     loop {
-        verify_genesis_work_shape(&cursor)?;
+        verify_genesis_header_work_shape(&cursor)?;
 
-        if !cursor.header.is_genesis() && cursor.header.height == 0 {
+        if !cursor.is_genesis() && cursor.height == 0 {
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: "normal ancestor has height zero".into(),
             });
         }
 
-        timestamps[count] = cursor.header.timestamp;
+        timestamps[count] = cursor.timestamp;
         count += 1;
 
-        if cursor.header.is_genesis() || count == timestamps.len() {
+        if cursor.is_genesis() || count == timestamps.len() {
             break;
         }
 
-        let previous = read_required_block(state, cursor.header.previous_block_hash)?;
-        if previous.header.height.checked_add(1) != Some(cursor.header.height) {
+        let previous = read_required_header(state, cursor.previous_block_hash)?;
+        if previous.height.checked_add(1) != Some(cursor.height) {
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: "broken timestamp ancestry".into(),
             });
@@ -221,31 +216,28 @@ impl DifficultyCalc {
         Ok(Self { params })
     }
 
-    fn verify_anchor(&self, anchor: &Block) -> Result<(), StryiCoreError> {
-        verify_genesis_work_shape(anchor)?;
+    fn verify_anchor(&self, anchor: &BlockHeader) -> Result<(), StryiCoreError> {
+        verify_genesis_header_work_shape(anchor)?;
 
-        if anchor.header.is_genesis() {
+        if anchor.is_genesis() {
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: "anchor block cannot have genesis shape".into(),
             });
         }
 
-        if anchor.header.height != 1 {
+        if anchor.height != 1 {
             return Err(StryiCoreError::ConsensusValidationFailed {
-                details: format!(
-                    "anchor block height is {}, expected 1",
-                    anchor.header.height
-                ),
+                details: format!("anchor block height is {}, expected 1", anchor.height),
             });
         }
 
-        if anchor.header.previous_block_hash != BlockHash::empty() {
+        if anchor.previous_block_hash != BlockHash::empty() {
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: "anchor block must have empty previous block hash".into(),
             });
         }
 
-        if anchor.header.hash_threshold != self.params.initial_hash_threshold {
+        if anchor.hash_threshold != self.params.initial_hash_threshold {
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: "anchor block must use initial hash threshold".into(),
             });
@@ -268,56 +260,54 @@ impl DifficultyCalc {
     where
         S: BlockStorage + Send + Sync,
     {
-        let parent = read_required_block(state, parent_hash)?;
-        verify_genesis_work_shape(&parent)?;
+        let parent = read_required_header(state, parent_hash)?;
+        verify_genesis_header_work_shape(&parent)?;
 
-        if parent.header.is_genesis() {
+        if parent.is_genesis() {
             return Ok(self.params.initial_hash_threshold);
         }
 
-        if parent.header.height == 0 {
+        if parent.height == 0 {
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: "normal parent has height zero".into(),
             });
         }
 
         let hash_at_height = state
-            .get_block_hash_by_height(parent.header.height)
+            .get_block_hash_by_height(parent.height)
             .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e))?;
 
         if hash_at_height != Some(parent_hash) {
-            let parent_at_height = read_required_block_by_height(state, parent.header.height)?;
+            let (mapped_hash, _) = read_required_header_by_height(state, parent.height)?;
 
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: format!(
-                    "branch height {} mapped to block {} instead of parent {parent_hash}",
-                    parent.header.height,
-                    parent_at_height.block_hash()
+                    "branch height {} mapped to block {mapped_hash} instead of parent {parent_hash}",
+                    parent.height,
                 ),
             });
         }
 
-        if parent.header.height == 1 {
+        if parent.height == 1 {
             self.verify_anchor(&parent)?;
             return Ok(self.params.initial_hash_threshold);
         }
 
-        let anchor = read_required_block_by_height(state, 1)?;
+        let (anchor_hash, anchor) = read_required_header_by_height(state, 1)?;
         self.verify_anchor(&anchor)?;
 
-        if parent.header.height == 2 && parent.header.previous_block_hash != anchor.block_hash() {
+        if parent.height == 2 && parent.previous_block_hash != anchor_hash {
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: format!(
-                    "parent at height 2 previous block hash {} does not match anchor {}",
-                    parent.header.previous_block_hash,
-                    anchor.block_hash()
+                    "parent at height 2 previous block hash {} does not match anchor {anchor_hash}",
+                    parent.previous_block_hash,
                 ),
             });
         }
 
-        let elapsed = i128::from(parent.header.timestamp) - i128::from(anchor.header.timestamp);
+        let elapsed = i128::from(parent.timestamp) - i128::from(anchor.timestamp);
         let scheduled =
-            i128::from(self.params.target_spacing_secs) * i128::from(parent.header.height - 1);
+            i128::from(self.params.target_spacing_secs) * i128::from(parent.height - 1);
         let drift = elapsed - scheduled;
 
         asert_upper(

@@ -79,10 +79,6 @@ fn validate_payment_tx(
         .map_err(|_| StryiCoreError::ConsensusValidationFailed {
             details: "Failed to recover public key".into(),
         })?;
-    tx.verify_signature(&pk)
-        .map_err(|_| StryiCoreError::ConsensusValidationFailed {
-            details: "Invalid transaction signature".into(),
-        })?;
     let author = AccountAddress::from_public_key(&pk);
 
     let mut in_sum = 0u64;

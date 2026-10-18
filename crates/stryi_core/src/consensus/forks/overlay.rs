@@ -1,6 +1,6 @@
 use crate::BlockUndo;
 use crate::address::AccountAddress;
-use crate::block::{Block, BlockHash};
+use crate::block::{Block, BlockHash, BlockHeader};
 use crate::difficulty::HashThreshold;
 use crate::storage::{
     BlockIndexData, BlockStorage, ConfirmedTransaction, StorageError, StorageRead, UtxoStorage,
@@ -251,6 +251,17 @@ impl<DB: StorageRead> BlockStorage for ForkDbOverlay<'_, DB> {
         }
 
         self.base.get_block_by_height(height)
+    }
+
+    fn get_block_header_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Option<BlockHeader>, StorageError> {
+        if let Some((block, _)) = self.blocks.get(&hash) {
+            return Ok(Some(block.header));
+        }
+
+        self.base.get_block_header_by_hash(hash)
     }
 
     fn get_block_index(&self, hash: &BlockHash) -> Result<Option<BlockIndexData>, StorageError> {
