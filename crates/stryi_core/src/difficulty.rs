@@ -281,9 +281,13 @@ impl DifficultyCalc {
             });
         }
 
-        let parent_at_height = read_required_block_by_height(state, parent.header.height)?;
+        let hash_at_height = state
+            .get_block_hash_by_height(parent.header.height)
+            .map_err(|e| StryiCoreError::storage(StorageLayer::Block, e))?;
 
-        if parent_at_height.block_hash() != parent_hash {
+        if hash_at_height != Some(parent_hash) {
+            let parent_at_height = read_required_block_by_height(state, parent.header.height)?;
+
             return Err(StryiCoreError::ConsensusValidationFailed {
                 details: format!(
                     "branch height {} mapped to block {} instead of parent {parent_hash}",

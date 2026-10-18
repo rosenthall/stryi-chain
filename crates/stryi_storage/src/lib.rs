@@ -99,8 +99,7 @@ impl ReadSource for SnapshotWithThreadMode<'_, Database> {
 
 impl ReadSource for Transaction<'_, Database> {
     fn get(&self, table: &ColumnFamily, key: &[u8]) -> Result<Option<Vec<u8>>, rocksdb::Error> {
-        // TransactionOptions::set_snapshot does not pin ordinary transaction reads.
-        self.snapshot().get_cf(table, key)
+        self.get_cf(table, key)
     }
 }
 
@@ -136,18 +135,20 @@ pub fn extract_utxos_from_block(block: &Block) -> Vec<(OutPoint, UTXO)> {
         .transactions
         .iter()
         .flat_map(|tx| {
+            let txid = tx.data.hash();
+
             tx.data
                 .outputs
                 .iter()
                 .enumerate()
                 .map(move |(vout, output)| {
                     let outpoint = OutPoint {
-                        txid: tx.data.hash(),
+                        txid,
                         vout: vout as u32,
                     };
 
                     let utxo = UTXO {
-                        txid: tx.data.hash(),
+                        txid,
                         vout: vout as u32,
                         value: output.value,
                         owner: output.recipient,
@@ -206,13 +207,11 @@ impl StryiStorage {
             return Err(StorageError::Unhealthy);
         }
 
-        // Force WAL fsync on commit
         let mut writes = WriteOptions::default();
-        writes.set_sync(true);
+        writes.set_sync(false);
         writes.disable_wal(false);
 
-        let mut options = TransactionOptions::default();
-        options.set_snapshot(true);
+        let options = TransactionOptions::default();
 
         let mut view = StorageView {
             inner: &self.inner,
