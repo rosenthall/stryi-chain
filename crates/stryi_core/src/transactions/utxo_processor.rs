@@ -1,7 +1,7 @@
 use crate::BlockUndo;
 use crate::storage::{StorageError, UtxoWrite};
-use crate::transactions::{OutPoint, Transaction, TransactionKind, UTXO};
-use std::collections::HashSet;
+use crate::transactions::{OutPoint, TransactionKind, UTXO};
+use std::collections::{HashMap, HashSet};
 
 /// UtxoProcessor is responsible for applying and reverting blocks to the UTXO set.
 // TODO: Add some configuration for the UtxoProcessor?
@@ -38,75 +38,60 @@ impl UtxoProcessor {
     where
         S: UtxoWrite,
     {
-        let mut created_outpoints: HashSet<OutPoint> = HashSet::new();
-        let mut spent_utxos: HashSet<(OutPoint, UTXO)> = HashSet::new();
+        let mut created_utxos: HashMap<OutPoint, UTXO> = HashMap::new();
+        let mut external_inputs: Vec<OutPoint> = Vec::new();
 
         for tx in &block.data.transactions {
-            match tx.data.kind {
-                TransactionKind::Genesis | TransactionKind::Coinbase { .. } => {
-                    created_outpoints.extend(self.put_outputs(tx, utxo_storage)?);
-                }
-                TransactionKind::Payment => {
-                    // collect and remove inputs
-                    let in_ops: Vec<_> = tx.data.inputs.iter().map(|i| i.previous_output).collect();
-
-                    // fetch current UTXOs so we can store them in undo
-                    let existing = utxo_storage.batch_get_utxos(in_ops.clone())?;
-
-                    for op in &in_ops {
-                        // An output created and spent in this block has no pre-block state
-                        // to restore. Undo records only the net change to the UTXO set.
-                        if !created_outpoints.remove(op) {
-                            let utxo = existing.get(op).ok_or(StorageError::UtxoNotFound(*op))?;
-                            spent_utxos.insert((*op, *utxo));
-                        }
+            if tx.data.kind == TransactionKind::Payment {
+                for input in &tx.data.inputs {
+                    let op = input.previous_output;
+                    // An output created and spent in this block has no pre-block state
+                    // to restore. Undo records only the net change to the UTXO set.
+                    if created_utxos.remove(&op).is_none() {
+                        external_inputs.push(op);
                     }
-
-                    utxo_storage.batch_remove_utxos(in_ops)?;
-
-                    // add outputs
-                    created_outpoints.extend(self.put_outputs(tx, utxo_storage)?);
                 }
             }
+
+            let txid = tx.data.hash();
+            for (vout, output) in tx.data.outputs.iter().enumerate() {
+                let op = OutPoint {
+                    txid,
+                    vout: vout as u32,
+                };
+                let utxo = UTXO {
+                    txid,
+                    vout: op.vout,
+                    value: output.value,
+                    owner: output.recipient,
+                };
+                created_utxos.insert(op, utxo);
+            }
+        }
+
+        let mut spent_utxos: HashSet<(OutPoint, UTXO)> =
+            HashSet::with_capacity(external_inputs.len());
+
+        if !external_inputs.is_empty() {
+            // fetch current UTXOs so we can store them in undo
+            let mut existing = utxo_storage.batch_get_utxos(external_inputs.iter().copied())?;
+            for &op in &external_inputs {
+                let utxo = existing.remove(&op).ok_or(StorageError::UtxoNotFound(op))?;
+                spent_utxos.insert((op, utxo));
+            }
+
+            utxo_storage.batch_remove_utxos(external_inputs)?;
+        }
+
+        let created_outpoints: HashSet<OutPoint> = created_utxos.keys().copied().collect();
+        if !created_utxos.is_empty() {
+            utxo_storage.batch_put_utxos(created_utxos.into_iter().collect())?;
         }
 
         Ok(BlockUndo {
             spent_utxos,
             created_outpoints,
         })
-    }
-
-    /// Helper, inserts transaction outputs, returns list of newly created `OutPoint`s.
-    fn put_outputs<S>(
-        &self,
-        tx: &Transaction,
-        utxo_storage: &mut S,
-    ) -> Result<Vec<OutPoint>, StorageError>
-    where
-        S: UtxoWrite,
-    {
-        let txid = tx.data.hash();
-
-        let mut batch: Vec<(OutPoint, UTXO)> = Vec::with_capacity(tx.data.outputs.len());
-        let mut outpoints: Vec<OutPoint> = Vec::with_capacity(tx.data.outputs.len());
-
-        for (vout, output) in tx.data.outputs.iter().enumerate() {
-            let op = OutPoint {
-                txid,
-                vout: vout as u32,
-            };
-            let utxo = UTXO {
-                txid,
-                vout: op.vout,
-                value: output.value,
-                owner: output.recipient,
-            };
-            batch.push((op, utxo));
-            outpoints.push(op);
-        }
-
-        utxo_storage.batch_put_utxos(batch)?;
-        Ok(outpoints)
     }
 
     /// Reverts a previously applied block, restoring the UTXO set to its prior state.
