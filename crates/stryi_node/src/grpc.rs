@@ -208,6 +208,8 @@ where
         .map_err(|e| Status::internal(e.to_string()))?
     }
 
+    /// Collect block hashes from a single snapshot first so concurrent reorg
+    /// won't mix blocks from different branches while streaming.
     async fn height_range_hashes(&self, range: BlockHeightRange) -> Result<Vec<BlockHash>, Status> {
         if range.start_height > range.end_height {
             return Err(Status::invalid_argument("start height exceeds end height"));
